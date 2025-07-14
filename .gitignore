@@ -1,0 +1,37 @@
+# 编译输出
+build/
+bin/
+obj/
+*.o
+*.a
+*.so
+*.exe
+*.out
+*.dll
+
+# CMake 相关
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+install_manifest.txt
+
+# 日志和临时文件
+*.log
+*.tmp
+*.swp
+*.swo
+
+# IDE 配置
+.vscode/
+.idea/
+*.user
+*.sublime-workspace
+*.sublime-project
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 其他
+*.bak
