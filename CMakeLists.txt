@@ -12,3 +12,10 @@ target_include_directories(wangcai_orderbook_cpp PUBLIC include ${Boost_INCLUDE_
 
 add_executable(test src/main.cpp)
 target_link_libraries(test PRIVATE wangcai_orderbook_cpp)
+
+
+add_executable(simple_test src/simple_test.cpp)
+target_link_libraries(simple_test PRIVATE wangcai_orderbook_cpp)
+
+add_executable(call_auction_validation src/call_auction_validation.cpp)
+target_link_libraries(call_auction_validation PRIVATE wangcai_orderbook_cpp)

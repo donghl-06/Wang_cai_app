@@ -16,15 +16,16 @@
 
 namespace wangcai_orderbook_cpp {
 
+class CallAuctionEngine;   // friend
+class ConAuctionEngine;    // friend
+
 class OrderBook {
+    friend class CallAuctionEngine;
+    friend class ConAuctionEngine;
 public:
     using ExecCallback = std::function<void(const Execution&)>;
 
     OrderBook(double hi, double lo, bool is_etf, ExecCallback cb = nullptr);
-
-    //下单，撤单，返回就是撮合
-    void addOrder(std::shared_ptr<Order>);
-    bool cancel(uint64_t order_id);
 
     //查询
     [[nodiscard]] Price bestBid() const;
@@ -35,11 +36,6 @@ public:
     std::shared_ptr<Order> createOrder(Args&&... args) {
         return _order_pool.acquire(std::forward<Args>(args)...);
      }
-
-    // 集合竞价相关方法
-    Price calculateAuctionPrice();  // 计算集合竞价价格
-    void applyAuctionTrade();       // 应用集合竞价结果
-    void printAuctionResult() const; // 打印集合竞价结果
     
     // 设置前收盘价和交易所
     void setPrevClosePrice(Price price) { _prev_close_price = price; }
@@ -92,9 +88,6 @@ private:
     //统一增/减桶量，自动维护链和最优价
     void bucketAdd(int idx, bool is_buy, Quantity q);
     void bucketSub(int idx, bool is_buy, Quantity q);
-
-    //撮合核心
-    void matchIncoming(std::shared_ptr<Order>&);
 };
 
 } // namespace wangcai_orderbook_cpp
