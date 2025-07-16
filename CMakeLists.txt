@@ -13,6 +13,8 @@ target_include_directories(wangcai_orderbook_cpp PUBLIC include ${Boost_INCLUDE_
 add_executable(test src/main.cpp)
 target_link_libraries(test PRIVATE wangcai_orderbook_cpp)
 
+add_executable(matching_main src/matching_main.cpp)
+target_link_libraries(matching_main PRIVATE wangcai_orderbook_cpp)
 
 add_executable(simple_test src/simple_test.cpp)
 target_link_libraries(simple_test PRIVATE wangcai_orderbook_cpp)

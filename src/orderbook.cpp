@@ -27,8 +27,8 @@ OrderBook::OrderBook(double hi, double lo, bool is_etf, ExecCallback cb)
     _tick  = is_etf ? 10 : 100;  // ETF = 0.001 元；股票 = 0.01 元
 
     // 2. 涨跌停区间（整型价格）
-    _lower = static_cast<Price>(lo * 10'000);
-    _upper = static_cast<Price>(hi * 10'000); 
+    _lower = static_cast<Price>(lo);
+    _upper = static_cast<Price>(hi); 
 
     // 3. 预分配桶数组
     const int bucket_cnt = (_upper - _lower) / _tick + 1; // 桶数 = (最大价格 - 最小价格) / 最小价格单位 + 1

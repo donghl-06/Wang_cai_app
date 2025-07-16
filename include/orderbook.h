@@ -23,8 +23,9 @@ class OrderBook {
     friend class CallAuctionEngine;
     friend class ConAuctionEngine;
 public:
-    using ExecCallback = std::function<void(const Execution&)>;
 
+    using ExecCallback = std::function<void(const Execution&)>;
+    std::string getExchange() const { return _exchange; }
     OrderBook(double hi, double lo, bool is_etf, ExecCallback cb = nullptr);
 
     //查询
@@ -88,6 +89,8 @@ private:
     //统一增/减桶量，自动维护链和最优价
     void bucketAdd(int idx, bool is_buy, Quantity q);
     void bucketSub(int idx, bool is_buy, Quantity q);
+
+    
 };
 
 } // namespace wangcai_orderbook_cpp

@@ -56,7 +56,7 @@ void insert_event(const Event& event) {
     // 时间过滤：只处理集合竞价时间段 09:15:00 到 09:25:00
     std::string time_part = event.datetime.substr(11); // 提取时间部分 HH:MM:SS
     if (time_part < "09:15:00" || time_part >= "09:25:00") {
-        return; // 跳过不在集合竞价时间段的事件
+         return; // 跳过不在集合竞价时间段的事件
     }
     
     if (event.sym.substr(event.sym.size() - 2) == "SZ") {
@@ -68,9 +68,18 @@ void insert_event(const Event& event) {
     }
 }
 
+// 工具函数：将价格字符串转为int64_t，*10000并四舍五入到100
+inline int64_t parse_price(const std::string& price_str) {
+    if (price_str.empty()) return 0;
+    double price_raw = std::stod(price_str);
+    double price_multiplied = price_raw * 10000;
+    double price_rounded = std::round(price_multiplied / 100.0) * 100.0;
+    return static_cast<int64_t>(price_rounded);
+}
+
 // 加载订单数据
 void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
-    std::istringstream file(csv_file);
+    std::ifstream file(csv_file);  
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
 
@@ -91,7 +100,7 @@ void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
             std::getline(ss, bizindex_str, ',');
 
             // 解析数据
-            int64_t price = price_str.empty() ? 0 : static_cast<int64_t>(std::round(std::stod(price_str) * 10000));
+            int64_t price = parse_price(price_str);
             int64_t size = size_str.empty() ? 0 : std::stod(size_str);
             int64_t side = side_str.empty() ? 0 : std::stoi(side_str);
             int64_t ordertype = ordertype_str.empty() ? 0 : std::stoi(ordertype_str);
@@ -159,7 +168,7 @@ void load_traders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::O
             // 去除空格
             tradebsflag.erase(std::remove(tradebsflag.begin(), tradebsflag.end(), ' '), tradebsflag.end());
 
-            int64_t price = price_str.empty() ? 0 : static_cast<int64_t>(std::round(std::stod(price_str) * 10000));
+            int64_t price = parse_price(price_str);
             int64_t size = size_str.empty() ? 0 : std::stod(size_str);
             int64_t bidorderid = bidorderid_str.empty() ? 0 : std::stoi(bidorderid_str);
             int64_t askorderid = askorderid_str.empty() ? 0 : std::stoi(askorderid_str);
@@ -255,8 +264,8 @@ void load_cstick_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
             std::getline(ss, prevclose_str, ',');
             std::getline(ss, open_str, ',');
             
-            wangcai_orderbook_cpp::Price prev_close = static_cast<wangcai_orderbook_cpp::Price>(std::stod(prevclose_str) * 10000);
-            wangcai_orderbook_cpp::Price open_price = static_cast<wangcai_orderbook_cpp::Price>(std::stod(open_str) * 10000);
+            wangcai_orderbook_cpp::Price prev_close = parse_price(prevclose_str);
+            wangcai_orderbook_cpp::Price open_price = parse_price(open_str);
             
             order_book.setPrevClosePrice(prev_close);
             
@@ -287,7 +296,7 @@ std::vector<Event> loadOrderData(const std::string& filename) {
     
     std::string line;
     std::getline(file, line); // 跳过标题行
-    std::cout << "订单文件标题: " << line << std::endl;
+    // std::cout << "订单文件标题: " << line << std::endl;
     
     while (std::getline(file, line)) {
         if (line.empty()) continue;
@@ -309,7 +318,7 @@ std::vector<Event> loadOrderData(const std::string& filename) {
         std::getline(ss, seqno_str, ',');
         std::getline(ss, bizindex_str, ',');
         
-        int64_t price = static_cast<int64_t>(std::stod(price_str) * 10000);
+        int64_t price = parse_price(price_str);
         int64_t size = static_cast<int64_t>(std::stod(size_str));
         int64_t side = std::stoi(side_str);
         int64_t ordertype = std::stoi(ordertype_str);
@@ -338,7 +347,7 @@ std::vector<Event> loadCancelData(const std::string& filename) {
     
     std::string line;
     std::getline(file, line); // 跳过标题行
-    std::cout << "撤单文件标题: " << line << std::endl;
+    // std::cout << "撤单文件标题: " << line << std::endl;
     
     while (std::getline(file, line)) {
         if (line.empty()) continue;
@@ -364,7 +373,7 @@ std::vector<Event> loadCancelData(const std::string& filename) {
         // 去除空格
         tradebsflag.erase(std::remove(tradebsflag.begin(), tradebsflag.end(), ' '), tradebsflag.end());
         
-        int64_t price = static_cast<int64_t>(std::stod(price_str) * 10000);
+        int64_t price = parse_price(price_str);
         int64_t size = static_cast<int64_t>(std::stod(size_str));
         int64_t bidorderid = std::stoull(bidorderid_str);
         int64_t askorderid = std::stoull(askorderid_str);
@@ -395,7 +404,7 @@ wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename) {
 
     std::string line;
     std::getline(file, line); // 读取标题行
-    std::cout << "行情文件标题: " << line.substr(0, 100) << "..." << std::endl;
+    // std::cout << "行情文件标题: " << line.substr(0, 100) << "..." << std::endl;
 
     // 读取最后一行数据
     std::string last_line;
@@ -411,8 +420,11 @@ wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename) {
         std::getline(ss, datetime, ',');
         std::getline(ss, sym, ',');
         std::getline(ss, prevclose_str, ',');
-        wangcai_orderbook_cpp::Price prev_close = static_cast<wangcai_orderbook_cpp::Price>(std::stod(prevclose_str) * 10000);
-        std::cout << "前收盘价(最后一行): " << prev_close / 10000.0 << " 元" << std::endl;
+        double prev_close_raw = std::stod(prevclose_str);
+        // 先乘以10000，再四舍五入到100
+        double prev_close_multiplied = prev_close_raw * 10000;
+        double prev_close_rounded = std::round(prev_close_multiplied / 100.0) * 100.0;
+        wangcai_orderbook_cpp::Price prev_close = static_cast<wangcai_orderbook_cpp::Price>(prev_close_rounded);
         return prev_close;
     }
 
@@ -445,8 +457,15 @@ wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename) {
          std::getline(ss, sym, ',');
          std::getline(ss, prevclose_str, ',');
          std::getline(ss, open_str, ',');
-         wangcai_orderbook_cpp::Price open_price = static_cast<wangcai_orderbook_cpp::Price>(std::stod(open_str) * 10000);
-         std::cout << "开盘价(最后一行): " << open_price / 10000.0 << " 元" << std::endl;
+         
+        //  std::cout << "开盘价(最后一行): " << open_str << " 元" << std::endl;
+         double open_raw = std::stod(open_str);
+         // 先乘以10000，再四舍五入到100
+         double open_multiplied = open_raw * 10000;
+         double open_rounded = std::round(open_multiplied / 100.0) * 100.0;
+         wangcai_orderbook_cpp::Price open_price = static_cast<wangcai_orderbook_cpp::Price>(open_rounded);
+
+        //  std::cout << "开盘价(最后一行): " << open_price / 10000.0 << " 元" << std::endl;
          return open_price;
     }
     
@@ -477,23 +496,18 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
     double lower_raw = prev_close * 0.9 / 10000.0;  // 按开盘价下10%
     double upper = std::round(upper_raw * 100) / 100.0;  // 四舍五入到0.01
     double lower = std::floor(lower_raw * 100) / 100.0;  // 向下取0.01
+    int lower_int = parse_price(std::to_string(lower));
+    int upper_int = parse_price(std::to_string(upper));
     
     std::cout << "价格范围(基于前收盘价): " << lower << " - " << upper << " 元" << std::endl;
     
-    wangcai_orderbook_cpp::OrderBook ob(upper, lower, false);
+    wangcai_orderbook_cpp::OrderBook ob(upper_int, lower_int, false);
     ob.setPrevClosePrice(prev_close);
     ob.setExchange(stock_code.substr(stock_code.size() - 2)); // 从股票代码获取交易所
     
     wangcai_orderbook_cpp::CallAuctionEngine auction_engine(ob, prev_close, stock_code.substr(stock_code.size() - 2),
         nullptr, // 价格回调
-        [](uint64_t order_id, bool success, const std::string& reason) {
-            std::cout << "撤单回调 - 订单ID: " << order_id 
-                      << ", 状态: " << (success ? "成功" : "失败");
-            if (!success) {
-                std::cout << ", 原因: " << reason;
-            }
-            std::cout << std::endl;
-        });
+        nullptr);
     
     // 3. 清空全局事件列表并加载数据
     clear_events();
@@ -530,10 +544,10 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
             if (event.source == "ord") { // 订单
                 // 检查价格范围并对齐
                 wangcai_orderbook_cpp::Price aligned_price = event.price;
-                wangcai_orderbook_cpp::Price lower_bound = static_cast<wangcai_orderbook_cpp::Price>(lower * 10000);
-                wangcai_orderbook_cpp::Price upper_bound = static_cast<wangcai_orderbook_cpp::Price>(upper * 10000);
+                wangcai_orderbook_cpp::Price lower_bound = lower_int;
+                wangcai_orderbook_cpp::Price upper_bound = upper_int;
                 
-                if (aligned_price < lower_bound || aligned_price > upper_bound) {
+                if (aligned_price < lower_bound || aligned_price > upper_bound || aligned_price == 0) {
                     skipped_price_range++;
                     if (skipped_price_range <= 5) { // 只打印前5个被跳过的订单
                         std::cout << "跳过订单: 价格=" << aligned_price << " 超出范围[" << lower_bound << "," << upper_bound << "]" << std::endl;
@@ -561,12 +575,12 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
                     order_type = wangcai_orderbook_cpp::OrderType::Limit;
                 }
                 
-                if (processed_orders < 5) { // 打印前5个订单的调试信息
-                    std::cout << "订单 " << processed_orders << ": 方向=" << (event.side == 1 ? "买" : "卖") 
-                              << ", 类型=" << event.ordertype << ", 价格=" << aligned_price 
-                              << ", id=" << event.orderid
-                              << ", 数量=" << event.size << std::endl;
-                }
+                // if (processed_orders < 5) { // 打印前5个订单的调试信息
+                //     std::cout << "订单 " << processed_orders << ": 方向=" << (event.side == 1 ? "买" : "卖") 
+                //               << ", 类型=" << event.ordertype << ", 价格=" << aligned_price 
+                //               << ", id=" << event.orderid
+                //               << ", 数量=" << event.size << std::endl;
+                // }
                 
                 auto order = ob.createOrder(
                     "BROKER", "ACCOUNT", event.sym.substr(event.sym.size() - 2), event.sym, std::to_string(event.orderid),
@@ -581,11 +595,11 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
                 // 根据撤单记录中的bidorderid或askorderid中不为零的那个来撤单
                 uint64_t original_order_id = (event.bidorderid != 0) ? event.bidorderid : event.askorderid;
                 
-                if (processed_cancels < 3) { // 打印前3个撤单的调试信息
-                    std::cout << "撤单 - 原始订单ID: " << original_order_id << std::endl;
-                }
+                // if (processed_cancels < 3) { // 打印前3个撤单的调试信息
+                //     std::cout << "撤单 - 原始订单ID: " << original_order_id << std::endl;
+                // }
                 auction_engine.cancel_by_input_id(original_order_id);
-                processed_cancels++;
+                // processed_cancels++;
             }
             
         } catch (const std::exception& e) {
@@ -600,11 +614,14 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
     // 6. 获取集合竞价结果
     wangcai_orderbook_cpp::Price predicted_price = auction_engine.getPredictPrice();
     wangcai_orderbook_cpp::Quantity predicted_volume = auction_engine.getPredictVolume();
+
+    // 7. 打印订单簿到csv
+    //auction_engine.print_orderbook_to_csv("../logs/orderbook_" + stock_code + "_" + date + ".csv");
     
     // 添加调试信息
-    std::cout << "\n--- 集合竞价引擎状态 ---" << std::endl;
-    std::cout << "总买量: " << auction_engine.getTotalBuy() << std::endl;
-    std::cout << "总卖量: " << auction_engine.getTotalSell() << std::endl;
+    // std::cout << "\n--- 集合竞价引擎状态 ---" << std::endl;
+    // std::cout << "总买量: " << auction_engine.getTotalBuy() << std::endl;
+    // std::cout << "总卖量: " << auction_engine.getTotalSell() << std::endl;
     
     // 7. 对比结果
     std::cout << "\n========== 验证结果 ==========" << std::endl;

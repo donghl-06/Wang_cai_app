@@ -33,20 +33,21 @@ public:
     // 调试接口
     int64_t getTotalBuy() const { return _tot_buy; }
     int64_t getTotalSell() const { return _tot_sell; }
-
+    void print_orderbook_to_csv(const std::string& filename);
 private:
     /* Fenwick helpers */
     void  fenwickAdd(int idx,bool buy,int64_t d);
-    Price calcPredict();                 // 实时预测
+    Price calcPredict_SZ();                 // 实时预测深交所
+    Price calcPredict_SH();                 // 实时预测上交所
     void  publish();
 
     /* 批量结算 */
     void applyAuctionTrade(int auction_idx,
                            uint64_t buy_tot, uint64_t sell_tot);
 
-    OrderBook&  ob_;
-    PxCallback  on_px_;
-    CancelCallback on_cancel_;
+    OrderBook&  ob_; // 订单簿
+    PxCallback  on_px_; // 预测价格回调
+    CancelCallback on_cancel_; // 撤单回调
 
     Fenwick _bit_buy, _bit_sell;
     int64_t _tot_buy{0}, _tot_sell{0};

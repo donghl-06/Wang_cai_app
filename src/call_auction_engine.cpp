@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream> // Added for debugging output
+#include <fstream>
 
 namespace wangcai_orderbook_cpp {
 
@@ -110,123 +111,141 @@ void CallAuctionEngine::cancel_by_input_id(uint64_t input_id)
     }
 }
 
-/* 预测价计算：实时计算当前集合竞价的理论成交价和成交量 */
-Price CallAuctionEngine::calcPredict()
+
+ Price CallAuctionEngine::calcPredict_SZ()
+ {
+     // 若买卖盘一方无挂单，直接返回 0
+     if (_tot_buy == 0 || _tot_sell == 0) {
+         _predict_vol = 0;
+         return 0;
+     }
+ 
+     const int N = static_cast<int>(ob_._buy.size());
+     if (N == 0) {
+         _predict_vol = 0;
+         return 0;
+     }
+ 
+     uint64_t bestVol  = 0;          // 最大可成交量
+     uint64_t bestDiff = ~0ULL;      // 买卖剩余量差的最小值
+     int       bestIdx = -1;         // 最优价位索引
+ 
+     // 遍历所有价格桶，逐一评估（简单 for-loop 版本）
+     for (int idx = 0; idx < N; ++idx) {
+        int N = ob_._buy.size();
+        uint64_t total_buy = _bit_buy.prefixSum(N-1);
+        uint64_t total_sell = _bit_sell.prefixSum(N-1);
+        uint64_t upper_buy_vol = (idx < N-1) ? (total_buy - _bit_buy.prefixSum(idx)) : 0;
+        uint64_t lower_sell_vol = (idx > 0) ? _bit_sell.prefixSum(idx-1) : 0;
+        uint64_t same_price_buy_vol = ob_._buy[idx].vol_sum;
+        uint64_t same_price_sell_vol = ob_._sell[idx].vol_sum;
+        uint64_t tradable_volume = std::min(lower_sell_vol + same_price_sell_vol, upper_buy_vol + same_price_buy_vol);
+        // buy_up <= (sell_down + sell_this) 且 sell_down <= (buy_up + buy_this)
+        uint64_t tradable = upper_buy_vol <= (lower_sell_vol + same_price_sell_vol) && lower_sell_vol <= (upper_buy_vol + same_price_buy_vol);
+        uint64_t diff = std::llabs(static_cast<int64_t>(upper_buy_vol + same_price_buy_vol - (lower_sell_vol + same_price_sell_vol)));
+        if (!tradable) continue;
+
+         // 依据规则 1/2/3 依次比较
+         const Price px = ob_.idxToPx(idx);
+
+         const uint64_t dist_prev_close = std::llabs(static_cast<int64_t>(px - _prev_close));
+
+         uint64_t cur_best_dist = (bestIdx == -1) ? ~0ULL :
+                                  std::llabs(static_cast<int64_t>(ob_.idxToPx(bestIdx) - _prev_close));
+ 
+         const bool better = (tradable_volume > bestVol) ||
+                             (tradable_volume == bestVol && diff < bestDiff) ||
+                             (tradable_volume == bestVol && diff == bestDiff && dist_prev_close < cur_best_dist);
+ 
+         if (better) {
+             bestVol  = tradable_volume;
+             bestDiff = diff;
+             bestIdx  = idx;
+         }
+     }
+ 
+     if (bestIdx == -1) {
+         _predict_vol = 0;
+         return 0; // 无可撮合价
+     }
+ 
+     _predict_vol = bestVol;
+     return ob_.idxToPx(bestIdx);
+ }
+
+/*
+ * Optimised version: iterate only over价位桶里当前“活跃”的索引，而不再
+ * 从 0‥N-1 全表扫描。活跃索引集合 _active_idx 在 accept()/cancel()
+ * 时维护，因此大部分时间 M ≪ N，复杂度降为 O(M log N)。
+ *
+ * - accept():   _active_idx.insert(idx)  (若首单进入)
+ * - cancel():   若桶清空则 _active_idx.erase(idx)
+ *
+ * 仍用 Fenwick 取前缀和，每价位两次 prefixSum，
+ * 整体复杂度 O(M log N)。在深交所日常盘前场景，M 通常 <500。
+ */
+Price CallAuctionEngine::calcPredict_SH()
 {
-    // 若买卖盘一方无挂单，预测成交量为0，价格为0
-    if(_tot_buy==0||_tot_sell==0){ 
-        _predict_vol=0; 
-        return 0; 
-    }
-    int N=int(ob_._buy.size());
-    if(N==0) {
-        _predict_vol=0;
-        return 0;
-    }
-    
-    // 寻找有效的搜索范围（有买单或卖单的区间）
-    int min_idx = N, max_idx = -1;
-    for(int i = 0; i < N; i++) {
-        if(ob_._buy[i].vol_sum > 0 || ob_._sell[i].vol_sum > 0) {
-            min_idx = std::min(min_idx, i);
-            max_idx = std::max(max_idx, i);
-        }
-    }
-    
-    if(min_idx > max_idx) {
-        _predict_vol = 0;
-        return 0;
-    }
-    
-    int lo=min_idx,hi=max_idx,meet=-1;
+    const int N = static_cast<int>(ob_._buy.size());
+    if (N == 0) { _predict_vol = 0; return 0; }
 
-    // 二分查找"买卖量相遇点"索引
-    while(lo<=hi){
-        int mid=(lo+hi)>>1;
-        int64_t bu=_tot_buy - _bit_buy.prefixSum(mid-1);   // mid及以上买量
-        int64_t sd=_bit_sell.prefixSum(mid);               // mid及以下卖量
-        
-        // 若买量大于等于卖量，说明成交价可能更低，向左收缩
-        if(bu>=sd) {
-            meet=mid;
-            hi=mid-1;
-        } else {
-            lo=mid+1;
+    // 构建累计数组（含本价位）
+    std::vector<uint64_t> buy_cumu(N + 1, 0);   // 从右往左累加买量
+    for (int i = N - 1; i >= 0; --i)
+        buy_cumu[i] = buy_cumu[i + 1] + ob_._buy[i].vol_sum;
+
+    std::vector<uint64_t> sell_cumu(N + 1, 0);  // 从左往右累加卖量
+    for (int i = 0; i < N; ++i)
+        sell_cumu[i + 1] = sell_cumu[i] + ob_._sell[i].vol_sum;
+
+    uint64_t bestVol  = 0;
+    uint64_t bestDiff = ~0ULL;
+    int      bestIdx  = -1;
+
+    for (int idx = 0; idx < N; ++idx) {
+        const uint64_t same_buy  = ob_._buy[idx].vol_sum;
+        const uint64_t same_sell = ob_._sell[idx].vol_sum;
+
+        // idx 之上的买量（不含本档）& idx 之下的卖量（不含本档）
+        const uint64_t buy_up    = buy_cumu[idx + 1];
+        const uint64_t sell_down = sell_cumu[idx];
+
+        // tradable 判断
+        const bool tradable = (buy_up <= sell_down + same_sell) &&
+                              (sell_down <= buy_up + same_buy);
+        if (!tradable) continue;
+
+        const uint64_t tradable_volume = std::min(buy_up + same_buy,
+                                                   sell_down + same_sell);
+        const uint64_t diff = std::llabs(static_cast<int64_t>((buy_up + same_buy) -
+                                                              (sell_down + same_sell)));
+
+        const Price px = ob_.idxToPx(idx);
+        const uint64_t dist_prev_close = std::llabs(static_cast<int64_t>(px - _prev_close));
+        uint64_t cur_best_dist = (bestIdx == -1) ? ~0ULL :
+                                 std::llabs(static_cast<int64_t>(ob_.idxToPx(bestIdx) - _prev_close));
+
+        const bool better = (tradable_volume > bestVol) ||
+                            (tradable_volume == bestVol && diff < bestDiff) ||
+                            (tradable_volume == bestVol && diff == bestDiff && dist_prev_close < cur_best_dist);
+
+        if (better) {
+            bestVol  = tradable_volume;
+            bestDiff = diff;
+            bestIdx  = idx;
         }
     }
-    
-    if(meet==-1) {
-        _predict_vol=0;
-        return 0;
-    }
 
-    // 遍历所有有效价格桶，寻找最优成交价（而不是固定窗口）
-    uint64_t bestVol=0;         // 最大可成交量
-    uint64_t bestDiff=~0ULL;    // 买卖剩余量绝对差最小
-    int bestIdx=meet;           // 最优价格索引
+    if (bestIdx == -1) { _predict_vol = 0; return 0; }
 
-    // 用于评估每个价格idx的成交情况
-    auto eval=[&](int idx){
-        if(idx<0||idx>=N) return;
-        // 计算idx及以上买量
-        uint64_t bu=_tot_buy - _bit_buy.prefixSum(idx-1);
-        // 计算idx及以下卖量
-        uint64_t sd=_bit_sell.prefixSum(idx);
-        // 当前价位可成交量 = min(买方累计+本桶, 卖方累计+本桶)
-        uint64_t tv=std::min(bu+ob_._buy[idx].vol_sum,
-                             sd+ob_._sell[idx].vol_sum);
-        // 买卖剩余量绝对值
-        uint64_t diff=std::llabs(int64_t(
-            (bu+ob_._buy[idx].vol_sum) - (sd+ob_._sell[idx].vol_sum)));
-        // 是否满足集合竞价撮合条件
-        bool ok=(bu<=sd+ob_._sell[idx].vol_sum)&&
-                (sd<=bu+ob_._buy[idx].vol_sum);
-        
-        if(!ok) return;
-        // 优先最大成交量，其次最小剩余量
-        if(tv>bestVol||(tv==bestVol&&diff<bestDiff)){
-            bestVol=tv; bestDiff=diff; bestIdx=idx;
-        }
-        // 深交所平分时靠近前收盘价优先
-        else if(tv==bestVol&&diff==bestDiff&&_exch=="SZ"){
-            if(std::llabs(ob_.idxToPx(idx)-_prev_close)<
-               std::llabs(ob_.idxToPx(bestIdx)-_prev_close))
-               bestIdx=idx;
-        }
-    };
-    
-    // 遍历所有有效价格桶（从min_idx到max_idx），确保不遗漏任何可能的最优价格
-    for(int i=min_idx;i<=max_idx;++i) eval(i);
-
-    // 上交所平分时取中位价
-    if(_exch=="SH"){
-        std::vector<int> cand;
-        for(int i=min_idx;i<=max_idx;++i){
-            if(i<0||i>=N) continue;
-            uint64_t bu=_tot_buy - _bit_buy.prefixSum(i-1);
-            uint64_t sd=_bit_sell.prefixSum(i);
-            uint64_t tv=std::min(bu+ob_._buy[i].vol_sum,
-                                 sd+ob_._sell[i].vol_sum);
-            uint64_t diff=std::llabs(int64_t(
-              (bu+ob_._buy[i].vol_sum)-(sd+ob_._sell[i].vol_sum)));
-            bool ok=(bu<=sd+ob_._sell[i].vol_sum)&&
-                    (sd<=bu+ob_._buy[i].vol_sum);
-            if(ok&&tv==bestVol&&diff==bestDiff) cand.push_back(i);
-        }
-        if(!cand.empty()){ 
-            std::sort(cand.begin(),cand.end());
-            bestIdx=cand[cand.size()/2]; // 取中位
-        }
-    }
-    
-    _predict_vol=bestVol;
+    _predict_vol = bestVol;
     return ob_.idxToPx(bestIdx);
 }
 
-/* 实时发布预测价和预测成交量 */
 void CallAuctionEngine::publish()
 {
-    _predict_px=calcPredict();
+    if(_exch=="SZ") _predict_px=calcPredict_SZ();
+    else if(_exch=="SH") _predict_px=calcPredict_SH();
     if(on_px_) on_px_(_predict_px,_predict_vol);
 }
 
@@ -292,7 +311,9 @@ void CallAuctionEngine::applyAuctionTrade(int idx,uint64_t bu_tot,uint64_t sd_to
 void CallAuctionEngine::settle()
 {
     // 先计算最终成交价
-    Price px = calcPredict();
+    if(_exch=="SZ") _predict_px=calcPredict_SZ();
+    else if(_exch=="SH") _predict_px=calcPredict_SH();
+    Price px = _predict_px; // 最终成交价
     if(px == 0) {
         // 无法确定集合竞价成交价，直接清空并返回
         _bit_buy=Fenwick{}; 
@@ -309,4 +330,38 @@ void CallAuctionEngine::settle()
     _tot_buy=_tot_sell=0;
 }
 
+// 增加一个调试函数，打印出当时订单簿的挂单情况到csv
+void CallAuctionEngine::print_orderbook_to_csv(const std::string& filename) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "无法打开文件: " << filename << std::endl;
+        return;
+    }
+    
+    // 写入表头
+    file << "price,buy_orders_volume,sell_orders_volume, upper_buy_vol, lower_sell_vol, same_price_buy_vol, same_price_sell_vol, tradable_volume, tradable\n";
+    
+    int N = ob_._buy.size();
+    uint64_t total_buy = _bit_buy.prefixSum(N-1);
+    uint64_t total_sell = _bit_sell.prefixSum(N-1);
+
+    for (int i = 0; i < N; ++i) {
+        uint64_t upper_buy_vol = (i < N-1) ? (total_buy - _bit_buy.prefixSum(i)) : 0;
+        uint64_t lower_sell_vol = (i > 0) ? _bit_sell.prefixSum(i-1) : 0;
+        uint64_t same_price_buy_vol = ob_._buy[i].vol_sum;
+        uint64_t same_price_sell_vol = ob_._sell[i].vol_sum;
+        uint64_t tradable_volume = std::min(lower_sell_vol + same_price_sell_vol, upper_buy_vol + same_price_buy_vol);
+        // buy_up <= (sell_down + sell_this) 且 sell_down <= (buy_up + buy_this)
+        uint64_t tradable = upper_buy_vol <= (lower_sell_vol + same_price_sell_vol) && lower_sell_vol <= (upper_buy_vol + same_price_buy_vol);
+        file << ob_.idxToPx(i) << ","
+             << same_price_buy_vol << ","
+             << same_price_sell_vol << ","
+             << upper_buy_vol << ","
+             << lower_sell_vol << ","
+             << same_price_buy_vol << ","
+             << same_price_sell_vol << ","
+             << tradable_volume << ","
+             << tradable << "\n";
+    }
+}
 } // namespace wangcai_orderbook_cpp 
