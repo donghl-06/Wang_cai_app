@@ -7,13 +7,15 @@
 #include "FenwickTree.hpp"
 #include <functional>
 #include <unordered_map>
+#include "OrderLoader.h"
 
 namespace wangcai_orderbook_cpp {
 
 class CallAuctionEngine {
 public:
     using PxCallback = std::function<void(Price, Quantity)>;
-    using CancelCallback = std::function<void(uint64_t order_id, bool success, const std::string& reason)>;
+    using CancelCallback = std::function<void(uint64_t order_id, bool success, const std::string& reason, 
+                                            std::shared_ptr<Order> order_info)>;
 
     CallAuctionEngine(OrderBook& ob,
                       Price      prev_close,
@@ -34,6 +36,8 @@ public:
     int64_t getTotalBuy() const { return _tot_buy; }
     int64_t getTotalSell() const { return _tot_sell; }
     void print_orderbook_to_csv(const std::string& filename);
+
+    Price getRealPrice() const { return _real_px; }
 private:
     /* Fenwick helpers */
     void  fenwickAdd(int idx,bool buy,int64_t d);
@@ -57,9 +61,7 @@ private:
 
     Price    _predict_px{0};
     Quantity _predict_vol{0};
-    
-    // 原始输入订单ID到系统订单ID的映射
-    std::unordered_map<uint64_t, uint64_t> _input_id_to_system_id;
+    Price    _real_px{0};
 };
 
 } // namespace wangcai_orderbook_cpp 

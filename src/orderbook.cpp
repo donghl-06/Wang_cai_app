@@ -14,10 +14,16 @@
 #include <cmath>        // std::round, std::abs
 #include <vector>       // std::vector
 #include <cstdlib>      // std::abs
+#include <map>          // std::map
+#include <string>       // std::string
+#include <algorithm>    // std::sort
 
 namespace wangcai_orderbook_cpp {
 
-//构造函数
+// 在文件开头添加静态变量定义
+std::map<uint64_t, std::vector<Event>> OrderBook::whole_events;
+
+// 构造函数
 OrderBook::OrderBook(double hi, double lo, bool is_etf, ExecCallback cb)
     : _on_exec(std::move(cb))
 {   
@@ -37,6 +43,16 @@ OrderBook::OrderBook(double hi, double lo, bool is_etf, ExecCallback cb)
 
     _best_bid = _best_ask = -1; //最优价索引
     _prev_close_price = 0; // 前收盘价
+}
+
+// 插入事件到有序列表
+void OrderBook::insertEvent(const Event& event) {
+    // 时间过滤：只处理集合竞价时间段 09:15:00 到 09:25:00  
+    std::string time_part = event.datetime.substr(11); // 提取时间部分 HH:MM:SS
+    if (time_part < "09:15:00" ) {
+         return; // 跳过不在集合竞价时间段的事件
+    }  
+    whole_events[event.sort_key].push_back(event);
 }
 
 //链表维护

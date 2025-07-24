@@ -12,61 +12,8 @@
 #include <unordered_map>
 #include <map>
 
-// 事件结构
-struct Event {
-    std::string datetime;
-    std::string sym;
-    int64_t price;
-    int64_t size;
-    int64_t side;
-    int64_t ordertype;
-    int64_t orderid;
-    int64_t channelno;
-    int64_t seqno;
-    int64_t bizindex;
-    int64_t bidorderid;
-    int64_t askorderid;
-    int64_t tradeid;
-    std::string exectype;
-    std::string tradebsflag;
-    std::string source; // "ord" 或 "tra"
-    uint64_t sort_key; // 排序键：SZ用orderid，SH用bizindex
-    
-    Event(const std::string& dt, const std::string& symbol, int64_t p, int64_t sz, int64_t sd, 
-          int64_t ot, int64_t oid, int64_t ch, int64_t seq, int64_t biz, int64_t bid, int64_t ask, 
-          int64_t tid, const std::string& et, const std::string& tbf, const std::string& src) 
-        : datetime(dt), sym(symbol), price(p), size(sz), side(sd), ordertype(ot), orderid(oid),
-          channelno(ch), seqno(seq), bizindex(biz), bidorderid(bid), askorderid(ask), tradeid(tid),
-          exectype(et), tradebsflag(tbf), source(src) {
-        // 根据交易所设置排序键
-        if (symbol.substr(symbol.size() - 2) == "SZ") {
-            sort_key = static_cast<uint64_t>(orderid);
-        } else {
-            sort_key = static_cast<uint64_t>(bizindex);
-        }
-    }
-};
 
-// 全局有序列表
-static std::map<uint64_t, std::vector<Event>> sh_events; // 沪市事件，按bizindex排序
-static std::map<uint64_t, std::vector<Event>> sz_events; // 深市事件，按orderid排序
-
-// 插入事件到有序列表
-void insert_event(const Event& event) {
-    // 时间过滤：只处理集合竞价时间段 09:15:00 到 09:25:00
-    std::string time_part = event.datetime.substr(11); // 提取时间部分 HH:MM:SS
-    if (time_part < "09:15:00" || time_part >= "09:25:00") {
-         return; // 跳过不在集合竞价时间段的事件
-    }
-    
-    if (event.sym.substr(event.sym.size() - 2) == "SZ") {
-        // 深市：按orderid排序
-        sz_events[event.sort_key].push_back(event);
-    } else {
-        // 沪市：按bizindex排序  
-        sh_events[event.sort_key].push_back(event);
-    }
-}
+namespace wangcai_orderbook_cpp {
 
 // 工具函数：将价格字符串转为int64_t，*10000并四舍五入到100
 inline int64_t parse_price(const std::string& price_str) {
@@ -109,10 +56,18 @@ void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
             int64_t seqno = (seqno_str == "-9223372036854775808") ? 0 : std::stoi(seqno_str);
             int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoi(bizindex_str);
             
+            bool is_sz_mkt = (sym.size() >= 2 &&
+                              sym.substr(sym.size() - 2) == "SZ" &&
+                              ordertype != 2 && ordertype != 0);              // 非限价视为市价
+
+            if (is_sz_mkt) {
+                order_book.first_trade_px_[orderid] = 0;    // 只缓存，先不插事件
+            }
+
             // 创建并插入订单事件
             Event order_event(datetime, sym, price, size, side, ordertype, orderid, channelno, 
                             seqno, bizindex, -1, -1, -1, "", "", "ord");
-            insert_event(order_event);
+            OrderBook::insertEvent(order_event);
 
             // 创建订单对象用于引擎处理
             auto order = order_book.createOrder(
@@ -143,7 +98,12 @@ void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
 
 // 加载撤单数据
 void load_traders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
-    std::istringstream file(csv_file);
+    std::ifstream file(csv_file);  // ✅ 正确：用ifstream读取文件
+    if (!file.is_open()) {
+        std::cerr << "无法打开文件: " << csv_file << std::endl;
+        return;
+    }
+    
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
 
@@ -175,43 +135,41 @@ void load_traders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::O
             int64_t tradeid = tradeid_str.empty() ? 0 : std::stoi(tradeid_str);
             int64_t channelno = channelno_str.empty() ? 0 : std::stoi(channelno_str);
             int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoi(bizindex_str);
+            
+            // 记录最优成交价（买方记录最高价，卖方记录最低价）
+            if (bidorderid != 0) {
+                auto it = order_book.first_trade_px_.find(bidorderid);
+                if (it != order_book.first_trade_px_.end()) {
+                    if (it->second == 0 || price > it->second) {  // 买方：记录最高价
+                        it->second = price;
+                    }
+                }
+            }
+
+            if (askorderid != 0 && askorderid != bidorderid) {     // 避免同 ID 重复写
+                auto it = order_book.first_trade_px_.find(askorderid);
+                if (it != order_book.first_trade_px_.end()) {
+                    if ((it->second == 0 || price < it->second) && price != 0) {  // 卖方：记录最低价
+                        it->second = price;
+                    }
+                }
+            }
 
             // 创建并插入撤单事件
-            Event cancel_event(datetime, sym, price, size, -1, -1, tradeid, channelno, -1, bizindex, 
-                             bidorderid, askorderid, tradeid, exectype, tradebsflag, "tra");
-            insert_event(cancel_event);
-
+            if (exectype == "2") {
+                // std::cout << "[创建撤单事件] 时间=" << datetime 
+                //           << " bidorderid=" << bidorderid 
+                //           << " askorderid=" << askorderid << std::endl;
+              
+                Event cancel_event(datetime, sym, price, size, -1, -1, tradeid, channelno, -1, bizindex, 
+                                bidorderid, askorderid, tradeid, exectype, tradebsflag, "tra");
+                OrderBook::insertEvent(cancel_event);
+            }
         } catch (const std::exception& e) {
             std::cerr << "处理撤单时发生错误: " << e.what() << std::endl;
         }
     }
-}
 
-// 获取合并后的有序事件列表用于处理
-std::vector<Event> get_merged_events() {
-    std::vector<Event> merged_events;
-    
-    // 合并沪市事件
-    for (const auto& pair : sh_events) {
-        for (const auto& event : pair.second) {
-            merged_events.push_back(event);
-        }
-    }
-    
-    // 合并深市事件
-    for (const auto& pair : sz_events) {
-        for (const auto& event : pair.second) {
-            merged_events.push_back(event);
-        }
-    }
-    
-    // 按时间排序最终结果
-    std::sort(merged_events.begin(), merged_events.end(), 
-              [](const Event& a, const Event& b) {
-                  return a.datetime < b.datetime;
-              });
-    
-    return merged_events;
 }
 
 // 打印事件统计信息
@@ -219,7 +177,7 @@ void print_event_statistics() {
     std::cout << "=== 事件统计信息 ===" << std::endl;
     std::cout << "沪市事件数量: " << std::endl;
     size_t sh_total = 0;
-    for (const auto& pair : sh_events) {
+    for (const auto& pair : OrderBook::whole_events) {
         size_t count = pair.second.size();
         sh_total += count;
         if (count > 1) {
@@ -230,7 +188,7 @@ void print_event_statistics() {
     
     std::cout << "深市事件数量: " << std::endl;
     size_t sz_total = 0;
-    for (const auto& pair : sz_events) {
+    for (const auto& pair : OrderBook::whole_events) {
         size_t count = pair.second.size();
         sz_total += count;
         if (count > 1) {
@@ -280,8 +238,7 @@ void load_cstick_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
 
 // 清空事件列表
 void clear_events() {
-    sh_events.clear();
-    sz_events.clear();
+    OrderBook::clearEvents();
 }
 
 // 从文件读取数据的辅助函数
@@ -336,6 +293,7 @@ std::vector<Event> loadOrderData(const std::string& filename) {
     return orders;
 }
 
+// 加载撤单数据
 std::vector<Event> loadCancelData(const std::string& filename) {
     std::vector<Event> cancels;
     std::ifstream file(filename);
@@ -471,7 +429,7 @@ wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename) {
     
     return 0;
 }
-
+/*
 // 集合竞价验证主函数
 void validateCallAuction(const std::string& stock_code, const std::string& date) {
     std::cout << "========== 集合竞价验证程序 ==========" << std::endl;
@@ -643,3 +601,5 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
     // 清理事件列表
     clear_events();
 }
+*/
+} // namespace wangcai_orderbook_cpp

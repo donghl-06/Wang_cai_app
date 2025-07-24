@@ -7,7 +7,7 @@
 
 namespace wangcai_orderbook_cpp {
 
-/* 构造函数：初始化集合竞价引擎，绑定订单簿、前收盘价、交易所、回调等 */
+// 构造函数：初始化集合竞价引擎，绑定订单簿、前收盘价、交易所、回调等 
 CallAuctionEngine::CallAuctionEngine(OrderBook& ob, Price pc,
                                      std::string_view ex, PxCallback px_cb, CancelCallback cancel_cb)
     : ob_(ob), on_px_(std::move(px_cb)), on_cancel_(std::move(cancel_cb)),
@@ -36,7 +36,8 @@ inline void CallAuctionEngine::fenwickAdd(int idx,bool buy,int64_t d){
     }
 }
 
-/* 接收新订单：加入集合竞价队列，更新树状数组、订单簿、位置映射 */
+
+// 接收新订单：加入集合竞价队列，更新树状数组、订单簿、位置映射 
 void CallAuctionEngine::accept(std::shared_ptr<Order> od)
 {
     bool buy = od->direction==Direction::Buy;      // 判断买卖方向
@@ -52,27 +53,20 @@ void CallAuctionEngine::accept(std::shared_ptr<Order> od)
     od->level_iter=std::prev(side[idx].orders.end()); // 更新订单迭代器
     ob_.bucketAdd(idx,buy,od->volume); // 更新桶挂单量
     ob_._loc[od->order_id]={buy,idx,od->level_iter}; // 更新订单位置映射
-
-    // 如果订单的本地ID是数字，建立输入ID到系统ID的映射
-    try {
-        uint64_t input_id = std::stoull(od->order_local_id);
-        _input_id_to_system_id[input_id] = od->order_id;
-    } catch (const std::exception&) {
-        std::cout << "输入订单ID不是数字" << std::endl;
-        // 如果本地ID不是数字，忽略
-    }
-
     // 实时发布预测价
     publish();
 }
 
-/* 撤单：从集合竞价队列和订单簿移除订单，更新树状数组和映射 */
+// 撤单：从集合竞价队列和订单簿移除订单，更新树状数组和映射 
 void CallAuctionEngine::cancel(uint64_t oid)
 {
+    // std::cout << "[集合竞价撤单] 系统订单ID=" << oid;
+    
     auto it=ob_._loc.find(oid);
     if(it==ob_._loc.end()) {
         // 订单不存在，撤单失败
-        if(on_cancel_) on_cancel_(oid, false, "订单不存在");
+        std::cout << " -> 失败：订单不存在" << std::endl;
+        if(on_cancel_) on_cancel_(oid, false, "订单不存在", nullptr);
         return;
     }
     
@@ -89,29 +83,35 @@ void CallAuctionEngine::cancel(uint64_t oid)
     ob_.bucketSub(loc.idx,loc.is_buy,rem);
     ob_._loc.erase(it);
     
-    // 撤单成功回调
-    if(on_cancel_) on_cancel_(oid, true, "撤单成功");
+    // 撤单成功回调，传递订单信息
+    if(on_cancel_) on_cancel_(oid, true, "撤单成功", ord);
     
     // 实时发布预测价
     publish();
 }
 
-/* 通过输入订单ID撤单 */
+// 通过输入订单ID撤单 
 void CallAuctionEngine::cancel_by_input_id(uint64_t input_id)
 {
-    auto it = _input_id_to_system_id.find(input_id);
-    if (it != _input_id_to_system_id.end()) {
+    // std::cout << "[集合竞价撤单请求] 输入订单ID=" << input_id;
+    
+    auto it = ob_.input2sys_.find(input_id);          // 查共享表
+    if (it != ob_.input2sys_.end()) {
+        // std::cout << " -> 找到系统订单ID=" << it->second << std::endl;
         // 找到对应的系统订单ID，调用标准撤单方法
         cancel(it->second);
         // 从映射中移除
-        _input_id_to_system_id.erase(it);
+        ob_.input2sys_.erase(it);                     // 从共享表删
+        ob_.sys2input_.erase(it->second);             // 从共享表删
+        return;
     } else {
         // 输入订单ID不存在
-        if (on_cancel_) on_cancel_(input_id, false, "输入订单ID不存在");
+        std::cout << " -> 失败：输入订单ID不存在" << std::endl;
+        if (on_cancel_) on_cancel_(input_id, false, "输入订单ID不存在", nullptr);
     }
 }
 
-
+// 计算深圳市场集合竞价成交价 
  Price CallAuctionEngine::calcPredict_SZ()
  {
      // 若买卖盘一方无挂单，直接返回 0
@@ -242,6 +242,7 @@ Price CallAuctionEngine::calcPredict_SH()
     return ob_.idxToPx(bestIdx);
 }
 
+//发布集合竞价成交价
 void CallAuctionEngine::publish()
 {
     if(_exch=="SZ") _predict_px=calcPredict_SZ();
@@ -249,65 +250,120 @@ void CallAuctionEngine::publish()
     if(on_px_) on_px_(_predict_px,_predict_vol);
 }
 
-/* 应用集合竞价撮合结果，撮合成交并更新订单状态 */
-void CallAuctionEngine::applyAuctionTrade(int idx,uint64_t bu_tot,uint64_t sd_tot)
+// 应用集合竞价撮合结果，撮合成交并更新订单状态
+void CallAuctionEngine::applyAuctionTrade(int idx, uint64_t /*bu_tot*/, uint64_t /*sd_tot*/)
 {
-    // 1. 全额成交区：高于成交价的买单、低于成交价的卖单全部成交
-    for(int i=idx+1;i<int(ob_._buy.size());++i){
-        auto& b=ob_._buy[i];
-        while(!b.orders.empty()){
-            auto od=b.orders.front();
-            uint64_t q=od->remaining_volume();
-            od->traded_volume+=q; 
-            od->status=OrderStatus::Filled;
-            ob_.bucketSub(i,true,q); 
-            b.orders.pop_front();
+    Price     open_price  = _predict_px;         // 预测出的开盘价
+    Quantity  left_volume = _predict_vol;        // 剩余待撮合量
+    if (open_price == 0 || left_volume == 0) return;
+
+    auto log_exec = [&](uint64_t buy_sys, uint64_t sell_sys, Quantity q)
+    {
+        uint64_t buy_input  = ob_.sys2input_.count(buy_sys)  ? ob_.sys2input_[buy_sys]  : 0;
+        uint64_t sell_input = ob_.sys2input_.count(sell_sys) ? ob_.sys2input_[sell_sys] : 0;
+
+        if (ob_._on_exec)
+            ob_._on_exec(Execution(buy_input, sell_input, open_price, q));
+    };
+
+    /* === 1. 先取 >= 开盘价的买单，按交易所规则排序 === */
+    std::vector<std::shared_ptr<Order>> buy_q;
+    for (int i = ob_._buy.size() - 1; i >= idx; --i) {          // 价格递减
+        // 收集同价格的订单
+        std::vector<std::shared_ptr<Order>> same_price_orders;
+        for (auto& od : ob_._buy[i].orders) {
+            if (od->status == OrderStatus::Submitted || od->status == OrderStatus::PartFilled) {
+                same_price_orders.push_back(od);
+            }
         }
-    }
-    for(int i=0;i<idx;++i){
-        auto& b=ob_._sell[i];
-        while(!b.orders.empty()){
-            auto od=b.orders.front();
-            uint64_t q=od->remaining_volume();
-            od->traded_volume+=q; 
-            od->status=OrderStatus::Filled;
-            ob_.bucketSub(i,false,q); 
-            b.orders.pop_front();
+        
+        // 根据交易所类型排序同价格订单
+        if (_exch == "SZ") {
+            // 深圳：按orderid排序（时间优先）
+            std::sort(same_price_orders.begin(), same_price_orders.end(),
+                [](const std::shared_ptr<Order>& a, const std::shared_ptr<Order>& b) {
+                    uint64_t a_id = std::stoull(a->order_local_id);
+                    uint64_t b_id = std::stoull(b->order_local_id);
+                    return a_id < b_id;
+                });
+        } else {
+            // 上海：按bizindex排序（时间优先）
+            std::sort(same_price_orders.begin(), same_price_orders.end(),
+                [](const std::shared_ptr<Order>& a, const std::shared_ptr<Order>& b) {
+                    return a->bizindex < b->bizindex;
+                });
+        }
+        
+        // 添加到买单队列
+        for (auto& od : same_price_orders) {
+            buy_q.push_back(od);
         }
     }
 
-    // 2. 本价桶撮合：买卖双方剩余量依次撮合，部分成交/全成
-    auto& buy_bkt = ob_._buy[idx];
-    auto& sell_bkt= ob_._sell[idx];
-    // 计算本价桶买卖剩余量
-    uint64_t bu = bu_tot - _bit_buy.prefixSum(idx-1);  // 本价及以上买量
-    uint64_t sd = _bit_sell.prefixSum(idx);            // 本价及以下卖量
-    uint64_t buy_left  = (bu + buy_bkt.vol_sum)  - sd; // 本价买方剩余
-    uint64_t sell_left = (sd + sell_bkt.vol_sum) - bu; // 本价卖方剩余
+    /* === 2. 再取 <= 开盘价的卖单，按交易所规则排序 === */
+    std::vector<std::shared_ptr<Order>> sell_q;
+    for (int i = 0; i <= idx; ++i) {                            // 价格递增
+        // 收集同价格的订单
+        std::vector<std::shared_ptr<Order>> same_price_orders;
+        for (auto& od : ob_._sell[i].orders) {
+            if (od->status == OrderStatus::Submitted || od->status == OrderStatus::PartFilled) {
+                same_price_orders.push_back(od);
+            }
+        }
+        
+        // 根据交易所类型排序同价格订单
+        if (_exch == "SZ") {
+            // 深圳：按orderid排序（时间优先）
+            std::sort(same_price_orders.begin(), same_price_orders.end(),
+                [](const std::shared_ptr<Order>& a, const std::shared_ptr<Order>& b) {
+                    uint64_t a_id = std::stoull(a->order_local_id);
+                    uint64_t b_id = std::stoull(b->order_local_id);
+                    return a_id < b_id;
+                });
+        } else {
+            // 上海：按bizindex排序（时间优先）
+            std::sort(same_price_orders.begin(), same_price_orders.end(),
+                [](const std::shared_ptr<Order>& a, const std::shared_ptr<Order>& b) {
+                    return a->bizindex < b->bizindex;
+                });
+        }
+        
+        // 添加到卖单队列
+        for (auto& od : same_price_orders) {
+            sell_q.push_back(od);
+        }
+    }
 
-    // 先撮合卖方
-    while(buy_left>0 && !sell_bkt.orders.empty()){
-        auto s=sell_bkt.orders.front();
-        uint64_t q=std::min<uint64_t>(s->remaining_volume(),buy_left);
-        s->traded_volume+=q; 
-        ob_.bucketSub(idx,false,q); 
-        buy_left-=q;
-        s->status = (s->remaining_volume()?OrderStatus::PartFilled:OrderStatus::Filled);
-        if(s->status==OrderStatus::Filled) sell_bkt.orders.pop_front();
+    // 撮合逻辑保持不变
+    size_t bi = 0, si = 0;
+    while (left_volume > 0 && bi < buy_q.size() && si < sell_q.size())
+    {
+        auto  buy  = buy_q [bi];
+        auto  sell = sell_q[si];
+
+        Quantity trade_qty = std::min({ buy->remaining_volume(),
+                                        sell->remaining_volume(),
+                                        left_volume                         });
+
+        /* 执行成交 */
+        buy ->traded_volume  += trade_qty;
+        sell->traded_volume += trade_qty;
+        left_volume          -= trade_qty;
+        ob_.bucketSub(ob_.pxToIdx(buy ->price), true , trade_qty);
+        ob_.bucketSub(ob_.pxToIdx(sell->price), false, trade_qty);
+
+        buy ->status  = (buy ->remaining_volume()  == 0) ? OrderStatus::Filled : OrderStatus::PartFilled;
+        sell->status = (sell->remaining_volume() == 0) ? OrderStatus::Filled : OrderStatus::PartFilled;
+
+        log_exec(buy->order_id, sell->order_id, trade_qty);
+
+        if (buy ->remaining_volume() == 0) ++bi;
+        if (sell->remaining_volume() == 0) ++si;
     }
-    // 再撮合买方
-    while(sell_left>0 && !buy_bkt.orders.empty()){
-        auto b=buy_bkt.orders.front();
-        uint64_t q=std::min<uint64_t>(b->remaining_volume(),sell_left);
-        b->traded_volume+=q; 
-        ob_.bucketSub(idx,true,q); 
-        sell_left-=q;
-        b->status = (b->remaining_volume()?OrderStatus::PartFilled:OrderStatus::Filled);
-        if(b->status==OrderStatus::Filled) buy_bkt.orders.pop_front();
-    }
+    /* 剩余 buy_q / sell_q 自动留在桶里，进入连续竞价 */
 }
 
-/* 结算：集合竞价结束，撮合成交，清空树状数组和累计量 */
+// 结算：集合竞价结束，撮合成交，清空树状数组和累计量
 void CallAuctionEngine::settle()
 {
     // 先计算最终成交价
@@ -322,9 +378,11 @@ void CallAuctionEngine::settle()
         return;
     }
     int idx=ob_.pxToIdx(px);
+    
     // 应用撮合
     applyAuctionTrade(idx,_tot_buy,_tot_sell);
-    // 清空树状数组和累计量，准备下一轮
+    
+    // 清空树状数组和累计量
     _bit_buy=Fenwick{}; 
     _bit_sell=Fenwick{};
     _tot_buy=_tot_sell=0;

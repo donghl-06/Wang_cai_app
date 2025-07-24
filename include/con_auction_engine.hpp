@@ -6,15 +6,23 @@
 #include "orderbook.h"
 #include <functional>
 #include <unordered_map>
+#include "OrderLoader.h"
 
 namespace wangcai_orderbook_cpp {
 
+// 市场类型枚举
+enum class MarketType {
+    SH,  // 上海市场
+    SZ   // 深圳市场
+};
+
 class ConAuctionEngine {
 public:
-    using CancelCallback = std::function<void(uint64_t order_id, bool success, const std::string& reason)>;
+    using CancelCallback = std::function<void(uint64_t order_id, bool success, const std::string& reason, 
+                                            std::shared_ptr<Order> order_info)>;
     
-    explicit ConAuctionEngine(OrderBook& ob, CancelCallback cancel_cb = nullptr)
-        : ob_(ob), on_cancel_(cancel_cb) {}
+    explicit ConAuctionEngine(OrderBook& ob, MarketType market_type, CancelCallback cancel_cb = nullptr)
+        : ob_(ob), market_type_(market_type), on_cancel_(cancel_cb) {}
     
     void accept(std::shared_ptr<Order>);
     bool cancel(uint64_t oid);
@@ -22,11 +30,14 @@ public:
 
 private:
     void match(std::shared_ptr<Order>&);
+    void match_sh(std::shared_ptr<Order>&);  // 上海市场撮合逻辑
+    void match_sz(std::shared_ptr<Order>&);  // 深圳市场撮合逻辑
+    void accept_sh(std::shared_ptr<Order> od);  // 上海市场订单处理
+    void accept_sz(std::shared_ptr<Order> od);  // 深圳市场订单处理
     OrderBook& ob_;
+    MarketType market_type_;  // 市场类型
     CancelCallback on_cancel_;
     
-    // 原始输入订单ID到系统订单ID的映射
-    std::unordered_map<uint64_t, uint64_t> _input_id_to_system_id;
 };
 
 } // namespace wangcai_orderbook_cpp 

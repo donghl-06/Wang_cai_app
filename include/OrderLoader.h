@@ -1,14 +1,11 @@
-#ifndef ORDERLOADER_H
-#define ORDERLOADER_H
-
+#pragma once
 #include "orderbook.h"
 #include "call_auction_engine.hpp"
 #include "con_auction_engine.hpp"
 #include <string>
 #include <vector>
 
-// 事件结构（前向声明）
-struct Event;
+namespace wangcai_orderbook_cpp {
 
 // 基础数据加载函数
 void load_orders_from_csv(const std::string& filename, wangcai_orderbook_cpp::OrderBook& order_book);
@@ -17,7 +14,7 @@ void load_cstick_from_csv(const std::string& filename, wangcai_orderbook_cpp::Or
 
 // 有序事件管理函数
 void insert_event(const Event& event);
-std::vector<Event> get_merged_events();
+
 void print_event_statistics();
 void clear_events();
 
@@ -28,4 +25,4 @@ wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename);
 wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename);
 void validateCallAuction(const std::string& stock_code, const std::string& date);
 
-#endif // ORDERLOADER_H
+} // namespace wangcai_orderbook_cpp

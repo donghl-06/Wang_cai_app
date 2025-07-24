@@ -76,7 +76,8 @@ int main()
     
     /* 3) 连续竞价阶段 (09:30-) */
     std::cout << "\n--- 连续竞价阶段 ---" << '\n';
-    ConAuctionEngine con_engine(ob);
+    // 使用与集合竞价相同的市场类型（SH）
+    ConAuctionEngine con_engine(ob, MarketType::SH);
     
     // 新的限价单
     std::cout << "添加新限价买单..." << '\n';

@@ -1,93 +1,267 @@
 // === src/con_auction_engine.cpp ===
 #include "../include/con_auction_engine.hpp"
 #include <algorithm>
+#include <iostream>
 
 namespace wangcai_orderbook_cpp {
+
+
+// 连续竞价订单接收函数
+void ConAuctionEngine::accept(std::shared_ptr<Order> od)
+{
+    if (market_type_ == MarketType::SH) {
+        accept_sh(od);
+    } else {
+        accept_sz(od);
+    }
+}
+
+// 上海市场订单处理
+void ConAuctionEngine::accept_sh(std::shared_ptr<Order> od)
+{
+    bool buy = od->direction == Direction::Buy;
+    int idx = ob_.pxToIdx(od->price);
+    ob_._omap[od->order_id] = od;
+    
+    // 限价单先撮合
+    match(od);
+    if (od->remaining_volume() == 0) return;
+
+    // 剩余部分挂入盘口
+    auto& side = buy ? ob_._buy : ob_._sell;
+    side[idx].orders.push_back(od);
+    od->level_iter = std::prev(side[idx].orders.end());
+    ob_.bucketAdd(idx, buy, od->remaining_volume());
+    ob_._loc[od->order_id] = { buy, idx, od->level_iter };
+
+
+}
+
+// 深圳市场订单处理
+void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
+{
+    bool buy = od->direction == Direction::Buy;
+    // 或者转换为字符串打印
+        if(od->order_local_id == "1282779"){
+        std::cout<<"od->broker"<<od->broker<<std::endl;
+        std::cout << "od->order_type: " << 
+        (od->order_type == OrderType::Market ? "Market" :
+        od->order_type == OrderType::Limit ? "Limit" :
+        od->order_type == OrderType::BestOwn ? "BestOwn" : "Unknown") 
+        << std::endl;
+        std::cout<<"od->order_id"<<od->order_id<<std::endl;
+        std::cout<<"od->order_local_id"<<od->order_local_id<<std::endl;
+    }
+    //深市：市价 / 本方最优 保护价转换 
+    if (od->broker == "BRK" &&
+        (od->order_type == OrderType::Market || od->order_type == OrderType::BestOwn)) {
+        
+        uint64_t ext_id = std::stoull(od->order_local_id);
+        OrderType orig = od->order_type;
+        Price px = 0;
+        if (orig == OrderType::Market) {
+            // 先看历史成交价格
+            if (auto it = ob_.first_trade_px_.find(ext_id); it != ob_.first_trade_px_.end())
+                px = it->second;
+            // 无成交 → 对手最优
+            if (px == 0) px = buy ? ob_.bestAsk() : ob_.bestBid();
+            // 市场空簿 → 涨跌停兜底
+            if (px == 0) px = buy ? ob_._upper : ob_._lower;
+        }
+        else if (orig == OrderType::BestOwn) {
+            // 己方最优
+            px = buy ? ob_.bestBid() : ob_.bestAsk();
+            // 己方空簿 → 对手最优
+            if (px == 0) px = buy ? ob_.bestAsk() : ob_.bestBid();
+            if (px == 0) px = buy ? ob_._upper : ob_._lower;
+        }
+        if(od->order_local_id == "1282779"){
+            std::cout<<"px"<<px<<std::endl;
+        }
+        // tick 对齐
+        if (px < ob_._lower) px = ob_._lower;
+        if (px > ob_._upper) px = ob_._upper;
+        Price off = (px - ob_._lower) % ob_._tick;
+        px -= off;   // 向下对齐
+
+        od->price      = px;
+        od->order_type = OrderType::Limit;
+    }
+
+    // 撮合
+    match(od);
+    if (od->remaining_volume() == 0) return;
+
+    // 剩余挂簿
+    int idx = ob_.pxToIdx(od->price);  // ← 现在才算 idx，确保用最终价
+    auto& side = buy ? ob_._buy : ob_._sell;
+    side[idx].orders.push_back(od);
+    od->level_iter = std::prev(side[idx].orders.end());
+    ob_.bucketAdd(idx, buy, od->remaining_volume());
+    ob_._loc[od->order_id] = { buy, idx, od->level_iter }; // 记录订单位置
+}
 
 // 连续竞价核心撮合函数
 void ConAuctionEngine::match(std::shared_ptr<Order>& inc)
 {
-    bool buy = inc->direction == Direction::Buy; // 判断是买单还是卖单
-    auto& opp = buy ? ob_._sell : ob_._buy;      // 对手方盘口（买单撮合卖盘，卖单撮合买盘）
-    int& best = buy ? ob_._best_ask : ob_._best_bid; // 对手方最优价索引
+    // 根据市场类型调用对应的撮合逻辑
+    if (market_type_ == MarketType::SH) {
+        match_sh(inc);
+    } else {
+        match_sz(inc);
+    }
+}
 
-    // 只要还有剩余未成交量且对手方有挂单
+// 上海市场撮合逻辑
+void ConAuctionEngine::match_sh(std::shared_ptr<Order>& inc)
+{
+    bool buy = inc->direction == Direction::Buy;
+    auto& opp = buy ? ob_._sell : ob_._buy;
+    int& best = buy ? ob_._best_ask : ob_._best_bid;
+
+    // 撮合规则：价格优先、时间优先
     while (inc->remaining_volume() > 0 && best != -1) {
-        Price px = ob_._lower + best * ob_._tick; // 计算当前对手方最优价
-        // 买单价格低于对手方最优卖价，或卖单价格高于对手方最优买价，则不能成交，退出
+        // 计算当前最优对手价
+        Price px = ob_._lower + best * ob_._tick;
+        // 买单价格低于对手价/卖单价格高于对手价则无法成交，退出
         if ((buy && inc->price < px) || (!buy && inc->price > px)) break;
-        auto& bkt = opp[best]; // 取出对手方该价位的桶
+        
+        auto& bkt = opp[best];
 
-        // 只要还有剩余未成交量且该价位有挂单
+        // 遍历该价位下的所有对手方订单（时间优先）
         while (inc->remaining_volume() > 0 && !bkt.orders.empty()) {
-            auto oppo = bkt.orders.front(); // 取出对手方队首订单
-            Quantity q = std::min(inc->remaining_volume(), oppo->remaining_volume()); // 成交量为两者剩余量较小值
-            inc->traded_volume += q;   // 更新主动方已成交量
-            oppo->traded_volume += q;  // 更新被动方已成交量
-            ob_.bucketSub(best, !buy, q); // 桶减量（对手方）
+            auto oppo = bkt.orders.front();
+            
+            // 检查对手订单是否有效
+            if (oppo->remaining_volume() == 0) {
+                bkt.orders.pop_front();
+                ob_._loc.erase(oppo->order_id);
+                ob_._omap.erase(oppo->order_id);
+                continue;
+            }
 
-            // 撮合回调，通知成交
+            // 计算可撮合量
+            Quantity q = std::min(inc->remaining_volume(), oppo->remaining_volume());
+            if (q == 0) break;
+
+            // 执行成交
+            inc->traded_volume += q;
+            oppo->traded_volume += q;
+            ob_.bucketSub(best, !buy, q);
+
+            // 成交回调
             if (ob_._on_exec) {
                 Execution ex(
-                    buy ? inc->order_id : oppo->order_id,   // 买方订单ID
-                    buy ? oppo->order_id : inc->order_id,   // 卖方订单ID
-                    px, q                                   // 成交价、成交量
-                );
+                    ob_.sys2input_.count(buy ? inc->order_id : oppo->order_id) ? 
+                        ob_.sys2input_[buy ? inc->order_id : oppo->order_id] : 
+                        (buy ? inc->order_id : oppo->order_id),
+                    ob_.sys2input_.count(buy ? oppo->order_id : inc->order_id) ? 
+                        ob_.sys2input_[buy ? oppo->order_id : inc->order_id] : 
+                        (buy ? oppo->order_id : inc->order_id),
+                    px, q);
                 ob_._on_exec(ex);
             }
 
-            // 如果对手方订单已全部成交，状态置为已成交并从队列和映射中移除
+            // 对手方订单完全成交，移出订单簿
             if (oppo->remaining_volume() == 0) {
                 oppo->status = OrderStatus::Filled;
                 bkt.orders.pop_front();
                 ob_._loc.erase(oppo->order_id);
                 ob_._omap.erase(oppo->order_id);
             } else {
-                // 否则置为部分成交
                 oppo->status = OrderStatus::PartFilled;
             }
         }
-        // 更新最优价索引（可能已被摘空）
+        
+        // bucketSub会自动更新best，不需要手动重新赋值
+        // 但需要重新获取当前最优价
         best = buy ? ob_._best_ask : ob_._best_bid;
     }
-    // 主动方订单状态更新
+
+    // 更新本方订单状态
     if (inc->remaining_volume() == 0)
         inc->status = OrderStatus::Filled;
-    else if (inc->traded_volume)
+    else if (inc->traded_volume > 0)
         inc->status = OrderStatus::PartFilled;
 }
 
-// 连续竞价订单接收函数
-void ConAuctionEngine::accept(std::shared_ptr<Order> od)
+// 深圳市场撮合逻辑
+void ConAuctionEngine::match_sz(std::shared_ptr<Order>& inc)
 {
-    bool buy = od->direction == Direction::Buy; // 判断买卖方向
-    int idx = ob_.pxToIdx(od->price);           // 价格转桶索引
-    ob_._omap[od->order_id] = od;               // 系统订单ID映射
+    bool buy = inc->direction == Direction::Buy;
+    auto& opp = buy ? ob_._sell : ob_._buy;
+    int& best = buy ? ob_._best_ask : ob_._best_bid;
 
-    // 市价单直接撮合，剩余未成交部分直接撤销
-    if (od->order_type == OrderType::Market) {
-        match(od);
-        if (od->remaining_volume()) od->status = OrderStatus::Cancelled;
-        return;
+    // 撮合规则：价格优先、时间优先
+    while (inc->remaining_volume() > 0 && best != -1) {
+        // 计算当前最优对手价
+        Price px = ob_._lower + best * ob_._tick;
+        // 买单价格低于对手价/卖单价格高于对手价则无法成交，退出
+        if ((buy && inc->price < px) || (!buy && inc->price > px)) break;
+        
+        auto& bkt = opp[best];
+
+        // 遍历该价位下的所有对手方订单（时间优先）
+        while (inc->remaining_volume() > 0 && !bkt.orders.empty()) {
+            auto oppo = bkt.orders.front();
+            
+            // 检查对手订单是否有效
+            if (oppo->remaining_volume() == 0) {
+                bkt.orders.pop_front();
+                ob_._loc.erase(oppo->order_id);
+                ob_._omap.erase(oppo->order_id);
+                continue;
+            }
+
+            // 计算可撮合量
+            Quantity q = std::min(inc->remaining_volume(), oppo->remaining_volume());
+            if (q == 0) break;
+
+            // 执行成交
+            inc->traded_volume += q;
+            oppo->traded_volume += q;
+            ob_.bucketSub(best, !buy, q);
+
+            // 成交回调
+            if (ob_._on_exec) {
+                // 安全获取输入订单ID
+                uint64_t buy_input_id = buy ? inc->order_id : oppo->order_id;
+                uint64_t sell_input_id = buy ? oppo->order_id : inc->order_id;
+                
+                auto buy_it = ob_.sys2input_.find(buy_input_id);
+                if (buy_it != ob_.sys2input_.end()) {
+                    buy_input_id = buy_it->second;
+                }
+                
+                auto sell_it = ob_.sys2input_.find(sell_input_id);
+                if (sell_it != ob_.sys2input_.end()) {
+                    sell_input_id = sell_it->second;
+                }
+                
+                Execution ex(buy_input_id, sell_input_id, px, q);
+                ob_._on_exec(ex);
+            }
+
+            // 对手方订单完全成交，移出订单簿
+            if (oppo->remaining_volume() == 0) {
+                oppo->status = OrderStatus::Filled;
+                bkt.orders.pop_front();
+                ob_._loc.erase(oppo->order_id);
+                ob_._omap.erase(oppo->order_id);
+            } else {
+                oppo->status = OrderStatus::PartFilled;
+            }
+        }
+        
+        // bucketSub会自动更新best，重新获取当前最优价
+        best = buy ? ob_._best_ask : ob_._best_bid;
     }
-    // 限价单先撮合
-    match(od);
-    if (od->remaining_volume() == 0) return; // 全部成交则不挂入盘口
 
-    // 剩余部分挂入盘口
-    auto& side = buy ? ob_._buy : ob_._sell;
-    side[idx].orders.push_back(od); // 加入对应价位队列
-    od->level_iter = std::prev(side[idx].orders.end()); // 保存队列迭代器
-    ob_.bucketAdd(idx, buy, od->remaining_volume());    // 桶加量
-    ob_._loc[od->order_id] = { buy, idx, od->level_iter }; // 位置映射
-
-    // 如果订单的本地ID是数字，建立输入ID到系统ID的映射
-    try {
-        uint64_t input_id = std::stoull(od->order_local_id);
-        _input_id_to_system_id[input_id] = od->order_id;
-    } catch (const std::exception&) {
-        // 如果本地ID不是数字，忽略
-    }
+    // 更新本方订单状态
+    if (inc->remaining_volume() == 0)
+        inc->status = OrderStatus::Filled;
+    else if (inc->traded_volume > 0)
+        inc->status = OrderStatus::PartFilled;
 }
 
 // 撤单（通过系统订单ID）
@@ -96,7 +270,8 @@ bool ConAuctionEngine::cancel(uint64_t oid)
     auto it = ob_._loc.find(oid);
     if (it == ob_._loc.end()) {
         // 订单不存在，撤单失败
-        if (on_cancel_) on_cancel_(oid, false, "订单不存在");
+        if (on_cancel_) on_cancel_(oid, false, "订单不存在", nullptr);
+        // std::cout << "撤单失败：订单不存在" << std::endl;
         return false;
     }
 
@@ -107,10 +282,14 @@ bool ConAuctionEngine::cancel(uint64_t oid)
     // 已撤销或已成交的订单不能重复撤单
     if (ord->status == OrderStatus::Cancelled || ord->status == OrderStatus::Filled) {
         std::string reason = (ord->status == OrderStatus::Cancelled) ? "订单已撤销" : "订单已成交";
-        if (on_cancel_) on_cancel_(oid, false, reason);
+        if (on_cancel_) on_cancel_(oid, false, reason, nullptr);
+        // std::cout << "撤单失败：" << reason << std::endl;
         return false;
     }
 
+    // 在实际撤单前先记录撤单信息（现在还能获取到订单信息）
+    // 但我们需要通过回调通知外部记录撤单，因为这里没有直接访问BacktestEngine的方法
+    
     Quantity rem = ord->remaining_volume(); // 剩余未成交量
     side[loc.idx].orders.erase(loc.it);     // 从队列中移除
     ob_.bucketSub(loc.idx, loc.is_buy, rem); // 桶减量
@@ -118,8 +297,9 @@ bool ConAuctionEngine::cancel(uint64_t oid)
     ob_._loc.erase(it);                     // 位置映射移除
     ob_._omap.erase(oid);                   // 系统ID映射移除
 
-    // 撤单成功回调
-    if (on_cancel_) on_cancel_(oid, true, "撤单成功");
+    // 撤单成功回调，传递订单信息
+    if (on_cancel_) on_cancel_(oid, true, "撤单成功", ord);
+    // std::cout << "撤单成功" << std::endl;
 
     return true;
 }
@@ -127,16 +307,18 @@ bool ConAuctionEngine::cancel(uint64_t oid)
 // 撤单（通过输入订单ID）
 bool ConAuctionEngine::cancel_by_input_id(uint64_t input_id)
 {
-    auto it = _input_id_to_system_id.find(input_id);
-    if (it != _input_id_to_system_id.end()) {
+    auto it = ob_.input2sys_.find(input_id);          // 查共享表
+    if (it != ob_.input2sys_.end()) {
         // 找到对应的系统订单ID，调用标准撤单方法
         bool result = cancel(it->second);
         // 从映射中移除
-        _input_id_to_system_id.erase(it);
+        ob_.input2sys_.erase(it);                     // 从共享表删
+        ob_.sys2input_.erase(it->second);             // 从共享表删
         return result;
     } else {
         // 输入订单ID不存在
-        if (on_cancel_) on_cancel_(input_id, false, "输入订单ID不存在");
+        if (on_cancel_) on_cancel_(input_id, false, "输入订单ID不存在", nullptr);
+        // std::cout << "撤单失败：输入订单ID不存在" << std::endl;
         return false;
     }
 }

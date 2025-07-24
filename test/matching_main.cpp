@@ -32,14 +32,7 @@ inline int64_t parse_price(const std::string& price_str) {
 }
 
  using namespace wangcai_orderbook_cpp;
- // 事件结构体
- struct Event {
-    std::string datetime, sym;
-    int64_t price, size, side, ordertype, orderid;
-    int64_t channelno, seqno, bizindex, bidorderid, askorderid, tradeid;
-    std::string exectype, tradebsflag, source;
-    uint64_t sort_key;
-};
+
  // --- 工具：提取 "HH:MM:SS" 并与常量比较 -----------------------------------
  static inline std::string time_part(const std::string& dt)
  {
@@ -81,7 +74,9 @@ inline int64_t parse_price(const std::string& price_str) {
      ob.setExchange(sym.substr(sym.size() - 2));
  
      CallAuctionEngine call_engine(ob, prev_close, ob.getExchange());
-     ConAuctionEngine  con_engine (ob);
+     // 根据交易所类型创建对应的连续竞价引擎
+     MarketType market_type = (ob.getExchange() == "SH") ? MarketType::SH : MarketType::SZ;
+     ConAuctionEngine con_engine(ob, market_type);
  
      // ----------- 读入全部事件 --------------------------------------------
      clear_events();

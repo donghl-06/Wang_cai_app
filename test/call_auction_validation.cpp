@@ -2,6 +2,7 @@
 #include "OrderLoader.h"
 
 using namespace std;
+using namespace wangcai_orderbook_cpp;  // 添加这行
 
 int main() {
     cout << "=== 集合竞价验证测试程序 ===" << endl;

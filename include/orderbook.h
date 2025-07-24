@@ -15,6 +15,41 @@
 #include <map>
 
 namespace wangcai_orderbook_cpp {
+// 事件结构
+struct Event {
+    std::string datetime;
+    std::string sym;
+    int64_t price;
+    int64_t size;
+    int64_t side;
+    int64_t ordertype;
+    int64_t orderid;
+    int64_t channelno;
+    int64_t seqno;
+    int64_t bizindex;
+    int64_t bidorderid;
+    int64_t askorderid;
+    int64_t tradeid;
+    std::string exectype;
+    std::string tradebsflag;
+    std::string source; // "ord" 或 "tra"
+    uint64_t sort_key; // 排序键：SZ用orderid，SH用bizindex
+    
+    Event(const std::string& dt, const std::string& symbol, int64_t p, int64_t sz, int64_t sd, 
+          int64_t ot, int64_t oid, int64_t ch, int64_t seq, int64_t biz, int64_t bid, int64_t ask, 
+          int64_t tid, const std::string& et, const std::string& tbf, const std::string& src) 
+        : datetime(dt), sym(symbol), price(p), size(sz), side(sd), ordertype(ot), orderid(oid),
+          channelno(ch), seqno(seq), bizindex(biz), bidorderid(bid), askorderid(ask), tradeid(tid),
+          exectype(et), tradebsflag(tbf), source(src) {
+        // 根据交易所设置排序键
+        if (symbol.substr(symbol.size() - 2) == "SZ") {
+            sort_key = static_cast<uint64_t>(orderid);
+        } else {
+            sort_key = static_cast<uint64_t>(bizindex);
+        }
+    }
+};
+
 
 class CallAuctionEngine;   // friend
 class ConAuctionEngine;    // friend
@@ -23,24 +58,71 @@ class OrderBook {
     friend class CallAuctionEngine;
     friend class ConAuctionEngine;
 public:
-
+    // 定义回调函数类型
     using ExecCallback = std::function<void(const Execution&)>;
     std::string getExchange() const { return _exchange; }
     OrderBook(double hi, double lo, bool is_etf, ExecCallback cb = nullptr);
 
+    // 用于 SZ 市价单特殊逻辑的共享表
+    // ① 外部 ID  ↦  最优价成交（0 表示尚未出现成交）
+    std::unordered_map<uint64_t, Price> first_trade_px_;
+
+    // ② 外部 ID  ↦  "替换后真实价格"（只有 ordtype 1/3 被限价化的才会记录）
+    std::unordered_map<uint64_t, Price> real_mkt_orders_;
+
+    // （可选）简单的 getter，供外部只读
+    const auto& firstTradePx()   const { return first_trade_px_;   }
+    const auto& realMktOrders()  const { return real_mkt_orders_;  }   
+
     //查询
     [[nodiscard]] Price bestBid() const;
     [[nodiscard]] Price bestAsk() const;
+    
+    // 获取原始订单ID（如果存在映射的话）
+    uint64_t getOriginalOrderId(uint64_t system_id) const {
+        auto it = sys2input_.find(system_id);
+        return (it != sys2input_.end()) ? it->second : system_id;
+    }
+    
+    // 获取订单信息
+    std::shared_ptr<Order> getOrder(uint64_t order_id) const {
+        auto it = _omap.find(order_id);
+        return (it != _omap.end()) ? it->second : nullptr;
+    }
 
     // 工厂：统一通过对象池生成订单 
     template<typename... Args>
-    std::shared_ptr<Order> createOrder(Args&&... args) {
-        return _order_pool.acquire(std::forward<Args>(args)...);
-     }
+    std::shared_ptr<Order> createOrder(Args&&... args)
+    {
+        // 1) 从对象池拿一块内存并原地构造
+        auto od = _order_pool.acquire(std::forward<Args>(args)...);
+
+        //
+        // ① 字符串 → 系统 ID（无论是否全数字都写）
+        sys2str_[od->order_id] = od->order_local_id;
+        str2sys_[od->order_local_id] = od->order_id;
+
+        // ② 如果字符串是纯数字，再额外写 uint64_t ↔ uint64_t
+        char* endptr = nullptr;
+        uint64_t num = std::strtoull(od->order_local_id.c_str(), &endptr, 10);
+        if (endptr != od->order_local_id.c_str() && *endptr == '\0') {
+            if (num != 0) { // 0 号单直接忽略
+                input2sys_[num] = od->order_id;
+                sys2input_[od->order_id] = num;
+            }
+        }
+        /* -------------------------------------- */
+        return od;
+    }
     
     // 设置前收盘价和交易所
     void setPrevClosePrice(Price price) { _prev_close_price = price; }
     void setExchange(const std::string& exchange) { _exchange = exchange; }
+    // 全局有序列表
+    static std::map<uint64_t, std::vector<Event>> whole_events; // 全局事件列表
+    const std::map<uint64_t, std::vector<Event>>& getEvents() const { return whole_events; }
+    static void clearEvents() { whole_events.clear(); }
+    static void insertEvent(const Event& event);
 
 private:
     //桶结构体
@@ -70,6 +152,14 @@ private:
     std::unordered_map<uint64_t, Locator> _loc;   // 订单→位置
     std::unordered_map<uint64_t, std::shared_ptr<Order>> _omap;  //订单映射表 - 依赖对象池
     ExecCallback _on_exec;  //成交回调函数
+
+    // >>> 共享：原始输入ID  →  系统ID  (盘前+盘中都用)
+    std::unordered_map<uint64_t, uint64_t> input2sys_;
+    // 系统id → 原始输入id
+    std::unordered_map<uint64_t, uint64_t> sys2input_;
+    // 新增：支持字符串单号（以后策略想用 “MR_0001” 也 OK）
+    std::unordered_map<std::string, uint64_t> str2sys_;
+    std::unordered_map<uint64_t, std::string> sys2str_;
 
     //订单价格转换为桶索引
     int  pxToIdx(Price p) const { 
