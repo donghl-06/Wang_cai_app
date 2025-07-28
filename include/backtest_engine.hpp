@@ -3,6 +3,7 @@
 #include "orderbook.h"
 #include "call_auction_engine.hpp"
 #include "con_auction_engine.hpp"
+#include "close_auction_engine.hpp"
 #include "OrderLoader.h"
 #include <queue>
 #include <functional>
@@ -147,6 +148,8 @@ private:
     std::unique_ptr<OrderBook> orderbook_;
     std::unique_ptr<CallAuctionEngine> call_engine_;
     std::unique_ptr<ConAuctionEngine> con_engine_;
+    std::unique_ptr<CloseAuctionEngine> close_engine_; // 收盘集合竞价引擎
+    
     
     // 策略管理
     std::vector<std::shared_ptr<Strategy>> strategies_;
@@ -158,6 +161,7 @@ private:
     
     // 事件数据
     bool continuous_mode_;
+    bool closing_mode_ = false;                       // 是否进入收盘集合竞价阶段
     std::string current_datetime_;  // 当前事件时间
     std::string last_brk_datetime_; // 最后一条BRK事件时间（连续竞价成交回调用）
     

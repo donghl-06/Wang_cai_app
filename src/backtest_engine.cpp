@@ -68,6 +68,8 @@ void BacktestEngine::initialize() {
             //           << " 卖方ID=" << ex.sell_order_id << std::endl;
             
             market_data_queue_.push(data);
+            // 更新最新成交价（供后续集合竞价使用）
+            orderbook_->setLastTradePrice(ex.price);
             if (market_data_callback_) {
                 market_data_callback_(data);
             }
@@ -110,8 +112,20 @@ void BacktestEngine::initialize() {
                 strategy->onOrderCancelled(std::to_string(order_id), reason);
             }
         });
-    
-    // 6. 加载历史订单和成交数据，合并为事件流
+
+    // 6. 初始化收盘集合竞价撮合引擎（逻辑基本同开盘集合竞价）
+    close_engine_ = std::make_unique<CloseAuctionEngine>(*orderbook_, prev_close_,
+                                                        orderbook_->getExchange(),
+                                                        nullptr, // 价格回调
+                                                        [this](uint64_t order_id, bool success, const std::string& reason,
+                                                               std::shared_ptr<Order> order_info) {
+                                                            if (success && recording_enabled_ && order_info) {
+                                                                uint64_t original_id = orderbook_->getOriginalOrderId(order_id);
+                                                                recordCancelWithOrderInfo(original_id, current_datetime_, order_info);
+                                                            }
+                                                        });
+ 
+    // 7. 加载历史订单和成交数据，合并为事件流
     OrderBook::clearEvents(); // 清空事件
     std::string ord_file = data_path_ + "/csord_" + symbol_ + "_" + date_ + ".csv";
     std::string tra_file = data_path_ + "/cstra_" + symbol_ + "_" + date_ + ".csv";
@@ -137,7 +151,8 @@ void BacktestEngine::registerStrategy(std::shared_ptr<Strategy> strategy) {
 void BacktestEngine::run() {
     std::cout << "开始回测 " << symbol_ << " " << date_ << std::endl;
     
-    static constexpr const char* T_MARK = "09:25:00"; // 集合竞价结束时间点
+    static constexpr const char* Call_Open_Time = "09:25:00"; // 开盘集合竞价结束点
+    static constexpr const char* Call_Close_Time = "14:57:00"; // 收盘集合竞价开始点
     
     // 直接遍历 OrderBook::whole_events，按 sort_key 顺序处理
     for (const auto& pair : OrderBook::whole_events) {
@@ -147,20 +162,19 @@ void BacktestEngine::run() {
         for (size_t i = 0; i < events_in_bucket.size(); ++i) {
             const Event& ev = events_in_bucket[i];
             current_datetime_ = ev.datetime;  // 更新当前时间
-            
+            // 集合竞价阶段
             if (!continuous_mode_) {
-                // 集合竞价阶段
+
                 std::string tm_cur = ev.datetime.substr(11, 8); // 当前事件时间（时:分:秒）
                 
                 // 判断是否到达集合竞价结束点
-                // 需要检查下一个事件的时间，这里稍微复杂一些
                 bool hit_cut = false;
-                if (tm_cur < T_MARK) {
+                if (tm_cur < Call_Open_Time) {
                     // 检查下一个事件
                     if (i + 1 < events_in_bucket.size()) {
                         // 同一个bucket内的下一个事件
                         std::string tm_nxt = events_in_bucket[i + 1].datetime.substr(11, 8);
-                        hit_cut = (tm_nxt >= T_MARK);
+                        hit_cut = (tm_nxt >= Call_Open_Time);
                     } else {
                         // 检查下一个bucket的第一个事件
                         auto next_bucket = std::next(std::find_if(OrderBook::whole_events.begin(), 
@@ -169,7 +183,7 @@ void BacktestEngine::run() {
                         
                         if (next_bucket != OrderBook::whole_events.end() && !next_bucket->second.empty()) {
                             std::string tm_nxt = next_bucket->second[0].datetime.substr(11, 8);
-                            hit_cut = (tm_nxt >= T_MARK);
+                            hit_cut = (tm_nxt >= Call_Open_Time);
                         } else {
                             hit_cut = true; // 没有更多事件了
                         }
@@ -221,23 +235,44 @@ void BacktestEngine::run() {
                     // 恢复当前事件时间
                     current_datetime_ = ev.datetime;
                 }
-            } else {
-                // 连续竞价阶段
-                if (ev.source == "ord") {
-                    // 新订单事件
-                    Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
-                    auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(), 
-                                                      ev.sym, std::to_string(ev.orderid),
-                                                      toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
-                    con_engine_->accept(ord);
-                    // 更新最后一条BRK事件时间
-                    last_brk_datetime_ = ev.datetime;
-                } else {
-                    // 撤单事件
-                    uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
-                    con_engine_->cancel_by_input_id(oid_raw);
+            } // 集合竞价阶段结束,连续竞价阶段
+            else {
+                // 检查是否进入收盘集合竞价
+                std::string tm_cur = ev.datetime.substr(11,8);
+                if (!closing_mode_ && tm_cur >= Call_Close_Time) {
+                    closing_mode_ = true;
+                    // 将当前订单簿挂单转入收盘集合竞价引擎的统计结构
+                    close_engine_->bootstrap_from_orderbook();
+                    std::cout << "[" << tm_cur << "] 进入收盘集合竞价阶段" << std::endl;
                 }
-                
+
+                if (!closing_mode_) {
+                    // 普通连续竞价处理
+                    if (ev.source == "ord") {
+                        Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
+                        auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
+                                                          ev.sym, std::to_string(ev.orderid),
+                                                          toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+                        con_engine_->accept(ord);
+                        last_brk_datetime_ = ev.datetime;
+                    } else {
+                        uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
+                        con_engine_->cancel_by_input_id(oid_raw);
+                    }
+                } else {
+                    // 收盘集合竞价期间：订单进入 close_engine_
+                    if (ev.source == "ord") {
+                        Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
+                        auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
+                                                          ev.sym, std::to_string(ev.orderid),
+                                                          toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+                        close_engine_->accept(ord);
+                    } else {
+                        uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
+                        close_engine_->cancel_by_input_id(oid_raw);
+                    }
+                }
+
                 // 发布市场数据（订单簿快照）
                 publishMarketData("order", ev.datetime);
             }
@@ -258,6 +293,13 @@ void BacktestEngine::run() {
         }
     }
     
+    // 收盘集合竞价结算
+    if (closing_mode_) {
+        close_engine_->settle();
+        std::cout << "[收盘集合竞价] 成交价=" << close_engine_->getPredictPrice() / 10000.0
+                  << " 成交量=" << close_engine_->getPredictVolume() << std::endl;
+    }
+
     std::cout << "回测完成" << std::endl;
     
     // 输出交易记录

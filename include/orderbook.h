@@ -57,6 +57,7 @@ class ConAuctionEngine;    // friend
 class OrderBook {
     friend class CallAuctionEngine;
     friend class ConAuctionEngine;
+    friend class CloseAuctionEngine;
 public:
     // 定义回调函数类型
     using ExecCallback = std::function<void(const Execution&)>;
@@ -77,6 +78,10 @@ public:
     //查询
     [[nodiscard]] Price bestBid() const;
     [[nodiscard]] Price bestAsk() const;
+
+    // 设置并获取最新成交价（用于比较距离）
+    void setLastTradePrice(Price p) { _last_trade_price = p; }
+    Price getLastTradePrice() const { return _last_trade_price; }
     
     // 获取原始订单ID（如果存在映射的话）
     uint64_t getOriginalOrderId(uint64_t system_id) const {
@@ -147,6 +152,7 @@ private:
     std::vector<Bucket> _sell;  // 卖盘桶（价格低→高）
     int _best_bid{-1}, _best_ask{-1};  //最优价索引
     Price _prev_close_price{0};  // 前收盘价
+    Price _last_trade_price{0};  // 最新成交价（全局）
     std::string _exchange;    // 交易所标识
 
     std::unordered_map<uint64_t, Locator> _loc;   // 订单→位置

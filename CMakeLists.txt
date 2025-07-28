@@ -12,6 +12,7 @@ set(LIB_SOURCES
     src/call_auction_engine.cpp
     src/con_auction_engine.cpp
     src/OrderLoader.cpp
+    src/close_auction_engine.cpp
 )
 
 # 基础库
