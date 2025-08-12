@@ -18,7 +18,7 @@ enum class MarketType {
 
 class ConAuctionEngine {
 public:
-    using CancelCallback = std::function<void(uint64_t order_id, bool success, const std::string& reason, 
+        using CancelCallback = std::function<void(uint64_t order_id, bool success, const std::string& reason, 
                                             std::shared_ptr<Order> order_info)>;
     
     explicit ConAuctionEngine(OrderBook& ob, MarketType market_type, CancelCallback cancel_cb = nullptr)

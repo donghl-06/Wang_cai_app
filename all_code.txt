@@ -6,7 +6,7 @@
 #include <vector>
 #include <cstdint>
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 class Fenwick {
 public:
@@ -27,19 +27,19 @@ private:
     std::vector<int64_t> tree_;
 };
 
-} // namespace wangcai #pragma once
+} // namespace wangcai_orderbook_cpp #pragma once
 #include "orderbook.h"
 #include "call_auction_engine.hpp"
 #include "con_auction_engine.hpp"
 #include <string>
 #include <vector>
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 // 基础数据加载函数
-void load_orders_from_csv(const std::string& filename, wangcai::OrderBook& order_book);
-void load_traders_from_csv(const std::string& filename, wangcai::OrderBook& order_book);
-void load_cstick_from_csv(const std::string& filename, wangcai::OrderBook& order_book);
+void load_orders_from_csv(const std::string& filename, wangcai_orderbook_cpp::OrderBook& order_book);
+void load_traders_from_csv(const std::string& filename, wangcai_orderbook_cpp::OrderBook& order_book);
+void load_cstick_from_csv(const std::string& filename, wangcai_orderbook_cpp::OrderBook& order_book);
 
 // 有序事件管理函数
 void insert_event(const Event& event);
@@ -50,15 +50,14 @@ void clear_events();
 // 集合竞价验证函数
 std::vector<Event> loadOrderData(const std::string& filename);
 std::vector<Event> loadCancelData(const std::string& filename);
-wangcai::Price loadPrevClosePrice(const std::string& filename);
-wangcai::Price loadOpenPrice(const std::string& filename);
+wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename);
+wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename);
 void validateCallAuction(const std::string& stock_code, const std::string& date);
 
-} // namespace wangcai
+} // namespace wangcai_orderbook_cpp
 #pragma once
 
 #include "orderbook.h"
-#include "data_manager.h"
 #include "call_auction_engine.hpp"
 #include "con_auction_engine.hpp"
 #include "close_auction_engine.hpp"
@@ -71,16 +70,97 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
 #include <map>
 #include <fstream>
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
+// 市场数据结构
+struct MarketData {
+    std::string datetime;
+    std::string symbol;
+    Price best_bid;
+    Price best_ask;
+    Quantity bid_volume;
+    Quantity ask_volume;
+    Price last_price;
+    Quantity last_volume;
+    std::string event_type; // "order", "trade", "cancel"
+};
+
+// 交易记录结构（对应cstra文件格式）
+struct TradeRecord {
+    std::string datetime;     // 交易时间
+    std::string sym;          // 合约代码
+    double price;             // 成交价格（原始价格，单位元）
+    double size;              // 成交数量
+    uint64_t bidorderid;      // 买方订单ID
+    uint64_t askorderid;      // 卖方订单ID
+    uint64_t tradeid;         // 交易ID
+    int exectype;             // 执行类型（1=正常成交）
+    std::string tradebsflag;  // 交易标志
+    int channelno;            // 通道号
+    int64_t bizindex;         // 业务索引
+    
+    TradeRecord(const std::string& dt, const std::string& symbol, double px, double sz, 
+                uint64_t bid_id, uint64_t ask_id, uint64_t trade_id, 
+                int exec_type = 1, const std::string& trade_flag = " ", 
+                int channel = 2012, int64_t biz_idx = 0)
+        : datetime(dt), sym(symbol), price(px), size(sz), 
+          bidorderid(bid_id), askorderid(ask_id), tradeid(trade_id),
+          exectype(exec_type), tradebsflag(trade_flag), channelno(channel), bizindex(biz_idx) {}
+};
+
+// 用户下单结构
+struct UserOrder {
+    std::string order_id;
+    std::string symbol;
+    Direction direction;
+    OrderType order_type;
+    Price price;
+    Quantity volume;
+    std::string strategy_id; // 用于区分不同策略
+};
+
+// 用户撤单结构
+struct UserCancel {
+    std::string order_id;     // 要撤销的订单ID
+    std::string strategy_id;  // 策略ID
+    
+    UserCancel(const std::string& oid, const std::string& sid) 
+        : order_id(oid), strategy_id(sid) {}
+};
+
+// 用户事件结构（统一的输入）
+struct UserEvent {
+    enum Type { ORDER, CANCEL };
+    Type type;
+    UserOrder order;    // 下单信息（当type为ORDER时使用）
+    UserCancel cancel;  // 撤单信息（当type为CANCEL时使用）
+    
+    // 构造函数：下单事件
+    explicit UserEvent(const UserOrder& ord) : type(ORDER), order(ord), cancel("", "") {}
+    
+    // 构造函数：撤单事件
+    explicit UserEvent(const UserCancel& can) : type(CANCEL), order(), cancel(can) {}
+};
+
+// 持仓信息
+struct Position {
+    std::string symbol;
+    int64_t quantity;      // 正数为多头，负数为空头
+    double avg_cost;       // 平均成本价
+    double unrealized_pnl; // 未实现盈亏
+    double realized_pnl;   // 已实现盈亏
+};
 
 // 用户策略接口
 class Strategy {
 public:
     virtual ~Strategy() = default;
     
-    // 处理市场数据，返回要下的订单列表
-    virtual std::vector<UserOrder> onMarketData(const MarketData& data) = 0;
+    // 接收订单事件，返回要处理的事件列表（下单或撤单）
+    virtual std::vector<UserEvent> onOrderEvent(const Event& event) = 0;
+    
+    // 接收成交事件，返回要处理的事件列表（下单或撤单）
+    virtual std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) = 0;
     
     // 处理订单成交回报
     virtual void onOrderFilled(const std::string& order_id, Price price, Quantity volume) = 0;
@@ -96,49 +176,6 @@ public:
 class BacktestEngine {
 public:
     BacktestEngine(const std::string& symbol, const std::string& date, const std::string& data_path);
-    
-
-    void on_timer(const std::string& current_sim_time) {
-        // 此函数将按模拟时间的秒级间隔被调用
-        // 捕获订单簿当前状态并写入日志文件
-        
-        // 更新快照至最新状态
-        data_manager_->updateSnapshot(current_sim_time);
-        
-        // 从DataManager获取当前快照
-        const auto& snapshot = data_manager_->getSnapshot();
-
-        // 以追加模式打开日志文件
-        std::fstream log_file("snapshot_log.txt", std::ios_base::app);
-
-        if (log_file.is_open()) {
-            // 将快照数据写入文件
-            log_file << "Timestamp: " << current_sim_time << "\n"
-                     << "  Instrument: " << snapshot.Instrument << "\n"
-                     << "  Last Price: " << snapshot.last_price / 10000.0 << "\n"
-                     << "  Volume: " << snapshot.Volume << "\n"
-                     << "  NumTrades: " << snapshot.NumTrades << "\n"
-                     << "  TotalBidVol: " << snapshot.TotalBidVol << "\n"
-                     << "  TotalAskVol: " << snapshot.TotalAskVol << "\n"
-                     << "  Best Bid: " << snapshot.bids[0] / 10000.0 << " Size: " << snapshot.bid_sizes[0] << "\n"
-                     << "  Best Ask: " << snapshot.asks[0] / 10000.0 << " Size: " << snapshot.ask_sizes[0] << "\n"
-                     << "  Bid Levels:\n";
-            for (int i = 0; i < 10; ++i) {
-                if (snapshot.bids[i] == 0) break;
-                log_file << "    Price: " << snapshot.bids[i] / 10000.0 << ", Volume: " << snapshot.bid_sizes[i] << "\n";
-            }
-            log_file << "  Ask Levels:\n";
-            for (int i = 0; i < 10; ++i) {
-                if (snapshot.asks[i] == 0) break;
-                log_file << "    Price: " << snapshot.asks[i] / 10000.0 << ", Volume: " << snapshot.ask_sizes[i] << "\n";
-            }
-            log_file << "----------------------------------------\n";
-            log_file.close();
-        } else {
-            std::cerr << "无法打开 snapshot_log.txt 进行写入。" << std::endl;
-        }
-    }
-    
     
     // 注册策略
     void registerStrategy(std::shared_ptr<Strategy> strategy);
@@ -159,31 +196,22 @@ public:
     const std::vector<TradeRecord>& getTradeRecords() const;    // 获取所有交易记录
 
 private:
-    // 初始化订单簿和引擎
     void initialize();
-    
-    // 发布市场数据
-    void publishMarketData(const std::string& event_type, const std::string& datetime = "");
-    
-    // 处理用户订单
     void processUserOrder(const UserOrder& user_order);
-    
-    // 更新持仓
+    void processUserCancel(const UserCancel& user_cancel);
+    void processUserEvent(const UserEvent& user_event);
+    bool tryFillImmediately(std::shared_ptr<Order> user_order);
+
     void updatePosition(const std::string& strategy_id, const std::string& symbol, 
                        Direction direction, Quantity volume, Price price);
-    
-    // 打印结果
     void printResults() const;
-    
-    // 记录交易
     void recordTrade(const Execution& ex, const std::string& datetime);
-    
-    // 记录撤单
     void recordCancel(uint64_t order_id, const std::string& datetime);
-    
-    // 记录撤单信息，包含订单详细信息
     void recordCancelWithOrderInfo(uint64_t original_id, const std::string& datetime, 
                                   std::shared_ptr<Order> order_info);
+    
+    // 新增：通知策略成交
+    void notifyStrategiesOnExecution(const Execution& ex);
     
     // 成员变量
     std::string symbol_;
@@ -196,7 +224,6 @@ private:
     std::unique_ptr<ConAuctionEngine> con_engine_;
     std::unique_ptr<CloseAuctionEngine> close_engine_; // 收盘集合竞价引擎
     
-    std::unique_ptr<DataManager> data_manager_; // 数据管理器
     
     // 策略管理
     std::vector<std::shared_ptr<Strategy>> strategies_;
@@ -205,6 +232,9 @@ private:
     // 市场数据队列
     std::queue<MarketData> market_data_queue_;
     std::function<void(const MarketData&)> market_data_callback_;
+    
+    // 成交事件产生的策略事件队列
+    std::vector<UserEvent> pending_trade_events_;
     
     // 事件数据
     bool continuous_mode_;
@@ -229,7 +259,7 @@ private:
     bool recording_enabled_;                  // 是否启用记录
 };
 
-} // namespace wangcai // === include/call_auction_engine.hpp ===
+} // namespace wangcai_orderbook_cpp // === include/call_auction_engine.hpp ===
 /*
  * @brief : 09:15-09:25 集合竞价引擎（实时预测价）
  */
@@ -240,7 +270,7 @@ private:
 #include <unordered_map>
 #include "OrderLoader.h"
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 class CallAuctionEngine {
 public:
@@ -259,7 +289,7 @@ public:
     void cancel_by_input_id(uint64_t input_id);  // 通过输入订单ID撤单
     void settle();                       // 09:25
 
-    // 获取开盘价的接口
+    // 获取预测结果的公共接口
     Price getPredictPrice() const { return _predict_px; }
     Quantity getPredictVolume() const { return _predict_vol; }
     
@@ -295,14 +325,14 @@ private:
     Price    _real_px{0};
 };
 
-} // namespace wangcai // include/close_auction_engine.hpp
+} // namespace wangcai_orderbook_cpp // include/close_auction_engine.hpp
 #pragma once
 #include "orderbook.h"
 #include "FenwickTree.hpp"
 #include <functional>
 #include <unordered_map>
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 // 集合竞价撮合引擎类，负责集合竞价阶段的订单管理与撮合
 class CloseAuctionEngine {
@@ -398,7 +428,7 @@ private:
     Price    _real_px{0};
 };
 
-} // namespace wangcai// === include/con_auction_engine.hpp ===
+} // namespace wangcai_orderbook_cpp// === include/con_auction_engine.hpp ===
 /*
  * @brief : 09:30 连续竞价引擎
  */
@@ -408,7 +438,7 @@ private:
 #include <unordered_map>
 #include "OrderLoader.h"
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 // 市场类型枚举
 enum class MarketType {
@@ -418,7 +448,7 @@ enum class MarketType {
 
 class ConAuctionEngine {
 public:
-    using CancelCallback = std::function<void(uint64_t order_id, bool success, const std::string& reason, 
+        using CancelCallback = std::function<void(uint64_t order_id, bool success, const std::string& reason, 
                                             std::shared_ptr<Order> order_info)>;
     
     explicit ConAuctionEngine(OrderBook& ob, MarketType market_type, CancelCallback cancel_cb = nullptr)
@@ -440,54 +470,133 @@ private:
     
 };
 
-} // namespace wangcai /*
- * @Author: chenlisen
- * @Date: 2025-08-05 06:20:31
- * @LastEditTime: 2025-08-05 08:43:53
- * @FilePath: /wangcai_cpp/include/data_manager.h
- */
-
-#pragma once
-#include "types.h"
-#include "market_info.h"
-#include "orderbook.h"
-#include "call_auction_engine.hpp"
-#include "con_auction_engine.hpp"
-#include "close_auction_engine.hpp"
-
-
-namespace wangcai {
-
-class DataManager {
-public:
-    explicit DataManager(OrderBook* ob, CallAuctionEngine* call_engine, 
-                        ConAuctionEngine* con_engine, CloseAuctionEngine* close_engine);
-
-    void updateSnapshot(const std::string& datetime);
-    void updateOrderDetail(const Event& ev, char orderKind);
-    void updateTradeDetail(const Execution& ex, const std::string& datetime);
-    Snapshot getSnapshot() const;
-    OrderDetail getOrderDetail() const;
-    TradeDetail getTradeDetail() const;
-private:
-    Snapshot snap_data; // 快照数据
-    OrderDetail order_detail; // 委托明细数据
-    TradeDetail trade_detail; // 成交明细数据
-
-    OrderBook* orderbook_ = nullptr;
-    CallAuctionEngine* call_engine_ = nullptr;
-    ConAuctionEngine* con_engine_ = nullptr;
-    CloseAuctionEngine* close_engine_ = nullptr;
-};
-
-} // namespace wangcai
-#pragma once
+} // namespace wangcai_orderbook_cpp #pragma once
 
 #include "backtest_engine.hpp"
 #include <iostream>
 #include <string>
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
+
+// 同步跟单策略示例 - 演示严格同步的事件处理
+class SyncFollowStrategy : public Strategy {
+public:
+    SyncFollowStrategy(const std::string& strategy_id = "SYNC_FOLLOW", 
+                       int64_t min_trigger_size = 1000,
+                       int64_t follow_volume = 100,
+                       int64_t price_offset = 100)
+        : strategy_id_(strategy_id), 
+          min_trigger_size_(min_trigger_size),
+          follow_volume_(follow_volume),
+          price_offset_(price_offset),
+          order_count_(0) {}
+
+    std::vector<UserEvent> onOrderEvent(const Event& event) override {
+        std::vector<UserEvent> events;
+        
+        std::cout << "[" << strategy_id_ << "] 收到订单事件: " 
+                  << (event.source == "ord" ? "新订单" : "撤单")
+                  << " ID=" << (event.source == "ord" ? event.orderid : 
+                                (event.bidorderid ? event.bidorderid : event.askorderid))
+                  << " 价格=" << event.price / 10000.0
+                  << " 数量=" << event.size << std::endl;
+        
+        // 只对新订单事件进行跟单
+        if (event.source == "ord") {
+            // 简单的跟单逻辑：每N个事件尝试下单一次
+            if (order_count_ < 100 && ++event_count_ % 50 == 0) { // 最多下100单
+                UserOrder order;
+                order.order_id = strategy_id_ + "_FOLLOW_" + std::to_string(++order_count_);
+                order.symbol = event.sym;
+                order.direction = (order_count_ % 2 == 1) ? Direction::Buy : Direction::Sell;
+                order.order_type = OrderType::Limit;
+                
+                if (order.direction == Direction::Buy) {
+                    order.price = event.price - price_offset_; // 买单价格稍低
+                } else {
+                    order.price = event.price + price_offset_; // 卖单价格稍高
+                }
+                
+                order.volume = follow_volume_;
+                order.strategy_id = strategy_id_;
+                
+                events.push_back(UserEvent(order));
+                
+                std::cout << "[" << strategy_id_ << "] 跟单: " << order.order_id 
+                          << " 方向: " << (order.direction == Direction::Buy ? "买" : "卖")
+                          << " 价格: " << order.price / 10000.0 
+                          << " 数量: " << order.volume << std::endl;
+            }
+        }
+        
+        return events;
+    }
+
+    std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) override {
+        std::vector<UserEvent> events;
+        
+        std::cout << "[" << strategy_id_ << "] 看到成交: " 
+                  << " 价格=" << execution.price / 10000.0 
+                  << " 数量=" << execution.volume 
+                  << " 时间=" << datetime << std::endl;
+        
+        // 可以根据成交情况决定是否跟单
+        if (execution.volume >= 500 && order_count_ < 100) {  // 大单成交时跟单，最多下100单
+            UserOrder order;
+            order.order_id = strategy_id_ + "_FOLLOW_TRADE_" + std::to_string(++order_count_);
+            order.symbol = "000001SZ";  // 简化处理，使用固定symbol
+            order.direction = Direction::Buy;  // 简单跟买
+            order.order_type = OrderType::Limit;
+            order.price = execution.price - price_offset_;  // 稍低价买入
+            order.volume = 50;  // 小量跟单
+            order.strategy_id = strategy_id_;
+            
+            events.push_back(UserEvent(order));
+            
+            std::cout << "[" << strategy_id_ << "] 大单跟单: " << order.order_id 
+                      << " 价格: " << order.price / 10000.0 << std::endl;
+        }
+        
+        return events;
+    }
+
+    void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
+        std::cout << "========== 策略成交回报 ==========" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "订单ID: " << order_id << std::endl;
+        std::cout << "成交价格: " << price / 10000.0 << " 元" << std::endl;
+        std::cout << "成交数量: " << volume << std::endl;
+        std::cout << "累计成交量: " << total_filled_volume_ + volume << std::endl;
+        std::cout << "=================================" << std::endl;
+        total_filled_volume_ += volume;
+    }
+
+    void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
+        std::cout << "========== 策略撤单回报 ==========" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "订单ID: " << order_id << std::endl;
+        std::cout << "撤单原因: " << reason << std::endl;
+        std::cout << "=================================" << std::endl;
+    }
+
+    std::string getStrategyId() const override { return strategy_id_; }
+
+    void printStatistics() const {
+        std::cout << "\n=== " << strategy_id_ << " 统计信息 ===" << std::endl;
+        std::cout << "总下单数: " << order_count_ << std::endl;
+        std::cout << "总成交量: " << total_filled_volume_ << std::endl;
+        std::cout << "处理事件数: " << event_count_ << std::endl;
+    }
+
+private:
+    std::string strategy_id_;
+    int64_t min_trigger_size_;
+    int64_t follow_volume_;
+    int64_t price_offset_;
+    int order_count_;
+    int event_count_ = 0;
+    int64_t total_filled_volume_ = 0;
+};
 
 // 简单的均值回归策略示例
 class MeanReversionStrategy : public Strategy {
@@ -495,56 +604,76 @@ public:
     MeanReversionStrategy(const std::string& strategy_id, double threshold = 0.02)
         : strategy_id_(strategy_id), threshold_(threshold), last_price_(0), order_count_(0) {}
     
-    std::vector<UserOrder> onMarketData(const MarketData& data) override {
-        std::vector<UserOrder> orders;
+    std::vector<UserEvent> onOrderEvent(const Event& event) override {
+        // 均值回归策略不需要对订单事件做出响应
+        return {};
+    }
+
+    std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) override {
+        std::vector<UserEvent> events;
         
-        // 简单策略：如果价格偏离前收盘价超过阈值，则反向下单
-        if (data.best_bid > 0 && data.best_ask > 0) {
-            double mid_price = (data.best_bid + data.best_ask) / 2.0 / 10000.0;
-            double prev_close = 5.0; // 简化：假设前收盘价为5元
+        // 基于成交价格进行均值回归判断
+        double trade_price = execution.price / 10000.0;
+        double prev_close = 5.0; // 简化：假设前收盘价为5元
+        
+        if (last_price_ > 0) {
+            double price_change = (trade_price - last_price_) / last_price_;
             
-            if (mid_price > prev_close * (1 + threshold_)) {
-                // 价格过高，卖出
+            // 如果价格下跌超过阈值，买入
+            if (price_change < -threshold_) {
                 UserOrder order;
-                order.order_id = strategy_id_ + "_" + std::to_string(++order_count_);
-                order.symbol = data.symbol;
-                order.direction = Direction::Sell;
-                order.order_type = OrderType::Limit;
-                order.price = data.best_bid; // 以买一价卖出
-                order.volume = 100;
-                order.strategy_id = strategy_id_;
-                orders.push_back(order);
-                
-                std::cout << "[策略] " << strategy_id_ << " 卖出信号，价格=" 
-                         << mid_price << " > " << prev_close * (1 + threshold_) << std::endl;
-            } else if (mid_price < prev_close * (1 - threshold_)) {
-                // 价格过低，买入
-                UserOrder order;
-                order.order_id = strategy_id_ + "_" + std::to_string(++order_count_);
-                order.symbol = data.symbol;
+                order.order_id = strategy_id_ + "_BUY_" + std::to_string(++order_count_);
+                order.symbol = "000001SZ";  // 简化处理
                 order.direction = Direction::Buy;
                 order.order_type = OrderType::Limit;
-                order.price = data.best_ask; // 以卖一价买入
+                order.price = static_cast<Price>(trade_price * 0.999 * 10000); // 稍低于当前价
                 order.volume = 100;
                 order.strategy_id = strategy_id_;
-                orders.push_back(order);
                 
-                std::cout << "[策略] " << strategy_id_ << " 买入信号，价格=" 
-                         << mid_price << " < " << prev_close * (1 - threshold_) << std::endl;
+                events.push_back(UserEvent(order));
+                
+                std::cout << "[" << strategy_id_ << "] 价格下跌 " << (price_change * 100) 
+                          << "%，买入订单: " << order.order_id 
+                          << " 价格: " << order.price / 10000.0 << std::endl;
+            }
+            // 如果价格上涨超过阈值，卖出
+            else if (price_change > threshold_) {
+                UserOrder order;
+                order.order_id = strategy_id_ + "_SELL_" + std::to_string(++order_count_);
+                order.symbol = "000001SZ";  // 简化处理
+                order.direction = Direction::Sell;
+                order.order_type = OrderType::Limit;
+                order.price = static_cast<Price>(trade_price * 1.001 * 10000); // 稍高于当前价
+                order.volume = 100;
+                order.strategy_id = strategy_id_;
+                
+                events.push_back(UserEvent(order));
+                
+                std::cout << "[" << strategy_id_ << "] 价格上涨 " << (price_change * 100) 
+                          << "%，卖出订单: " << order.order_id 
+                          << " 价格: " << order.price / 10000.0 << std::endl;
             }
         }
         
-        return orders;
+        last_price_ = trade_price;
+        return events;
     }
     
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
-        std::cout << "[策略] " << strategy_id_ << " 订单成交: " << order_id 
-                 << " 价格=" << price / 10000.0 << " 数量=" << volume << std::endl;
+        std::cout << "========== 策略成交回报 ==========" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "订单ID: " << order_id << std::endl;
+        std::cout << "成交价格: " << price / 10000.0 << " 元" << std::endl;
+        std::cout << "成交数量: " << volume << std::endl;
+        std::cout << "=================================" << std::endl;
     }
     
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
-        std::cout << "[策略] " << strategy_id_ << " 订单取消: " << order_id 
-                 << " 原因=" << reason << std::endl;
+        std::cout << "========== 策略撤单回报 ==========" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "订单ID: " << order_id << std::endl;
+        std::cout << "撤单原因: " << reason << std::endl;
+        std::cout << "=================================" << std::endl;
     }
     
     std::string getStrategyId() const override {
@@ -558,226 +687,11 @@ private:
     int order_count_;
 };
 
-} // namespace wangcai/*
- * @Author: chenlisen
- * @Date: 2025-08-01 07:31:12
- * @LastEditTime: 2025-08-05 05:42:35
- * @FilePath: /wangcai_cpp/include/market_info.h
- */
-#pragma once
-#ifndef WANGCAI_MARKET_INFO_H
-#define WANGCAI_MARKET_INFO_H
-#include <iostream>
-#include <string>
-#include <vector>
-#include <array>
-#include "types.h"
-
-namespace wangcai {
-
-// 市场数据结构
-struct MarketData {
-    std::string datetime;
-    std::string symbol;
-    Price best_bid;
-    Price best_ask;
-    Quantity bid_volume;
-    Quantity ask_volume;
-    Price last_price;
-    Quantity last_volume;
-    std::string event_type; // "order", "trade", "cancel"
-};
-
-// 交易记录结构（对应cstra文件格式）
-struct TradeRecord {
-    std::string datetime;     // 交易时间
-    std::string sym;          // 合约代码
-    double price;             // 成交价格（原始价格，单位元）
-    double size;              // 成交数量
-    uint64_t bidorderid;      // 买方订单ID
-    uint64_t askorderid;      // 卖方订单ID
-    uint64_t tradeid;         // 交易ID
-    int exectype;             // 执行类型（1=正常成交）
-    std::string tradebsflag;  // 交易标志
-    int channelno;            // 通道号
-    int64_t bizindex;         // 业务索引
-    
-    TradeRecord(const std::string& dt, const std::string& symbol, double px, double sz, 
-                uint64_t bid_id, uint64_t ask_id, uint64_t trade_id, 
-                int exec_type = 1, const std::string& trade_flag = " ", 
-                int channel = 2012, int64_t biz_idx = 0)
-        : datetime(dt), sym(symbol), price(px), size(sz), 
-          bidorderid(bid_id), askorderid(ask_id), tradeid(trade_id),
-          exectype(exec_type), tradebsflag(trade_flag), channelno(channel), bizindex(biz_idx) {}
-};
-
-// 用户订单结构
-struct UserOrder {
-    std::string order_id;
-    std::string symbol;
-    Direction direction;
-    OrderType order_type;
-    Price price;
-    Quantity volume;
-    std::string strategy_id; // 用于区分不同策略
-};
-
-// 持仓信息
-struct Position {
-    std::string symbol;
-    int64_t quantity;      // 正数为多头，负数为空头
-    double avg_cost;       // 平均成本价
-    double unrealized_pnl; // 未实现盈亏
-    double realized_pnl;   // 已实现盈亏
-};
-
-struct Snapshot {
- ///交易所代码
- int Exchange;
- ///合约代码
- std::string Instrument;
- ///交易日
- int TradingDay;
- ///自然日
- int ActionDay;
- ///时间
- int Time;
- ///状态
- std::string Status; // 暂时不清楚这个字段的具体含义 先用string类型
- ///前收盘价（为原始值*10000）
- std::uint64_t PreClose;
- ///开盘价（为原始值*10000）
- std::uint64_t Open;
- ///最高价（为原始值*10000）
- std::uint64_t High;
- ///最低价（为原始值*10000）
- std::uint64_t Low;
- ///最新价（为原始值*10000）
- std::uint64_t      last_price{}; // 最新成交价
-std::array<std::uint64_t, 10> bids{}; // 十档买方价格
-std::array<Quantity, 10> bid_sizes{}; // 十档买方数量
-std::array<std::uint64_t, 10> asks{}; // 十档卖方价格
-std::array<Quantity, 10> ask_sizes{}; // 十档卖方数量
- ///成交笔数
- std::uint64_t NumTrades;
- ///成交总量
- std::uint64_t Volume;
- ///成交总金额（原始值)
- std::uint64_t Turnover;
- ///涨停价（为原始值*10000）
- std::uint64_t UpperLimit;
- ///跌停价（为原始值*10000）
- std::uint64_t LowerLimit;
- ///今持仓量
- std::uint64_t OpenInterest;
- ///昨持仓量
- std::uint64_t PreOpenInterest;
- ///今虚实度（为原始值*10000）
- std::uint64_t Delta;
- ///昨虚实度（为原始值*10000）
- std::uint64_t PreDelta;
- ///今收盘价（系统所有价格为原始数据*10000）
- std::uint64_t Close;
- ///今结算价（系统所有价格为原始数据*10000）
- std::uint64_t SettlePrice;
- ///昨结算价（系统所有价格为原始数据*10000）
- std::uint64_t PreSettlePrice;
- ///波段性中断参考价（系统所有价格为原始数据*10000） 
- std::uint64_t AuctionPrice;
- ///波段性中断集合竞价虚拟匹配量
- std::uint64_t AuctionQty;
- ///iopv x10000
- std::uint64_t Iopv; // 不知道这个是什么 暂留
- ///委托卖出总量
- std::uint64_t TotalAskVol;
- ///委托买入总量
- std::uint64_t TotalBidVol;
- ///加权平均委买价格（为原始值*10000）
- std::uint64_t WeightedAvgBidPrice;
- ///加权平均委卖价格（为原始值*10000）
- std::uint64_t WeightedAvgAskPrice;
- ///ETF申购总量
- std::uint64_t ETFCreateVol;
- ///ETF赎回总量
- std::uint64_t ETFRedeemVol;
- #ifdef PERF
- TEulerTimestampType     shm_time;       //行情写入shm时间
- TEulerTimestampType     mdfront_time;   //mdfront从shm取出行情的时间
- TEulerTimestampType     api_time;       //api收到行情的时间
- #endif
-};
-
-///逐笔委托行情
-struct OrderDetail {
- ///交易所代码
- int Exchange;
- ///合约代码
- std::string Instrument;
- ///时间
- int Time;
- ///ChannelNo
- int ChannelNo;
- ///委托序号
- int OrderNo;
- ///委托价格（为原始值*10000）
- std::uint64_t Price;
- ///委托数量
- std::uint64_t Volume;
- ///委托方向  SH: 'B':买; 'S':卖  |  SZ: '1':买; '2':卖; 'G':借入; 'F':出借
- std::string Side;
- ///委托类别  '1'：市价  '2'：限价  'U'：本方最优 (深交所)  |  'A'：新增 'D'：删除（上交所）
- char OrderKind;
- ///
- long long SeqNo;
- ///业务编号
- long long BizIndex;
- #ifdef PERF
- TEulerTimestampType     shm_time;       //行情写入shm时间
- TEulerTimestampType     mdfront_time;   //mdfront从shm取出行情的时间
- TEulerTimestampType     api_time;       //api收到行情的时间
- #endif
-};
-
-///逐笔成交行情
-struct TradeDetail {
- ///交易所代码
- int Exchange;
- ///合约代码
- std::string Instrument;
- ///ChannelNo
- int ChannelNo;
- ///TradeIndex
- long long TradeIndex;
- ///时间
- int Time;
- ///成交价格（为原始值*10000）
- std::uint64_t Price;
- ///成交数量
- std::uint64_t Volume;
- ///成交类别  '1':成交 '2': 撤销 'N':未知 （仅深交所有效，上交所始终未知）
- char ExecType;
- ///买方委托序号
- long long BuyNo;
- ///卖方委托序号
- long long SellNo;
- ///SH: 内外盘标识('B':主动买; 'S':主动卖; 'N':未知) | SZ: 成交标识('4':撤; 'F':成交)
- char TradeBSFlag;
- ///业务编号
- long long BizIndex;
- #ifdef PERF
- TEulerTimestampType     shm_time;       //行情写入shm时间
- TEulerTimestampType     mdfront_time;   //mdfront从shm取出行情的时间
- TEulerTimestampType     api_time;       //api收到行情的时间
- #endif
-};
-
-} // namespace wangcai
-
-#endif/*
+} // namespace wangcai_orderbook_cpp/*
  * @Author: linzhuoyu
  * @Date  : 2025-07-07 03:11:27
  * @Update: 2025-07-08 14:35
- * @File  : /wangcai/include/order.h
+ * @File  : /wangcai_orderbook_cpp/include/order.h
  * @brief : 撮合引擎订单 / 档位 / 成交 等核心实体
  */
 #pragma once
@@ -791,7 +705,31 @@ struct TradeDetail {
 
 #include "types.h"   // Price / Quantity / generate_order_id()
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
+
+//枚举类型
+
+enum class OrderStatus : uint8_t {
+    Submitted,      ///< 已提交
+    PartFilled,     ///< 部分成交
+    Filled,         ///< 全部成交
+    Cancelled,      ///< 已撤销
+    Rejected        ///< 拒绝
+};
+
+enum class OrderType : uint8_t {
+    Limit,              ///< 限价
+    Market,             ///< 市价
+    BestCounterpart,    ///< 对手价
+    BestOwn             ///< 本方价
+};
+
+enum class Direction : uint8_t { Buy, Sell };
+
+//基础类型
+using Timestamp = std::chrono::time_point<
+                     std::chrono::system_clock,
+                     std::chrono::nanoseconds>;
 
 struct PriceLevel;     // 前置声明
 
@@ -897,6 +835,18 @@ struct PriceStats {
     Quantity  same_price_sell_vol{}; // 此价格的卖单量
 };
 
+//五档快照  
+struct Snapshot {
+    uint64_t   timeid{}; // 时间ID
+    Timestamp  datetime; // 时间
+    std::string sym; // 代码
+    Price      last_price{}; // 最新成交价
+
+    std::array<Price, 5> bids{}; // 买方价格
+    std::array<Quantity, 5> bid_sizes{}; // 买方数量
+    std::array<Price, 5> asks{}; // 卖方价格
+    std::array<Quantity, 5> ask_sizes{}; // 卖方数量
+};
 
 //撮合统计
 struct Stats {
@@ -907,11 +857,11 @@ struct Stats {
     Price    last_open_volume{}; // 最新开盘量
 };
 
-} // namespace wangcai/*
+} // namespace wangcai_orderbook_cpp/*
  * @Author: linzhuoyu
  * @Date: 2025-07-07 08:43:04
- * @LastEditTime: 2025-08-07 07:05:48
- * @FilePath: /wangcai_cpp/include/orderbook.h
+ * @LastEditTime: 2025-07-08 03:01:00
+ * @FilePath: /wangcai_orderbook_cpp/include/orderbook.h
  */
 
 #pragma once
@@ -923,7 +873,7 @@ struct Stats {
 #include <utility>
 #include <map>
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 // 事件结构
 struct Event {
     std::string datetime;
@@ -962,14 +912,11 @@ struct Event {
 
 class CallAuctionEngine;   // friend
 class ConAuctionEngine;    // friend
-class CloseAuctionEngine;
-class DataManager;
 
 class OrderBook {
     friend class CallAuctionEngine;
     friend class ConAuctionEngine;
     friend class CloseAuctionEngine;
-    friend class DataManager;
 public:
     // 定义回调函数类型
     using ExecCallback = std::function<void(const Execution&)>;
@@ -979,38 +926,13 @@ public:
     // 用于 SZ 市价单特殊逻辑的共享表
     // ① 外部 ID  ↦  最优价成交（0 表示尚未出现成交）
     std::unordered_map<uint64_t, Price> first_trade_px_;
-    
+
     // ② 外部 ID  ↦  "替换后真实价格"（只有 ordtype 1/3 被限价化的才会记录）
     std::unordered_map<uint64_t, Price> real_mkt_orders_;
 
-    void updateHighLow(Price p) {
-        if (_highest_trade_price == 0 || p > _highest_trade_price) {
-            _highest_trade_price = p;
-        }
-        if (_lowest_trade_price == 0 || p < _lowest_trade_price) {
-            _lowest_trade_price = p;
-        }
-    }
-
-    Price getHighest() const { return _highest_trade_price; }
-    Price getLowest()  const { return _lowest_trade_price; }
-    const auto getTotalVolume() const { return TotalVolume; }
-    
-    // 用于获取和更新快照所需数据
-    uint64_t getNumTrades() const { return _num_trades; }
-    Quantity getTotalAskVol() const { return _total_ask_volume; }
-    Quantity getTotalBidVol() const { return _total_bid_volume; }
-
-    void incrementNumTrades() { _num_trades++; }
-    void addToTotalAskVol(Quantity q) { _total_ask_volume += q; }
-    void subFromTotalAskVol(Quantity q) { _total_ask_volume -= q; }
-    void addToTotalBidVol(Quantity q) { _total_bid_volume += q; }
-    void subFromTotalBidVol(Quantity q) { _total_bid_volume -= q; }
-
-
     // （可选）简单的 getter，供外部只读
-    const auto& firstTradePx()   const { return first_trade_px_; }
-    const auto& realMktOrders()  const { return real_mkt_orders_;  }
+    const auto& firstTradePx()   const { return first_trade_px_;   }
+    const auto& realMktOrders()  const { return real_mkt_orders_;  }   
 
     //查询
     [[nodiscard]] Price bestBid() const;
@@ -1123,25 +1045,17 @@ private:
     void bucketAdd(int idx, bool is_buy, Quantity q);
     void bucketSub(int idx, bool is_buy, Quantity q);
 
-private:
-    Price _highest_trade_price {0}; // 最高成交价
-    Price _lowest_trade_price {0};  // 最低成交价
-    Quantity TotalVolume{0}; // 总成交量
-
-    // 快照所需字段
-    uint64_t _num_trades{0};
-    Quantity _total_ask_volume{0};
-    Quantity _total_bid_volume{0};
+    
 };
 
-} // namespace wangcai#pragma once
+} // namespace wangcai_orderbook_cpp#pragma once
 #include <boost/pool/object_pool.hpp>
 #include <memory>
 #include <utility>      // std::forward
 #include <new>          // placement new
 #include "order.h"
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 class OrderPool {
 public:
@@ -1163,7 +1077,7 @@ public:
         return { raw, [this](Order* p){
             if (p) {
                 p->~Order();            // 手动调用析构函数
-                // pool_.free(p);         // 归还内存到池
+                pool_.free(p);         // 归还内存到池
             }
         }};
     }
@@ -1172,11 +1086,174 @@ private:
     boost::object_pool<Order> pool_;
 };
 
-} // namespace wangcai/*
+} // namespace wangcai_orderbook_cpp#pragma once
+#include "backtest_engine.hpp"
+#include <iostream>
+#include <string>
+
+namespace wangcai_orderbook_cpp {
+
+/**
+ * 同步策略示例
+ * 实现严格同步的事件处理，确保策略订单总是排在当前事件之后
+ */
+class SyncStrategy : public Strategy {
+public:
+    SyncStrategy(const std::string& strategy_id = "SYNC_STRATEGY", 
+                 int64_t min_order_size = 1000,
+                 int64_t strategy_volume = 100,
+                 int64_t price_offset = 100)
+        : strategy_id_(strategy_id), 
+          min_order_size_(min_order_size),
+          strategy_volume_(strategy_volume),
+          price_offset_(price_offset),
+          order_count_(0) {}
+
+    // 接收原始事件（订单/撤单）
+    StrategyResponse onRawEvent(const Event& event) override {
+        StrategyResponse response;
+        
+        std::cout << "[策略] 收到事件: " 
+                 << (event.source == "ord" ? "订单" : "撤单")
+                 << " ID=" << (event.source == "ord" ? event.orderid : 
+                               (event.bidorderid ? event.bidorderid : event.askorderid))
+                 << " 价格=" << event.price / 10000.0
+                 << " 数量=" << event.size 
+                 << " 时间=" << event.datetime.substr(11, 8) << std::endl;
+        
+        // 决定是否跟单（只对大单进行跟单）
+        if (event.source == "ord" && event.size >= min_order_size_) {
+            UserOrder order;
+            order.order_id = strategy_id_ + "_" + std::to_string(++order_count_);
+            order.symbol = event.sym;
+            // 反向下单策略：看到买单就下卖单，看到卖单就下买单
+            order.direction = (event.side == 1) ? Direction::Sell : Direction::Buy;
+            order.order_type = OrderType::Limit;
+            // 价格稍微偏移，增加成交概率
+            order.price = event.price + (order.direction == Direction::Buy ? -price_offset_ : price_offset_);
+            order.volume = strategy_volume_;
+            order.strategy_id = strategy_id_;
+            
+            response.type = StrategyResponse::PlaceOrder;
+            response.orders.push_back(order);
+            
+            std::cout << "[策略] 决定跟单: " << order.order_id 
+                     << " 方向=" << (order.direction == Direction::Buy ? "买" : "卖")
+                     << " 价格=" << order.price / 10000.0
+                     << " 数量=" << order.volume << std::endl;
+        }
+        
+        return response;
+    }
+    
+    // 接收成交事件（单笔）
+    StrategyResponse onExecution(const Execution& ex, const std::string& datetime) override {
+        StrategyResponse response;
+        
+        std::cout << "[策略] 收到成交: "
+                 << " 买方=" << ex.buy_order_id
+                 << " 卖方=" << ex.sell_order_id  
+                 << " 价格=" << ex.price / 10000.0
+                 << " 数量=" << ex.volume
+                 << " 时间=" << datetime.substr(11, 8) << std::endl;
+        
+        // 记录成交信息
+        total_executions_++;
+        total_volume_ += ex.volume;
+        
+        // 简单的成交后策略：如果成交量很大，可以考虑追加订单
+        if (ex.volume >= min_order_size_ * 2) {
+            std::cout << "[策略] 发现大成交，可考虑追加订单" << std::endl;
+            // 这里可以添加追加订单的逻辑
+        }
+        
+        return response;
+    }
+    
+    std::string getStrategyId() const override { return strategy_id_; }
+    
+    // 获取策略统计信息
+    void printStatistics() const {
+        std::cout << "\n========== 策略统计信息 ==========" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "下单次数: " << order_count_ << std::endl;
+        std::cout << "观察到的成交笔数: " << total_executions_ << std::endl;
+        std::cout << "观察到的总成交量: " << total_volume_ << std::endl;
+        std::cout << "=================================" << std::endl;
+    }
+    
+private:
+    std::string strategy_id_;
+    int64_t min_order_size_;      // 最小触发订单大小
+    int64_t strategy_volume_;     // 策略下单量
+    int64_t price_offset_;        // 价格偏移
+    int order_count_;             // 下单计数
+    int total_executions_ = 0;    // 观察到的成交笔数
+    int64_t total_volume_ = 0;    // 观察到的总成交量
+};
+
+/**
+ * 趋势跟踪策略示例
+ * 根据价格变动趋势进行下单
+ */
+class TrendFollowingStrategy : public Strategy {
+public:
+    TrendFollowingStrategy(const std::string& strategy_id = "TREND_STRATEGY")
+        : strategy_id_(strategy_id), last_price_(0), order_count_(0) {}
+
+    StrategyResponse onRawEvent(const Event& event) override {
+        StrategyResponse response;
+        
+        if (event.source == "ord" && last_price_ > 0) {
+            // 计算价格变动
+            double price_change_rate = (static_cast<double>(event.price) - last_price_) / last_price_;
+            
+            // 如果价格变动超过阈值，跟随趋势下单
+            if (std::abs(price_change_rate) > 0.005) { // 0.5%的变动阈值
+                UserOrder order;
+                order.order_id = strategy_id_ + "_" + std::to_string(++order_count_);
+                order.symbol = event.sym;
+                // 趋势跟随：价格上涨就买入，价格下跌就卖出
+                order.direction = (price_change_rate > 0) ? Direction::Buy : Direction::Sell;
+                order.order_type = OrderType::Limit;
+                order.price = event.price + (order.direction == Direction::Buy ? 50 : -50);
+                order.volume = 50;
+                order.strategy_id = strategy_id_;
+                
+                response.type = StrategyResponse::PlaceOrder;
+                response.orders.push_back(order);
+                
+                std::cout << "[趋势策略] 价格变动 " << (price_change_rate * 100) << "%, 下单: " 
+                         << order.order_id << " " << (order.direction == Direction::Buy ? "买" : "卖") << std::endl;
+            }
+        }
+        
+        if (event.source == "ord") {
+            last_price_ = static_cast<double>(event.price);
+        }
+        
+        return response;
+    }
+    
+    StrategyResponse onExecution(const Execution& ex, const std::string& datetime) override {
+        // 趋势策略对成交事件的简单处理
+        return StrategyResponse(); // 继续
+    }
+    
+    std::string getStrategyId() const override { return strategy_id_; }
+    
+private:
+    std::string strategy_id_;
+    double last_price_;
+    int order_count_;
+};
+
+} // namespace wangcai_orderbook_cpp
+/*
  * @Author: chenlisen
  * @Date: 2025-07-07 08:43:04
- * @LastEditTime: 2025-08-05 06:24:19
- * @FilePath: /wangcai_cpp/include/types.h
+ * @LastEditTime: 2025-07-08 02:52:29
+ * @FilePath: /wangcai_orderbook_cpp/include/types.h
  */
 
 #pragma once
@@ -1187,8 +1264,8 @@ private:
 #include <atomic>
 #include <chrono>
 
-namespace wangcai {
-    
+namespace wangcai_orderbook_cpp {
+
     inline std::atomic<uint64_t> g_order_id_counter{0};
     inline std::atomic<uint64_t> g_execution_id_counter{0};
 
@@ -1212,29 +1289,11 @@ namespace wangcai {
         SZ,     ///< 深交所
         Unknown ///< 未知
     };
-    enum class OrderStatus : uint8_t {
-        Submitted,      ///< 已提交
-        PartFilled,     ///< 部分成交
-        Filled,         ///< 全部成交
-        Cancelled,      ///< 已撤销
-        Rejected        ///< 拒绝
-    };
 
-    enum class OrderType : uint8_t {
-        Limit,              ///< 限价
-        Market,             ///< 市价
-        BestCounterpart,    ///< 对手价
-        BestOwn             ///< 本方价
-    };
-
-    enum class Direction : uint8_t { Buy, Sell };
     using Price = uint64_t;
     using Quantity = uint64_t;
-    //基础类型
-    using Timestamp = std::chrono::time_point<
-                        std::chrono::system_clock,
-                        std::chrono::nanoseconds>;
-}// namespace wangcai#include "OrderLoader.h"
+
+}// namespace wangcai_orderbook_cpp#include "OrderLoader.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -1249,7 +1308,7 @@ namespace wangcai {
 #include <map>
 
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 // 工具函数：将价格字符串转为int64_t，*10000并四舍五入到100
 inline int64_t parse_price(const std::string& price_str) {
@@ -1261,7 +1320,7 @@ inline int64_t parse_price(const std::string& price_str) {
 }
 
 // 加载订单数据
-void load_orders_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
+void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
     std::ifstream file(csv_file);  
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
@@ -1288,8 +1347,8 @@ void load_orders_from_csv(const std::string& csv_file, wangcai::OrderBook& order
             int64_t side = side_str.empty() ? 0 : std::stoi(side_str);
             int64_t ordertype = ordertype_str.empty() ? 0 : std::stoi(ordertype_str);
             int64_t orderid = orderid_str.empty() ? 0 : std::stoi(orderid_str);
-            int64_t channelno = 114514; //channelno_str.empty() ? 0 : std::stoi(channelno_str);
-            int64_t seqno = 114514; //(seqno_str == "-9223372036854775808") ? 0 : std::stoi(seqno_str);
+            int64_t channelno = channelno_str.empty() ? 0 : std::stoi(channelno_str);
+            int64_t seqno = (seqno_str == "-9223372036854775808") ? 0 : std::stoi(seqno_str);
             int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoi(bizindex_str);
             
             bool is_sz_mkt = (sym.size() >= 2 &&
@@ -1314,43 +1373,26 @@ void load_orders_from_csv(const std::string& csv_file, wangcai::OrderBook& order
                 orderid_str,      // order_local_id (使用原始字符串)
                 // 根据委托价格类型和交易所判断OrderType
                 (sym.substr(sym.size() - 2) == "SZ"
-                    ? (ordertype == 1 ? wangcai::OrderType::Market
-                        : (ordertype == 2 ? wangcai::OrderType::Limit
-                            : (ordertype == 3 ? wangcai::OrderType::BestOwn
-                                : wangcai::OrderType::Limit)))
-                    : wangcai::OrderType::Limit), // 沪市全部为限价
+                    ? (ordertype == 1 ? wangcai_orderbook_cpp::OrderType::Market
+                        : (ordertype == 2 ? wangcai_orderbook_cpp::OrderType::Limit
+                            : (ordertype == 3 ? wangcai_orderbook_cpp::OrderType::BestOwn
+                                : wangcai_orderbook_cpp::OrderType::Limit)))
+                    : wangcai_orderbook_cpp::OrderType::Limit), // 沪市全部为限价
                 // 根据方向判断Direction
-                side == 1 ? wangcai::Direction::Buy : wangcai::Direction::Sell,
+                side == 1 ? wangcai_orderbook_cpp::Direction::Buy : wangcai_orderbook_cpp::Direction::Sell,
                 price,           // price
                 size,            // volume
                 bizindex
             );
+
         } catch (const std::exception& e) {
-            // 1. 打印标准的错误信息
             std::cerr << "处理订单时发生错误: " << e.what() << std::endl;
-
-            // 2. 打印导致错误的原始数据行，这是最重要的调试信息！
-            std::cerr << "错误发生的原始数据行: " << line << std::endl;
-
-            // 3. (可选) 捕获更具体的异常类型，提供更精确的上下文
-        } catch (const std::invalid_argument& e) {
-            std::cerr << "[数据格式错误] 无法将字符串转换为数字: " << e.what() << std::endl;
-            std::cerr << "错误发生的原始数据行: " << line << std::endl;
-        } catch (const std::out_of_range& e) {
-            std::cerr << "[数据越界错误] 数字太大或字符串太短: " << e.what() << std::endl;
-            std::cerr << "错误发生的原始数据行: " << line << std::endl;
-        } catch (const std::exception& e) { // 捕获所有其他标准异常
-            std::cerr << "[未知标准错误]: " << e.what() << std::endl;
-            std::cerr << "错误发生的原始数据行: " << line << std::endl;
-        } catch (...) { // 捕获所有非标准异常
-            std::cerr << "[未知非标准错误] 程序发生严重异常" << std::endl;
-            std::cerr << "错误发生的原始数据行: " << line << std::endl;
         }
     }
 }
 
 // 加载撤单数据
-void load_traders_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
+void load_traders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
     std::ifstream file(csv_file);  // ✅ 正确：用ifstream读取文件
     if (!file.is_open()) {
         std::cerr << "无法打开文件: " << csv_file << std::endl;
@@ -1453,7 +1495,7 @@ void print_event_statistics() {
 }
 
 // 加载cstick用来获取开盘价
-void load_cstick_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
+void load_cstick_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
     std::istringstream file(csv_file);
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
@@ -1475,8 +1517,8 @@ void load_cstick_from_csv(const std::string& csv_file, wangcai::OrderBook& order
             std::getline(ss, prevclose_str, ',');
             std::getline(ss, open_str, ',');
             
-            wangcai::Price prev_close = parse_price(prevclose_str);
-            wangcai::Price open_price = parse_price(open_str);
+            wangcai_orderbook_cpp::Price prev_close = parse_price(prevclose_str);
+            wangcai_orderbook_cpp::Price open_price = parse_price(open_str);
             
             order_book.setPrevClosePrice(prev_close);
             
@@ -1605,7 +1647,7 @@ std::vector<Event> loadCancelData(const std::string& filename) {
     return cancels;
 }
 
-wangcai::Price loadPrevClosePrice(const std::string& filename) {
+wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename) {
     std::ifstream file(filename);
 
     if (!file.is_open()) {
@@ -1635,14 +1677,14 @@ wangcai::Price loadPrevClosePrice(const std::string& filename) {
         // 先乘以10000，再四舍五入到100
         double prev_close_multiplied = prev_close_raw * 10000;
         double prev_close_rounded = std::round(prev_close_multiplied / 100.0) * 100.0;
-        wangcai::Price prev_close = static_cast<wangcai::Price>(prev_close_rounded);
+        wangcai_orderbook_cpp::Price prev_close = static_cast<wangcai_orderbook_cpp::Price>(prev_close_rounded);
         return prev_close;
     }
 
     return 0;
 }
 
-wangcai::Price loadOpenPrice(const std::string& filename) {
+wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename) {
     std::ifstream file(filename);
     
     if (!file.is_open()) {
@@ -1674,7 +1716,7 @@ wangcai::Price loadOpenPrice(const std::string& filename) {
          // 先乘以10000，再四舍五入到100
          double open_multiplied = open_raw * 10000;
          double open_rounded = std::round(open_multiplied / 100.0) * 100.0;
-         wangcai::Price open_price = static_cast<wangcai::Price>(open_rounded);
+         wangcai_orderbook_cpp::Price open_price = static_cast<wangcai_orderbook_cpp::Price>(open_rounded);
 
         //  std::cout << "开盘价(最后一行): " << open_price / 10000.0 << " 元" << std::endl;
          return open_price;
@@ -1694,8 +1736,8 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
     std::string cstick_file = "../logs/cstick_" + stock_code + "_" + date + ".csv";
     
     // 1. 读取前收盘价和实际开盘价
-    wangcai::Price prev_close = loadPrevClosePrice(cstick_file);
-    wangcai::Price actual_open = loadOpenPrice(cstick_file);
+    wangcai_orderbook_cpp::Price prev_close = loadPrevClosePrice(cstick_file);
+    wangcai_orderbook_cpp::Price actual_open = loadOpenPrice(cstick_file);
     
     if (prev_close == 0) {
         std::cout << "无法获取前收盘价，退出验证" << std::endl;
@@ -1712,11 +1754,11 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
     
     std::cout << "价格范围(基于前收盘价): " << lower << " - " << upper << " 元" << std::endl;
     
-    wangcai::OrderBook ob(upper_int, lower_int, false);
+    wangcai_orderbook_cpp::OrderBook ob(upper_int, lower_int, false);
     ob.setPrevClosePrice(prev_close);
     ob.setExchange(stock_code.substr(stock_code.size() - 2)); // 从股票代码获取交易所
     
-    wangcai::CallAuctionEngine auction_engine(ob, prev_close, stock_code.substr(stock_code.size() - 2),
+    wangcai_orderbook_cpp::CallAuctionEngine auction_engine(ob, prev_close, stock_code.substr(stock_code.size() - 2),
         nullptr, // 价格回调
         nullptr);
     
@@ -1754,9 +1796,9 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
         try {
             if (event.source == "ord") { // 订单
                 // 检查价格范围并对齐
-                wangcai::Price aligned_price = event.price;
-                wangcai::Price lower_bound = lower_int;
-                wangcai::Price upper_bound = upper_int;
+                wangcai_orderbook_cpp::Price aligned_price = event.price;
+                wangcai_orderbook_cpp::Price lower_bound = lower_int;
+                wangcai_orderbook_cpp::Price upper_bound = upper_int;
                 
                 if (aligned_price < lower_bound || aligned_price > upper_bound || aligned_price == 0) {
                     skipped_price_range++;
@@ -1767,23 +1809,23 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
                 }
                 
                 // 对齐到tick（股票tick=100）
-                wangcai::Price offset_from_lower = aligned_price - lower_bound;
+                wangcai_orderbook_cpp::Price offset_from_lower = aligned_price - lower_bound;
                 aligned_price = lower_bound + (offset_from_lower / 100) * 100;
                 
-                wangcai::Direction dir = (event.side == 1) ? 
-                    wangcai::Direction::Buy : wangcai::Direction::Sell;
+                wangcai_orderbook_cpp::Direction dir = (event.side == 1) ? 
+                    wangcai_orderbook_cpp::Direction::Buy : wangcai_orderbook_cpp::Direction::Sell;
                 
                 // 根据原始数据判断订单类型
-                wangcai::OrderType order_type;
+                wangcai_orderbook_cpp::OrderType order_type;
                 if (event.sym.substr(event.sym.size() - 2) == "SZ") {
                     // 深市：1为市价；2为限价；3为本方最优
-                    if (event.ordertype == 1) order_type = wangcai::OrderType::Market;
-                    else if (event.ordertype == 2) order_type = wangcai::OrderType::Limit;
-                    else if (event.ordertype == 3) order_type = wangcai::OrderType::BestOwn;
-                    else order_type = wangcai::OrderType::Limit;
+                    if (event.ordertype == 1) order_type = wangcai_orderbook_cpp::OrderType::Market;
+                    else if (event.ordertype == 2) order_type = wangcai_orderbook_cpp::OrderType::Limit;
+                    else if (event.ordertype == 3) order_type = wangcai_orderbook_cpp::OrderType::BestOwn;
+                    else order_type = wangcai_orderbook_cpp::OrderType::Limit;
                 } else {
                     // 沪市全部为限价
-                    order_type = wangcai::OrderType::Limit;
+                    order_type = wangcai_orderbook_cpp::OrderType::Limit;
                 }
                 
                 // if (processed_orders < 5) { // 打印前5个订单的调试信息
@@ -1823,8 +1865,8 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
     std::cout << "因价格超范围跳过的订单: " << skipped_price_range << std::endl;
     
     // 6. 获取集合竞价结果
-    wangcai::Price predicted_price = auction_engine.getPredictPrice();
-    wangcai::Quantity predicted_volume = auction_engine.getPredictVolume();
+    wangcai_orderbook_cpp::Price predicted_price = auction_engine.getPredictPrice();
+    wangcai_orderbook_cpp::Quantity predicted_volume = auction_engine.getPredictVolume();
 
     // 7. 打印订单簿到csv
     //auction_engine.print_orderbook_to_csv("../logs/orderbook_" + stock_code + "_" + date + ".csv");
@@ -1855,20 +1897,20 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
     clear_events();
 }
 */
-} // namespace wangcai
+} // namespace wangcai_orderbook_cpp
 #include "../include/backtest_engine.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
 #include <fstream> // Added for file operations
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 static OrderType toOrderType(const Event& ev) {
     // 仅深市有 1/2/3 的区分；沪市全用限价
-    if (ev.sym.size() >= 2 && ev.sym.substr(ev.sym.size() - 2) == "SZ") {
+    if (ev.sym.size() >= 2 && ev.sym.substr(ev.sym.size()-2) == "SZ") {
         switch (ev.ordertype) {
             case 1: return OrderType::Market;
-            case 2: return OrderType::Limit;
+           case 2: return OrderType::Limit;
             case 3: return OrderType::BestOwn;
             default: return OrderType::Limit;
         }
@@ -1907,28 +1949,62 @@ void BacktestEngine::initialize() {
     // 3. 初始化订单簿，注册成交回调
     orderbook_ = std::make_unique<OrderBook>(upper_limit_, lower_limit_, false,
         [this](const Execution& ex) {
-            // 成交回调：生成市场数据并推送到队列
-            MarketData data;
-            // 连续竞价阶段使用最后一条BRK事件时间，集合竞价阶段使用当前事件时间
-            data.datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
-            data.symbol = symbol_;
-            data.best_bid = orderbook_->bestBid();
-            data.best_ask = orderbook_->bestAsk();
-            data.last_price = ex.price;
-            data.last_volume = ex.volume;
-            data.event_type = "trade";
+            std::string trade_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
             
-            market_data_queue_.push(data);
-            // 更新最新成交价、最高价和最低价
+            // 更新最新成交价（供后续集合竞价使用）
             orderbook_->setLastTradePrice(ex.price);
-            orderbook_->updateHighLow(ex.price); 
-            if (market_data_callback_) {
-                market_data_callback_(data);
+            
+            // 检查是否涉及虚拟订单
+            bool buy_is_virtual = false;
+            bool sell_is_virtual = false;
+            std::string virtual_strategy_id;
+            std::string virtual_order_id;
+            
+            // 通过订单ID查找订单信息
+            auto buy_order = orderbook_->getOrder(ex.buy_order_id);
+            auto sell_order = orderbook_->getOrder(ex.sell_order_id);
+            
+            if (buy_order && buy_order->broker != "BRK") {
+                buy_is_virtual = true;
+                virtual_strategy_id = buy_order->account;
+                virtual_order_id = buy_order->order_local_id;
+            }
+            if (sell_order && sell_order->broker != "BRK") {
+                sell_is_virtual = true;
+                virtual_strategy_id = sell_order->account;
+                virtual_order_id = sell_order->order_local_id;
             }
             
-            // 记录交易信息（如果启用了记录）
-            if (recording_enabled_) {
-                recordTrade(ex, continuous_mode_ ? last_brk_datetime_ : current_datetime_);
+            if (buy_is_virtual || sell_is_virtual) {
+                // 虚拟成交：只通知对应策略，不记录到CSV
+                for (auto& strategy : strategies_) {
+                    if (strategy->getStrategyId() == virtual_strategy_id) {
+                        strategy->onOrderFilled(virtual_order_id, ex.price, ex.volume);
+                        std::cout << "[虚拟成交] 策略 " << virtual_strategy_id 
+                                  << " 订单 " << virtual_order_id 
+                                  << " 成交 " << ex.volume << "@" << ex.price / 10000.0 << std::endl;
+                        break;
+                    }
+                }
+                // 注意：虚拟成交不记录到CSV，不调用recordTrade()
+            } else {
+                // 历史订单成交：正常处理并记录到CSV
+                
+                // 1. 检查并通知策略订单成交
+                notifyStrategiesOnExecution(ex);
+                
+                // 2. 推送成交事件给所有策略，收集新事件（暂存到pending队列）
+                for (auto& strategy : strategies_) {
+                    auto user_events = strategy->onTradeEvent(ex, trade_datetime);
+                    for (const auto& event : user_events) {
+                        pending_trade_events_.push_back(event);
+                    }
+                }
+                
+                // 3. 记录交易信息（如果启用了记录）- 只记录历史订单成交
+                if (recording_enabled_) {
+                    recordTrade(ex, trade_datetime);
+                }
             }
         });
     
@@ -1949,19 +2025,36 @@ void BacktestEngine::initialize() {
                                                            }
                                                        });
     
-    // 5. 初始化连续竞价撮合引擎，注册撤单回调
+    // 5. 初始化连续竞价撮合引擎，注册撤单回调和虚拟成交回调
     MarketType market_type = (orderbook_->getExchange() == "SH") ? MarketType::SH : MarketType::SZ;
     con_engine_ = std::make_unique<ConAuctionEngine>(*orderbook_, market_type,
         [this](uint64_t order_id, bool success, const std::string& reason, 
                std::shared_ptr<Order> order_info) {
-            // 撤单回调，通知所有策略并记录撤单
-            if (success && recording_enabled_ && order_info) {
-                uint64_t original_id = orderbook_->getOriginalOrderId(order_id);
-                recordCancelWithOrderInfo(original_id, continuous_mode_ ? last_brk_datetime_ : current_datetime_, order_info);
-            }
-            
-            for (auto& strategy : strategies_) {
-                strategy->onOrderCancelled(std::to_string(order_id), reason);
+            // 撤单回调，区分虚拟订单和历史订单
+            if (success && order_info) {
+                if (order_info->broker == "BRK") {
+                    // 历史订单撤单：通知所有策略并记录撤单到CSV
+                    if (recording_enabled_) {
+                        uint64_t original_id = orderbook_->getOriginalOrderId(order_id);
+                        recordCancelWithOrderInfo(original_id, continuous_mode_ ? last_brk_datetime_ : current_datetime_, order_info);
+                    }
+                    
+                    for (auto& strategy : strategies_) {
+                        strategy->onOrderCancelled(std::to_string(order_id), reason);
+                    }
+                } else {
+                    // 虚拟订单撤单：只通知对应策略，不记录到CSV
+                    for (auto& strategy : strategies_) {
+                        if (strategy->getStrategyId() == order_info->account) {
+                            strategy->onOrderCancelled(order_info->order_local_id, reason);
+                            std::cout << "[虚拟撤单] 策略 " << order_info->account 
+                                      << " 订单 " << order_info->order_local_id 
+                                      << " 已撤单，原因: " << reason << std::endl;
+                            break;
+                        }
+                    }
+                    // 注意：虚拟订单撤单不记录到CSV，不调用recordCancel()
+                }
             }
         });
 
@@ -1976,11 +2069,8 @@ void BacktestEngine::initialize() {
                                                                 recordCancelWithOrderInfo(original_id, current_datetime_, order_info);
                                                             }
                                                         });
-    
-    // 7. 初始化数据管理器
-    data_manager_ = std::make_unique<DataManager>(orderbook_.get(), call_engine_.get(), con_engine_.get(), close_engine_.get());
  
-    // 8. 加载历史订单和成交数据，合并为事件流
+    // 7. 加载历史订单和成交数据，合并为事件流
     OrderBook::clearEvents(); // 清空事件
     std::string ord_file = data_path_ + "/csord_" + symbol_ + "_" + date_ + ".csv";
     std::string tra_file = data_path_ + "/cstra_" + symbol_ + "_" + date_ + ".csv";
@@ -2002,130 +2092,67 @@ void BacktestEngine::registerStrategy(std::shared_ptr<Strategy> strategy) {
     positions_[strategy->getStrategyId()] = std::map<std::string, Position>();
 }
 
-// 回测主循环，驱动事件流和策略
+// 回测主循环，实现简单的同步事件处理
 void BacktestEngine::run() {
-    std::cout << "开始回测 " << symbol_ << " " << date_ << std::endl;
+    std::cout << "开始同步交互式回测 " << symbol_ << " " << date_ << std::endl;
     
     static constexpr const char* Call_Open_Time = "09:25:00"; // 开盘集合竞价结束点
     static constexpr const char* Call_Close_Time = "14:57:00"; // 收盘集合竞价开始点
     
-
-    // 初始化下一次快照时间
-    auto& first_event = OrderBook::whole_events.begin()->second[0];
-    std::tm first_tm = {};
-    // 解析 "YYYY-MM-DD HH:MM:SS.sss" 格式
-    std::istringstream(first_event.datetime.substr(0, 19)) >> std::get_time(&first_tm, "%Y-%m-%d %H:%M:%S");
-    auto next_snapshot_time = std::chrono::system_clock::from_time_t(std::mktime(&first_tm));
-    // 确保从整秒开始，并处理毫秒进位
-    next_snapshot_time = std::chrono::time_point_cast<std::chrono::seconds>(next_snapshot_time + std::chrono::milliseconds(500));
-
-
-
-    // 直接遍历 OrderBook::whole_events，按 sort_key 顺序处理
+    // 主循环：按事件顺序处理
     for (const auto& pair : OrderBook::whole_events) {
         const auto& events_in_bucket = pair.second;
         
-        // 遍历同一个 sort_key 下的所有事件
         for (size_t i = 0; i < events_in_bucket.size(); ++i) {
             const Event& ev = events_in_bucket[i];
-            current_datetime_ = ev.datetime;  // 更新当前时间
-             // --- 定时快照 ---
-            std::tm current_tm = {};
-            std::istringstream(current_datetime_.substr(0, 19)) >> std::get_time(&current_tm, "%Y-%m-%d %H:%M:%S");
-            auto current_sim_time_point = std::chrono::system_clock::from_time_t(std::mktime(&current_tm));
-
-            while (current_sim_time_point >= next_snapshot_time) {
-                std::time_t tt = std::chrono::system_clock::to_time_t(next_snapshot_time);
-                std::tm* ptm = std::localtime(&tt);
-                char buffer[32];
-                // "YYYY-MM-DD HH:MM:SS.000"
-                std::strftime(buffer, 32, "%Y-%m-%d %H:%M:%S.000", ptm);
-                on_timer(std::string(buffer));
-                next_snapshot_time += std::chrono::seconds(1);
-            }
-            // --- 定时快照结束 ---
-            // 集合竞价阶段
-            if (!continuous_mode_) {
-
-                std::string tm_cur = ev.datetime.substr(11, 8); // 当前事件时间（时:分:秒）
-                
-                // 判断是否到达集合竞价结束点
-                bool hit_cut = false;
-                if (tm_cur < Call_Open_Time) {
-                    // 检查下一个事件
-                    if (i + 1 < events_in_bucket.size()) {
-                        // 同一个bucket内的下一个事件
-                        std::string tm_nxt = events_in_bucket[i + 1].datetime.substr(11, 8);
-                        hit_cut = (tm_nxt >= Call_Open_Time);
-                    } else {
-                        // 检查下一个bucket的第一个事件
-                        auto next_bucket = std::next(std::find_if(OrderBook::whole_events.begin(), 
-                            OrderBook::whole_events.end(), 
-                            [&pair](const auto& p) { return p.first == pair.first; }));
-                        
-                        if (next_bucket != OrderBook::whole_events.end() && !next_bucket->second.empty()) {
-                            std::string tm_nxt = next_bucket->second[0].datetime.substr(11, 8);
-                            hit_cut = (tm_nxt >= Call_Open_Time);
-                        } else {
-                            hit_cut = true; // 没有更多事件了
-                        }
-                    }
+            current_datetime_ = ev.datetime;
+            
+            // Step 1: 推送订单事件给策略
+            std::vector<UserEvent> strategy_events;
+            
+            // 收集所有策略的事件响应
+            for (auto& strategy : strategies_) {
+                auto user_events = strategy->onOrderEvent(ev);
+                for (const auto& event : user_events) {
+                    strategy_events.push_back(event);
                 }
+            }
+            
+            // Step 2: 处理当前历史事件
+            if (!continuous_mode_) {
+                // 集合竞价阶段
+                std::string tm_cur = ev.datetime.substr(11, 8);
                 
-                // 处理当前事件
                 if (ev.source == "ord") {
-                    // 新订单事件
                     Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
                     auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(), 
                                                       ev.sym, std::to_string(ev.orderid),
                                                       toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
                     call_engine_->accept(ord);
-                    data_manager_->updateOrderDetail(ev, 'A'); // 'A' for Add
                 } else {
-                    // 撤单事件
                     uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
-                    // //调试消息
-                    // std::cout << "[处理撤单] 时间=" << ev.datetime 
-                    //           << " bidorderid=" << ev.bidorderid 
-                    //           << " askorderid=" << ev.askorderid 
-                    //           << " 使用ID=" << oid_raw << std::endl;
-                    
-                    if (continuous_mode_) {
-                        con_engine_->cancel_by_input_id(oid_raw);
-                    } else {
-                        call_engine_->cancel_by_input_id(oid_raw);
-                    }
-                    data_manager_->updateOrderDetail(ev, 'D'); // 'D' for Delete
+                    call_engine_->cancel_by_input_id(oid_raw);
                 }
-                
-                // 发布市场数据（订单簿快照）
-                publishMarketData("order", ev.datetime);
-                
-                // 在处理集合竞价结算时设置统一的成交时间
-                if (hit_cut) {
-                    // 设置统一的集合竞价成交时间
+                               
+                // 检查是否结束集合竞价
+                if (tm_cur >= Call_Open_Time) {
                     std::string auction_time = ev.datetime.substr(0, 11) + "09:25:00.000";
-                    current_datetime_ = auction_time;  // 临时设置为集合竞价成交时间
+                    current_datetime_ = auction_time;
                     
-                    // 集合竞价结束，结算撮合，切换到连续竞价
                     call_engine_->settle();
                     continuous_mode_ = true;
-                    publishMarketData("auction_settle", auction_time);
                     std::cout << "[09:25] 集合竞价完成，开盘价=" << call_engine_->getPredictPrice() / 10000.0 
                               << " 真实开盘价=" << actual_open_ / 10000.0
                               << " 开盘成交量=" << call_engine_->getPredictVolume() << std::endl;
                     std::cout << "连续竞价开始" << std::endl;
                     
-                    // 恢复当前事件时间
                     current_datetime_ = ev.datetime;
                 }
-            } // 集合竞价阶段结束,连续竞价阶段
-            else {
-                // 检查是否进入收盘集合竞价
+            } else {
+                // 连续竞价阶段
                 std::string tm_cur = ev.datetime.substr(11,8);
                 if (!closing_mode_ && tm_cur >= Call_Close_Time) {
                     closing_mode_ = true;
-                    // 将当前订单簿挂单转入收盘集合竞价引擎的统计结构
                     close_engine_->bootstrap_from_orderbook();
                     std::cout << "[" << tm_cur << "] 进入收盘集合竞价阶段" << std::endl;
                 }
@@ -2138,12 +2165,10 @@ void BacktestEngine::run() {
                                                           ev.sym, std::to_string(ev.orderid),
                                                           toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
                         con_engine_->accept(ord);
-                        data_manager_->updateOrderDetail(ev, 'A'); // 'A' for Add
                         last_brk_datetime_ = ev.datetime;
                     } else {
                         uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
                         con_engine_->cancel_by_input_id(oid_raw);
-                        data_manager_->updateOrderDetail(ev, 'D'); // 'D' for Delete
                     }
                 } else {
                     // 收盘集合竞价期间：订单进入 close_engine_
@@ -2153,32 +2178,29 @@ void BacktestEngine::run() {
                                                           ev.sym, std::to_string(ev.orderid),
                                                           toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
                         close_engine_->accept(ord);
-                        data_manager_->updateOrderDetail(ev, 'A'); // 'A' for Add
                     } else {
                         uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
                         close_engine_->cancel_by_input_id(oid_raw);
-                        data_manager_->updateOrderDetail(ev, 'D'); // 'D' for Delete
                     }
                 }
-
-                // 发布市场数据（订单簿快照）
-                publishMarketData("order", ev.datetime);
             }
             
-            // 处理市场数据队列，驱动所有策略做出决策
-            while (!market_data_queue_.empty()) {
-                MarketData data = market_data_queue_.front();
-                market_data_queue_.pop();
-                
-                // 通知所有策略，获取用户订单
-                for (auto& strategy : strategies_) {
-                    auto user_orders = strategy->onMarketData(data);
-                    for (const auto& user_order : user_orders) {
-                        processUserOrder(user_order);
-                    }
+            // Step 3: 处理策略事件（在历史事件之后）
+            for (const auto& user_event : strategy_events) {
+                if (continuous_mode_) {  // 只有连续竞价期间才允许策略操作
+                    processUserEvent(user_event);
                 }
             }
-           
+            
+            // Step 4: 处理成交事件产生的策略事件
+            for (const auto& user_event : pending_trade_events_) {
+                if (continuous_mode_) {  // 只有连续竞价期间才允许策略操作
+                    processUserEvent(user_event);
+                }
+            }
+            // 清空成交事件队列
+            pending_trade_events_.clear();
+            strategy_events.clear();
         }
     }
     
@@ -2189,7 +2211,7 @@ void BacktestEngine::run() {
                   << " 成交量=" << close_engine_->getPredictVolume() << std::endl;
     }
 
-    std::cout << "回测完成" << std::endl;
+    std::cout << "同步交互式回测完成" << std::endl;
     
     // 输出交易记录
     if (recording_enabled_) {
@@ -2201,21 +2223,47 @@ void BacktestEngine::run() {
     printResults();
 }
 
-// 发布市场数据到队列，并触发回调
-void BacktestEngine::publishMarketData(const std::string& event_type, const std::string& datetime) {
-    data_manager_->updateSnapshot(datetime); // 更新快照数据
-    MarketData data;
-    data.datetime = datetime;
-    data.symbol = symbol_;
-    data.best_bid = orderbook_->bestBid();
-    data.best_ask = orderbook_->bestAsk();
-    data.event_type = event_type;
+// 尝试立即成交USER订单
+bool BacktestEngine::tryFillImmediately(std::shared_ptr<Order> user_order) {
+    bool is_buy = user_order->direction == Direction::Buy;
+    Price best_opp_price = is_buy ? orderbook_->bestAsk() : orderbook_->bestBid();
     
-    market_data_queue_.push(data);
-    if (market_data_callback_) {
-        market_data_callback_(data);
+    // 检查是否可以立即成交
+    bool can_fill = false;
+    if (is_buy && best_opp_price > 0 && user_order->price >= best_opp_price) {
+        can_fill = true;
+    } else if (!is_buy && best_opp_price > 0 && user_order->price <= best_opp_price) {
+        can_fill = true;
     }
+    
+    if (can_fill) {
+        // 立即全部成交
+        Price fill_price = best_opp_price;
+        Quantity fill_qty = user_order->volume;
+        
+        user_order->traded_volume = fill_qty;
+        user_order->status = OrderStatus::Filled;
+        
+        // 虚拟成交只通知对应策略，不触发其他回调
+        // 找到对应的策略并通知成交
+        for (auto& strategy : strategies_) {
+            if (strategy->getStrategyId() == user_order->account) { // account字段存储的是strategy_id
+                strategy->onOrderFilled(user_order->order_local_id, fill_price, fill_qty);
+                break;
+            }
+        }
+        
+        std::cout << "[虚拟成交] USER订单 " << user_order->order_local_id 
+                  << " 立即成交 " << fill_qty << "@" << fill_price / 10000.0 << std::endl;
+        return true;
+    }
+    
+    return false;
 }
+
+
+
+
 
 // 处理用户策略下发的订单，仅在连续竞价阶段允许
 void BacktestEngine::processUserOrder(const UserOrder& user_order) {
@@ -2235,20 +2283,11 @@ void BacktestEngine::processUserOrder(const UserOrder& user_order) {
         
         // 记录用户订单号与系统订单号的映射
         user_order_mapping_[user_order.order_id] = order->order_id;
-        con_engine_->accept(order);
         
-        // 如果订单立即成交，更新持仓并通知策略
-        if (order->traded_volume > 0) {
-            updatePosition(user_order.strategy_id, user_order.symbol,
-                          user_order.direction, order->traded_volume, 
-                          order->traded_volume > 0 ? order->price : 0); // 简化：使用订单价格
-            
-            // 通知对应策略订单成交
-            for (auto& strategy : strategies_) {
-                if (strategy->getStrategyId() == user_order.strategy_id) {
-                    strategy->onOrderFilled(user_order.order_id, order->price, order->traded_volume);
-                }
-            }
+        // 先尝试立即成交
+        if (!tryFillImmediately(order)) {
+            // 如果无法立即成交，则送入撮合引擎
+            con_engine_->accept(order);
         }
         
     } catch (const std::exception& e) {
@@ -2377,10 +2416,6 @@ void BacktestEngine::enableTradeRecording(const std::string& output_file) {
 
 // 记录单笔交易信息
 void BacktestEngine::recordTrade(const Execution& ex, const std::string& datetime) {
-    // 更新成交明细
-    data_manager_->updateTradeDetail(ex, datetime);
-
-    // 创建交易记录
     TradeRecord record(
         datetime,                           // 交易时间
         symbol_,                           // 合约代码
@@ -2491,12 +2526,76 @@ const std::vector<TradeRecord>& BacktestEngine::getTradeRecords() const {
     return trade_records_;
 }
 
-} // namespace wangcai#include "backtest_engine.hpp"
-#include "example_strategy.hpp"
+// 处理用户事件（下单或撤单）
+void BacktestEngine::processUserEvent(const UserEvent& user_event) {
+    switch (user_event.type) {
+        case UserEvent::ORDER:
+            processUserOrder(user_event.order);
+            break;
+        case UserEvent::CANCEL:
+            processUserCancel(user_event.cancel);
+            break;
+    }
+}
+
+// 处理用户撤单
+void BacktestEngine::processUserCancel(const UserCancel& user_cancel) {
+    auto it = user_order_mapping_.find(user_cancel.order_id);
+    if (it != user_order_mapping_.end()) {
+        uint64_t system_order_id = it->second;
+        
+        if (continuous_mode_) {
+            con_engine_->cancel(system_order_id);
+        } else {
+            call_engine_->cancel(system_order_id);
+        }
+        
+        std::cout << "[策略撤单] " << user_cancel.strategy_id 
+                  << " 撤销订单: " << user_cancel.order_id 
+                  << " (系统ID: " << system_order_id << ")" << std::endl;
+    } else {
+        std::cout << "[策略撤单失败] " << user_cancel.strategy_id 
+                  << " 找不到订单: " << user_cancel.order_id << std::endl;
+    }
+}
+
+
+
+
+
+// 通知策略订单成交
+void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
+    // 检查买方订单是否属于某个策略
+    for (const auto& mapping : user_order_mapping_) {
+        if (mapping.second == ex.buy_order_id) {
+            // 找到对应的策略并通知
+            for (auto& strategy : strategies_) {
+                strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+            }
+            break;
+        }
+    }
+    
+    // 检查卖方订单是否属于某个策略
+    for (const auto& mapping : user_order_mapping_) {
+        if (mapping.second == ex.sell_order_id) {
+            // 找到对应的策略并通知
+            for (auto& strategy : strategies_) {
+                strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+            }
+            break;
+        }
+    }
+}
+
+
+
+} // namespace wangcai_orderbook_cpp #include "backtest_engine.hpp"
+// #include "example_strategy.hpp"  // 注释掉，因为不使用策略
 #include <iostream>
 #include <memory>
 
-using namespace wangcai;
+using namespace wangcai_orderbook_cpp;
 
 int main(int argc, char* argv[]) {
     if (argc != 4) {
@@ -2524,12 +2623,18 @@ int main(int argc, char* argv[]) {
             // }
         });
         
-        // 创建并注册策略
-        // auto strategy1 = std::make_shared<MeanReversionStrategy>("均值回归策略1", 0.01);
-        // auto strategy2 = std::make_shared<MeanReversionStrategy>("均值回归策略2", 0.02);
+        // 创建并注册策略 - 演示同步事件处理
+        // auto sync_strategy = std::make_shared<SyncFollowStrategy>("同步跟单策略", 1000, 100, 100);
+        // auto mean_strategy = std::make_shared<MeanReversionStrategy>("均值回归策略", 0.01);
         
-        // engine.registerStrategy(strategy1);
-        // engine.registerStrategy(strategy2);
+        // engine.registerStrategy(sync_strategy);
+        // engine.registerStrategy(mean_strategy);
+        
+        // std::cout << "已注册策略：" << std::endl;
+        // std::cout << "1. " << sync_strategy->getStrategyId() << std::endl;
+        // std::cout << "2. " << mean_strategy->getStrategyId() << std::endl;
+        
+        std::cout << "运行无策略回测（纯历史数据重放）" << std::endl;
         
         // 运行回测
         engine.run();
@@ -2548,6 +2653,13 @@ int main(int argc, char* argv[]) {
             std::cout << "末笔成交时间: " << trades.back().datetime << std::endl;
         }
         
+        // 打印策略统计信息
+        // std::cout << "\n=== 策略统计信息 ===" << std::endl;
+        // if (auto sync_ptr = std::dynamic_pointer_cast<SyncFollowStrategy>(sync_strategy)) {
+        //     sync_ptr->printStatistics();
+        // }
+        std::cout << "\n=== 无策略回测完成 ===" << std::endl;
+        
     } catch (const std::exception& e) {
         std::cerr << "回测失败: " << e.what() << std::endl;
         return 1;
@@ -2561,7 +2673,7 @@ int main(int argc, char* argv[]) {
 #include <iostream> // Added for debugging output
 #include <fstream>
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 // 构造函数：初始化集合竞价引擎，绑定订单簿、前收盘价、交易所、回调等 
 CallAuctionEngine::CallAuctionEngine(OrderBook& ob, Price pc,
@@ -2596,13 +2708,6 @@ inline void CallAuctionEngine::fenwickAdd(int idx,bool buy,int64_t d){
 // 接收新订单：加入集合竞价队列，更新树状数组、订单簿、位置映射 
 void CallAuctionEngine::accept(std::shared_ptr<Order> od)
 {
-
-    if (od->direction == Direction::Buy) {
-        ob_.addToTotalBidVol(od->volume);
-    } else {
-        ob_.addToTotalAskVol(od->volume);
-    }
-
     bool buy = od->direction==Direction::Buy;      // 判断买卖方向
     int  idx = ob_.pxToIdx(od->price);             // 价格转桶索引
     
@@ -2636,13 +2741,6 @@ void CallAuctionEngine::cancel(uint64_t oid)
     auto loc=it->second;
     auto& side = loc.is_buy?ob_._buy:ob_._sell;
     auto ord=*loc.it;
-
-    if (ord->direction == Direction::Buy) {
-        ob_.subFromTotalBidVol(ord->remaining_volume());
-    } else {
-        ob_.subFromTotalAskVol(ord->remaining_volume());
-    }
-
     int64_t rem=ord->remaining_volume();
 
     // 树状数组减去剩余未成交量
@@ -2876,13 +2974,6 @@ void CallAuctionEngine::applyAuctionTrade(int idx, uint64_t /*bu_tot*/, uint64_t
 
     auto log_exec = [&](uint64_t buy_sys, uint64_t sell_sys, Quantity q)
     {
-        // 增加成交笔数
-        ob_.incrementNumTrades();
-        
-        // 减少总委托量
-        ob_.subFromTotalBidVol(q);
-        ob_.subFromTotalAskVol(q);
-        
         uint64_t buy_input  = ob_.sys2input_.count(buy_sys)  ? ob_.sys2input_[buy_sys]  : 0;
         uint64_t sell_input = ob_.sys2input_.count(sell_sys) ? ob_.sys2input_[sell_sys] : 0;
 
@@ -3046,14 +3137,14 @@ void CallAuctionEngine::print_orderbook_to_csv(const std::string& filename) {
              << tradable << "\n";
     }
 }
-} // namespace wangcai // === src/close_auction_engine.cpp ===
+} // namespace wangcai_orderbook_cpp // === src/close_auction_engine.cpp ===
 #include "../include/close_auction_engine.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream> // Added for debugging output
 #include <fstream>
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 // 构造函数实现
 CloseAuctionEngine::CloseAuctionEngine(OrderBook& ob, Price pc,
@@ -3088,14 +3179,6 @@ inline void CloseAuctionEngine::fenwickAdd(int idx,bool buy,int64_t d){
 // 接收新订单：加入集合竞价队列，更新树状数组、订单簿、位置映射 
 void CloseAuctionEngine::accept(std::shared_ptr<Order> od)
 {
-
-    // 增加总委托量
-    if (od->direction == Direction::Buy) {
-        ob_.addToTotalBidVol(od->volume);
-    } else {
-        ob_.addToTotalAskVol(od->volume);
-    }
-
     bool buy = od->direction==Direction::Buy;      // 判断买卖方向
     int  idx = ob_.pxToIdx(od->price);             // 价格转桶索引
     
@@ -3129,13 +3212,6 @@ void CloseAuctionEngine::cancel(uint64_t oid)
     auto loc=it->second;
     auto& side = loc.is_buy?ob_._buy:ob_._sell;
     auto ord=*loc.it;
-
-    if (ord->direction == Direction::Buy) {
-        ob_.subFromTotalBidVol(ord->remaining_volume());
-    } else {
-        ob_.subFromTotalAskVol(ord->remaining_volume());
-    }
-
     int64_t rem=ord->remaining_volume();
 
     // 树状数组减去剩余未成交量
@@ -3387,13 +3463,6 @@ void CloseAuctionEngine::applyAuctionTrade(int idx, uint64_t /*bu_tot*/, uint64_
 
     auto log_exec = [&](uint64_t buy_sys, uint64_t sell_sys, Quantity q)
     {
-        // 增加成交笔数
-        ob_.incrementNumTrades();
-
-        // 减少总委托量
-        ob_.subFromTotalBidVol(q);
-        ob_.subFromTotalAskVol(q);
-        
         uint64_t buy_input  = ob_.sys2input_.count(buy_sys)  ? ob_.sys2input_[buy_sys]  : 0;
         uint64_t sell_input = ob_.sys2input_.count(sell_sys) ? ob_.sys2input_[sell_sys] : 0;
 
@@ -3540,23 +3609,17 @@ void CloseAuctionEngine::bootstrap_from_orderbook() {
     }
     publish(); // 更新一次预测价
 }
-} // namespace wangcai // === src/con_auction_engine.cpp ===
+} // namespace wangcai_orderbook_cpp // === src/con_auction_engine.cpp ===
 #include "../include/con_auction_engine.hpp"
 #include <algorithm>
 #include <iostream>
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 
 // 连续竞价订单接收函数
 void ConAuctionEngine::accept(std::shared_ptr<Order> od)
 {
-    if (od->direction == Direction::Buy) {
-        ob_.addToTotalBidVol(od->volume);
-    } else {
-        ob_.addToTotalAskVol(od->volume);
-    }
-
     if (market_type_ == MarketType::SH) {
         accept_sh(od);
     } else {
@@ -3579,7 +3642,12 @@ void ConAuctionEngine::accept_sh(std::shared_ptr<Order> od)
     auto& side = buy ? ob_._buy : ob_._sell;
     side[idx].orders.push_back(od);
     od->level_iter = std::prev(side[idx].orders.end());
-    ob_.bucketAdd(idx, buy, od->remaining_volume());
+    
+    // 只有历史订单才更新vol_sum统计
+    if (od->broker == "BRK") {
+        ob_.bucketAdd(idx, buy, od->remaining_volume());
+    }
+    
     ob_._loc[od->order_id] = { buy, idx, od->level_iter };
 
 
@@ -3589,17 +3657,7 @@ void ConAuctionEngine::accept_sh(std::shared_ptr<Order> od)
 void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
 {
     bool buy = od->direction == Direction::Buy;
-    // 或者转换为字符串打印
-        if(od->order_local_id == "1282779"){
-        std::cout<<"od->broker"<<od->broker<<std::endl;
-        std::cout << "od->order_type: " << 
-        (od->order_type == OrderType::Market ? "Market" :
-        od->order_type == OrderType::Limit ? "Limit" :
-        od->order_type == OrderType::BestOwn ? "BestOwn" : "Unknown") 
-        << std::endl;
-        std::cout<<"od->order_id"<<od->order_id<<std::endl;
-        std::cout<<"od->order_local_id"<<od->order_local_id<<std::endl;
-    }
+
     //深市：市价 / 本方最优 保护价转换 
     if (od->broker == "BRK" &&
         (od->order_type == OrderType::Market || od->order_type == OrderType::BestOwn)) {
@@ -3613,44 +3671,18 @@ void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
                 px = it->second;
             // 无成交 → 对手最优
             if (px == 0) px = buy ? ob_.bestAsk() : ob_.bestBid();
-            // 市场空簿 → 直接撤单
-            if (px == 0) {
-                od->status = OrderStatus::Cancelled;
-                // 先回调，让 BacktestEngine 写撤单记录（此时映射仍在）
-                if (on_cancel_)
-                    on_cancel_(od->order_id, true,
-                            "BestOwn 无可用保护价，系统自动撤单", od);
-
-                // 再清理所有映射，防止后续误用
-                if (auto it = ob_.sys2input_.find(od->order_id); it != ob_.sys2input_.end()) {
-                    ob_.input2sys_.erase(it->second);
-                    ob_.sys2input_.erase(it);
-                }
-                ob_.str2sys_.erase(od->order_local_id);
-                ob_.sys2str_.erase(od->order_id);
-                return;                                            // 结束，不进入撮合
-            }
+            // 市场空簿 → 涨跌停兜底
+            if (px == 0) px = buy ? ob_._upper : ob_._lower;
         }
         else if (orig == OrderType::BestOwn) {
             // 己方最优
             px = buy ? ob_.bestBid() : ob_.bestAsk();
             // 己方空簿 → 对手最优
-            if (px == 0) {
-                od->status = OrderStatus::Cancelled;
-                // 先回调，让 BacktestEngine 写撤单记录（此时映射仍在）
-                if (on_cancel_)
-                    on_cancel_(od->order_id, true,
-                            "BestOwn 无可用保护价，系统自动撤单", od);
-
-                // 再清理所有映射，防止后续误用
-                if (auto it = ob_.sys2input_.find(od->order_id); it != ob_.sys2input_.end()) {
-                    ob_.input2sys_.erase(it->second);
-                    ob_.sys2input_.erase(it);
-                }
-                ob_.str2sys_.erase(od->order_local_id);
-                ob_.sys2str_.erase(od->order_id);
-                return;                                            // 结束，不进入撮合
-            }
+            if (px == 0) px = buy ? ob_.bestAsk() : ob_.bestBid();
+            if (px == 0) px = buy ? ob_._upper : ob_._lower;
+        }
+        if(od->order_local_id == "1282779"){
+            std::cout<<"px"<<px<<std::endl;
         }
         // tick 对齐
         if (px < ob_._lower) px = ob_._lower;
@@ -3667,11 +3699,16 @@ void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
     if (od->remaining_volume() == 0) return;
 
     // 剩余挂簿
-    int idx = ob_.pxToIdx(od->price); 
+    int idx = ob_.pxToIdx(od->price);  // ← 现在才算 idx，确保用最终价
     auto& side = buy ? ob_._buy : ob_._sell;
     side[idx].orders.push_back(od);
     od->level_iter = std::prev(side[idx].orders.end());
-    ob_.bucketAdd(idx, buy, od->remaining_volume());
+    
+    // 只有历史订单才更新vol_sum统计
+    if (od->broker == "BRK") {
+        ob_.bucketAdd(idx, buy, od->remaining_volume());
+    }
+    
     ob_._loc[od->order_id] = { buy, idx, od->level_iter }; // 记录订单位置
 }
 
@@ -3714,27 +3751,56 @@ void ConAuctionEngine::match_sh(std::shared_ptr<Order>& inc)
                 continue;
             }
 
-            // 计算可撮合量
+            // 虚拟订单处理：如果一方是USER订单，另一方是历史订单
+            bool inc_is_user = (inc->broker != "BRK");
+            bool oppo_is_user = (oppo->broker != "BRK");
+            
+            if (inc_is_user ^ oppo_is_user) {
+                // 只有一方是USER订单的情况
+                auto virt = inc_is_user ? inc : oppo;
+                auto real = inc_is_user ? oppo : inc;
+                
+                Quantity q = virt->remaining_volume();
+                Price fill_price = px;  // 使用当前撮合价格
+                
+                // 虚拟成交：只影响USER订单
+                virt->traded_volume = virt->volume;
+                virt->status = OrderStatus::Filled;
+                
+                // 统一使用 ob_._on_exec 回调，让BacktestEngine处理虚拟/历史订单区分
+                if (ob_._on_exec) {
+                    Execution ex(
+                        buy ? inc->order_id : oppo->order_id,
+                        buy ? oppo->order_id : inc->order_id,
+                        fill_price, q);
+                    ob_._on_exec(ex);
+                }
+                
+                // 从订单簿移除虚拟订单
+                if (inc_is_user) {
+                    // inc是虚拟订单，撮合结束
+                    std::cout << "[虚拟成交-SH] USER订单 " << inc->order_local_id 
+                              << " 被历史订单触发成交 " << q << "@" << fill_price / 10000.0 << std::endl;
+                    return;  // 虚拟订单已完全成交，结束撮合
+                } else {
+                    // oppo是虚拟订单，从链表移除
+                    bkt.orders.pop_front();
+                    ob_._loc.erase(oppo->order_id);
+                    ob_._omap.erase(oppo->order_id);
+                    std::cout << "[虚拟成交-SH] USER订单 " << oppo->order_local_id 
+                              << " 被历史订单触发成交 " << q << "@" << fill_price / 10000.0 << std::endl;
+                    continue;  // 继续处理下一个对手订单
+                }
+            }
+
+            // 正常撮合逻辑（双方都是历史订单）
             Quantity q = std::min(inc->remaining_volume(), oppo->remaining_volume());
             if (q == 0) break;
 
             // 执行成交
-            ob_.incrementNumTrades();
-            ob_.subFromTotalBidVol(q);
-            ob_.subFromTotalAskVol(q);
             inc->traded_volume += q;
             oppo->traded_volume += q;
-            ob_.TotalVolume += q;
             ob_.bucketSub(best, !buy, q);
-
-            // 减少总委托量
-            if (buy) {
-                ob_.subFromTotalBidVol(q);
-                ob_.subFromTotalAskVol(q);
-            } else {
-                ob_.subFromTotalBidVol(q);
-                ob_.subFromTotalAskVol(q);
-            }
 
             // 成交回调
             if (ob_._on_exec) {
@@ -3800,26 +3866,57 @@ void ConAuctionEngine::match_sz(std::shared_ptr<Order>& inc)
                 continue;
             }
 
-            // 计算可撮合量
+            // 虚拟订单处理：如果一方是USER订单，另一方是历史订单
+            bool inc_is_user = (inc->broker != "BRK");
+            bool oppo_is_user = (oppo->broker != "BRK");
+            
+            if (inc_is_user ^ oppo_is_user) {
+                // 只有一方是USER订单的情况
+                auto virt = inc_is_user ? inc : oppo;
+                auto real = inc_is_user ? oppo : inc;
+                
+                Quantity q = virt->remaining_volume();
+                Price fill_price = px;  // 使用当前撮合价格
+                
+                // 虚拟成交：只影响USER订单
+                virt->traded_volume = virt->volume;
+                virt->status = OrderStatus::Filled;
+                
+                // 统一使用 ob_._on_exec 回调，让BacktestEngine处理虚拟/历史订单区分
+                if (ob_._on_exec) {
+                    Execution ex(
+                        buy ? inc->order_id : oppo->order_id,
+                        buy ? oppo->order_id : inc->order_id,
+                        fill_price, q);
+                    ob_._on_exec(ex);
+                }
+                
+                // 从订单簿移除虚拟订单
+                if (inc_is_user) {
+                    // inc是虚拟订单，撮合结束
+                    std::cout << "[虚拟成交-SZ] USER订单 " << inc->order_local_id 
+                              << " 被历史订单触发成交 " << q << "@" << fill_price / 10000.0 << std::endl;
+                    return;  // 虚拟订单已完全成交，结束撮合
+                } else {
+                    // oppo是虚拟订单，从链表移除
+                    bkt.orders.pop_front();
+                    ob_._loc.erase(oppo->order_id);
+                    ob_._omap.erase(oppo->order_id);
+                    std::cout << "[虚拟成交-SZ] USER订单 " << oppo->order_local_id 
+                              << " 被历史订单触发成交 " << q << "@" << fill_price / 10000.0 << std::endl;
+                    continue;  // 继续处理下一个对手订单
+                }
+            }
+
+            // 正常撮合逻辑（双方都是历史订单）
             Quantity q = std::min(inc->remaining_volume(), oppo->remaining_volume());
             if (q == 0) break;
 
             // 执行成交
-            ob_.incrementNumTrades();
-            ob_.subFromTotalBidVol(q);
-            ob_.subFromTotalAskVol(q);
             inc->traded_volume += q;
             oppo->traded_volume += q;
-            ob_.TotalVolume += q;
             ob_.bucketSub(best, !buy, q);
-              // 减少总委托量
-            if (buy) {
-                ob_.subFromTotalBidVol(q);
-                ob_.subFromTotalAskVol(q);
-            } else {
-                ob_.subFromTotalBidVol(q);
-                ob_.subFromTotalAskVol(q);
-            }
+
             // 成交回调
             if (ob_._on_exec) {
                 // 安全获取输入订单ID
@@ -3884,24 +3981,20 @@ bool ConAuctionEngine::cancel(uint64_t oid)
         // std::cout << "撤单失败：" << reason << std::endl;
         return false;
     }
+
+    // 在实际撤单前先记录撤单信息（现在还能获取到订单信息）
+    // 但我们需要通过回调通知外部记录撤单，因为这里没有直接访问BacktestEngine的方法
     
     Quantity rem = ord->remaining_volume(); // 剩余未成交量
     side[loc.idx].orders.erase(loc.it);     // 从队列中移除
     ob_.bucketSub(loc.idx, loc.is_buy, rem); // 桶减量
-    
     ord->status = OrderStatus::Cancelled;   // 状态置为已撤销
     ob_._loc.erase(it);                     // 位置映射移除
+    ob_._omap.erase(oid);                   // 系统ID映射移除
 
     // 撤单成功回调，传递订单信息
     if (on_cancel_) on_cancel_(oid, true, "撤单成功", ord);
     // std::cout << "撤单成功" << std::endl;
-
-    if (loc.is_buy) {
-        ob_.subFromTotalBidVol(rem);
-    } else {
-        ob_.subFromTotalAskVol(rem);
-    }
-    ob_._omap.erase(oid); 
 
     return true;
 }
@@ -3925,142 +4018,11 @@ bool ConAuctionEngine::cancel_by_input_id(uint64_t input_id)
     }
 }
 
-} // namespace wangcai/*
- * @Author: chenlisen
- * @Date: 2025-08-05 08:44:27
- * @LastEditTime: 2025-08-07 07:06:19
- * @FilePath: /wangcai_cpp/src/data_manager.cpp
- */
-
-#include "data_manager.h"
-#include "orderbook.h"
-#include "call_auction_engine.hpp"
-#include "con_auction_engine.hpp"
-#include "close_auction_engine.hpp"
-#include <string>
-#include <algorithm>
-#include <iostream>
-
-namespace wangcai {
-
-DataManager::DataManager(OrderBook* ob, CallAuctionEngine* call_engine, 
-                        ConAuctionEngine* con_engine, CloseAuctionEngine* close_engine)
-    : orderbook_(ob),
-      call_engine_(call_engine),
-      con_engine_(con_engine),
-      close_engine_(close_engine) {}
-
-
-void DataManager::updateSnapshot(const std::string& datetime) {
-    if (!orderbook_ or !call_engine_ or !con_engine_ or !close_engine_) {
-        return;
-    }
-
-    snap_data.Exchange = (orderbook_->getExchange() == "SH") ? 0 : 1;
-    snap_data.Instrument = ""; // Todo 暂时没搞
-    
-    // 时间处理
-    try {
-        std::string time_str = datetime.substr(11, 8);
-        time_str.erase(std::remove(time_str.begin(), time_str.end(), ':'), time_str.end());
-        snap_data.Time = std::stoi(time_str);
-    } catch (const std::exception& e) {
-        snap_data.Time = 0; 
-    }
-
-    snap_data.PreClose = orderbook_->_prev_close_price;
-    snap_data.Open = call_engine_->getPredictPrice(); 
-    snap_data.High = orderbook_->getHighest();
-    snap_data.Low = orderbook_->getLowest();
-    snap_data.last_price = orderbook_->getLastTradePrice();
-    snap_data.Volume = orderbook_->getTotalVolume();
-    snap_data.NumTrades = orderbook_->getNumTrades();
-    snap_data.TotalAskVol = orderbook_->getTotalAskVol();
-    snap_data.TotalBidVol = orderbook_->getTotalBidVol();
-    snap_data.UpperLimit = orderbook_->_upper;
-    snap_data.LowerLimit = orderbook_->_lower;
-
-    // 十档行情
-    int cur = orderbook_->_best_bid;
-    for (int i = 0; i < 10; i ++) {
-        if (cur == -1) {
-            snap_data.bids[i] = 0;
-            snap_data.bid_sizes[i] = 0;
-            break;
-        };
-        snap_data.bids[i] = orderbook_->idxToPx(cur);
-        snap_data.bid_sizes[i] = orderbook_->_buy[cur].vol_sum;
-        cur = orderbook_->_buy[cur].next;
-    }
-
-    cur = orderbook_->_best_ask;
-    for (int i = 0; i < 10; i ++) {
-        if (cur == -1) {
-            snap_data.asks[i] = 0;
-            snap_data.ask_sizes[i] = 0;
-            break;
-        }
-        snap_data.asks[i] = orderbook_->idxToPx(cur);
-        snap_data.ask_sizes[i] = orderbook_->_sell[cur].vol_sum;
-        cur = orderbook_->_sell[cur].next;
-    }
-}
-
-void DataManager::updateOrderDetail(const Event& ev, char orderKind) {
-    order_detail.Exchange = (ev.sym.substr(ev.sym.size() - 2) == "SH") ? 0 : 1;
-    order_detail.Instrument = ev.sym;
-    try {
-        std::string time_str = ev.datetime.substr(11, 8);
-        time_str.erase(std::remove(time_str.begin(), time_str.end(), ':'), time_str.end());
-        order_detail.Time = std::stoi(time_str);
-    } catch (const std::exception& e) {
-        order_detail.Time = 0;
-    }
-    order_detail.ChannelNo = ev.channelno;
-    order_detail.OrderNo = ev.orderid;
-    order_detail.Price = ev.price;
-    order_detail.Volume = ev.size;
-    order_detail.Side = (ev.side == 1) ? "B" : "S"; // Simplified
-    order_detail.OrderKind = orderKind;
-    order_detail.SeqNo = ev.seqno;
-    order_detail.BizIndex = ev.bizindex;
-}
-
-void DataManager::updateTradeDetail(const Execution& ex, const std::string& datetime) {
-    if (!orderbook_) return;
-    
-    trade_detail.Exchange = (orderbook_->getExchange() == "SH") ? 0 : 1;
-    trade_detail.Instrument = "";
-    try {
-        std::string time_str = datetime.substr(11, 8);
-        time_str.erase(std::remove(time_str.begin(), time_str.end(), ':'), time_str.end());
-        trade_detail.Time = std::stoi(time_str);
-    } catch (const std::exception& e) {
-        trade_detail.Time = 0;
-    }
-    trade_detail.Price = ex.price;
-    trade_detail.Volume = ex.volume;
-    trade_detail.BuyNo = ex.buy_order_id;
-    trade_detail.SellNo = ex.sell_order_id;
-    trade_detail.TradeBSFlag = 'N'; 
-    trade_detail.ExecType = 'F'; 
-}
-
-    Snapshot DataManager::getSnapshot() const {
-        return snap_data;
-    }
-    OrderDetail DataManager::getOrderDetail() const {
-        return order_detail;
-    }
-    TradeDetail DataManager::getTradeDetail() const {
-        return trade_detail;
-    }
-
-} // namespace wangcai/*
+} // namespace wangcai_orderbook_cpp /*
  * @Author: linzhuoyu
  * @Date: 2025-07-07 08:43:04
  * @LastEditTime: 2025-07-08 06:01:00
- * @FilePath: /wangcai/src/orderbook.cpp
+ * @FilePath: /wangcai_orderbook_cpp/src/orderbook.cpp
  */
 
 #include "../include/orderbook.h"
@@ -4076,7 +4038,7 @@ void DataManager::updateTradeDetail(const Execution& ex, const std::string& date
 #include <string>       // std::string
 #include <algorithm>    // std::sort
 
-namespace wangcai {
+namespace wangcai_orderbook_cpp {
 
 // 在文件开头添加静态变量定义
 std::map<uint64_t, std::vector<Event>> OrderBook::whole_events;
@@ -4210,4 +4172,4 @@ void OrderBook::bucketSub(int idx, bool is_buy, Quantity q)
 Price OrderBook::bestBid() const { return _best_bid == -1 ? 0 : idxToPx(_best_bid); }
 Price OrderBook::bestAsk() const { return _best_ask == -1 ? 0 : idxToPx(_best_ask); }
 
-} // namespace wangcai
+} // namespace wangcai_orderbook_cpp

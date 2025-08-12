@@ -49,32 +49,67 @@ void BacktestEngine::initialize() {
     // 3. 初始化订单簿，注册成交回调
     orderbook_ = std::make_unique<OrderBook>(upper_limit_, lower_limit_, false,
         [this](const Execution& ex) {
-            // 成交回调：生成市场数据并推送到队列
-            MarketData data;
-            // 连续竞价阶段使用最后一条BRK事件时间，集合竞价阶段使用当前事件时间
-            data.datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
-            data.symbol = symbol_;
-            data.best_bid = orderbook_->bestBid();
-            data.best_ask = orderbook_->bestAsk();
-            data.last_price = ex.price;
-            data.last_volume = ex.volume;
-            data.event_type = "trade";
-            
-            market_data_queue_.push(data);
+            std::string trade_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
             
             // 更新最新成交价（供后续集合竞价使用）
             orderbook_->setLastTradePrice(ex.price);
             
-            // 检查并通知策略订单成交
-            notifyStrategiesOnExecution(ex);
+            // 检查是否涉及虚拟订单（通过虚拟订单映射）
+            bool buy_is_virtual = virtual_order_strategy_.count(ex.buy_order_id) > 0;
+            bool sell_is_virtual = virtual_order_strategy_.count(ex.sell_order_id) > 0;
             
-            // 记录交易信息（如果启用了记录）
-            if (recording_enabled_) {
-                recordTrade(ex, continuous_mode_ ? last_brk_datetime_ : current_datetime_);
+            std::string virtual_strategy_id;
+            std::string virtual_order_id;
+            
+            if (buy_is_virtual) {
+                virtual_strategy_id = virtual_order_strategy_[ex.buy_order_id];
+                virtual_order_id = virtual_order_local_id_[ex.buy_order_id];
+            } else if (sell_is_virtual) {
+                virtual_strategy_id = virtual_order_strategy_[ex.sell_order_id];
+                virtual_order_id = virtual_order_local_id_[ex.sell_order_id];
             }
             
-            if (market_data_callback_) {
-                market_data_callback_(data);
+            if (buy_is_virtual || sell_is_virtual) {
+                // 虚拟成交：只通知对应策略，不记录到CSV
+                for (auto& strategy : strategies_) {
+                    if (strategy->getStrategyId() == virtual_strategy_id) {
+                        strategy->onOrderFilled(virtual_order_id, ex.price, ex.volume);
+                        std::cout << "[虚拟成交] 策略 " << virtual_strategy_id 
+                                  << " 订单 " << virtual_order_id 
+                                  << " 成交 " << ex.volume << "@" << ex.price / 10000.0 << std::endl;
+                        break;
+                    }
+                }
+                
+                // 成交后清理虚拟订单映射
+                if (buy_is_virtual) {
+                    virtual_order_strategy_.erase(ex.buy_order_id);
+                    virtual_order_local_id_.erase(ex.buy_order_id);
+                }
+                if (sell_is_virtual) {
+                    virtual_order_strategy_.erase(ex.sell_order_id);
+                    virtual_order_local_id_.erase(ex.sell_order_id);
+                }
+                
+                // 注意：虚拟成交不记录到CSV，不调用recordTrade()
+            } else {
+                // 历史订单成交：正常处理并记录到CSV
+                
+                // 1. 检查并通知策略订单成交
+                notifyStrategiesOnExecution(ex);
+                
+                // 2. 推送成交事件给所有策略，收集新事件（暂存到pending队列）
+                for (auto& strategy : strategies_) {
+                    auto user_events = strategy->onTradeEvent(ex, trade_datetime);
+                    for (const auto& event : user_events) {
+                        pending_trade_events_.push_back(event);
+                    }
+                }
+                
+                // 3. 记录交易信息（如果启用了记录）- 只记录历史订单成交
+                if (recording_enabled_) {
+                    recordTrade(ex, trade_datetime);
+                }
             }
         });
     
@@ -95,19 +130,33 @@ void BacktestEngine::initialize() {
                                                            }
                                                        });
     
-    // 5. 初始化连续竞价撮合引擎，注册撤单回调
+    // 5. 初始化连续竞价撮合引擎，注册撤单回调和虚拟成交回调
     MarketType market_type = (orderbook_->getExchange() == "SH") ? MarketType::SH : MarketType::SZ;
     con_engine_ = std::make_unique<ConAuctionEngine>(*orderbook_, market_type,
         [this](uint64_t order_id, bool success, const std::string& reason, 
                std::shared_ptr<Order> order_info) {
-            // 撤单回调，通知所有策略并记录撤单
-            if (success && recording_enabled_ && order_info) {
-                uint64_t original_id = orderbook_->getOriginalOrderId(order_id);
-                recordCancelWithOrderInfo(original_id, continuous_mode_ ? last_brk_datetime_ : current_datetime_, order_info);
-            }
-            
-            for (auto& strategy : strategies_) {
-                strategy->onOrderCancelled(std::to_string(order_id), reason);
+            // 撤单回调，区分虚拟订单和历史订单
+            if (success && order_info) {
+                if (order_info->broker == "BRK") {
+                    // 历史订单撤单：只记录撤单到CSV，不通知策略
+                    if (recording_enabled_) {
+                        uint64_t original_id = orderbook_->getOriginalOrderId(order_id);
+                        recordCancelWithOrderInfo(original_id, continuous_mode_ ? last_brk_datetime_ : current_datetime_, order_info);
+                    }
+                    // 注意：历史订单撤单不通知策略，因为策略不应该关心历史订单的撤单
+                } else {
+                    // 虚拟订单撤单：只通知对应策略，不记录到CSV
+                    for (auto& strategy : strategies_) {
+                        if (strategy->getStrategyId() == order_info->account) {
+                            strategy->onOrderCancelled(order_info->order_local_id, reason);
+                            std::cout << "[虚拟撤单] 策略 " << order_info->account 
+                                      << " 订单 " << order_info->order_local_id 
+                                      << " 已撤单，原因: " << reason << std::endl;
+                            break;
+                        }
+                    }
+                    // 注意：虚拟订单撤单不记录到CSV，不调用recordCancel()
+                }
             }
         });
 
@@ -160,15 +209,14 @@ void BacktestEngine::run() {
             const Event& ev = events_in_bucket[i];
             current_datetime_ = ev.datetime;
             
-            // Step 1: 将事件转换为MarketData推送给策略
-            MarketData market_data = eventToMarketData(ev);
-            std::vector<UserOrder> strategy_orders;
+            // Step 1: 推送订单事件给策略
+            std::vector<UserEvent> strategy_events;
             
-            // 收集所有策略的订单响应
+            // 收集所有策略的事件响应
             for (auto& strategy : strategies_) {
-                auto user_orders = strategy->onMarketData(market_data);
-                for (const auto& order : user_orders) {
-                    strategy_orders.push_back(order);
+                auto user_events = strategy->onOrderEvent(ev);
+                for (const auto& event : user_events) {
+                    strategy_events.push_back(event);
                 }
             }
             
@@ -187,10 +235,7 @@ void BacktestEngine::run() {
                     uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
                     call_engine_->cancel_by_input_id(oid_raw);
                 }
-                
-                // 发布市场数据快照
-                publishMarketData("order", ev.datetime);
-                
+                               
                 // 检查是否结束集合竞价
                 if (tm_cur >= Call_Open_Time) {
                     std::string auction_time = ev.datetime.substr(0, 11) + "09:25:00.000";
@@ -198,7 +243,6 @@ void BacktestEngine::run() {
                     
                     call_engine_->settle();
                     continuous_mode_ = true;
-                    publishMarketData("auction_settle", auction_time);
                     std::cout << "[09:25] 集合竞价完成，开盘价=" << call_engine_->getPredictPrice() / 10000.0 
                               << " 真实开盘价=" << actual_open_ / 10000.0
                               << " 开盘成交量=" << call_engine_->getPredictVolume() << std::endl;
@@ -241,49 +285,24 @@ void BacktestEngine::run() {
                         close_engine_->cancel_by_input_id(oid_raw);
                     }
                 }
-
-                publishMarketData("order", ev.datetime);
             }
             
-            // Step 3: 处理策略订单（在历史事件之后）
-            for (const auto& user_order : strategy_orders) {
-                if (continuous_mode_) {  // 只有连续竞价期间才允许策略下单
-                    processUserOrder(user_order);
+            // Step 3: 处理策略事件（在历史事件之后）
+            for (const auto& user_event : strategy_events) {
+                if (continuous_mode_) {  // 只有连续竞价期间才允许策略操作
+                    processUserEvent(user_event);
                 }
             }
             
-            // Step 4: 处理市场数据队列，包括成交推送
-            while (!market_data_queue_.empty()) {
-                MarketData data = market_data_queue_.front();
-                market_data_queue_.pop();
-                
-                // 如果是成交数据，推送给策略并收集新的订单
-                if (data.event_type == "trade") {
-                    std::vector<UserOrder> trade_strategy_orders;
-                    
-                    for (auto& strategy : strategies_) {
-                        // 先检查是否是该策略的订单成交
-                        checkAndNotifyOrderFilled(data, strategy);
-                        
-                        // 推送成交数据给策略
-                        auto user_orders = strategy->onMarketData(data);
-                        for (const auto& order : user_orders) {
-                            trade_strategy_orders.push_back(order);
-                        }
-                    }
-                    
-                    // 处理成交后的策略订单
-                    for (const auto& user_order : trade_strategy_orders) {
-                        if (continuous_mode_) {
-                            processUserOrder(user_order);
-                        }
-                    }
-                }
-                
-                if (market_data_callback_) {
-                    market_data_callback_(data);
+            // Step 4: 处理成交事件产生的策略事件
+            for (const auto& user_event : pending_trade_events_) {
+                if (continuous_mode_) {  // 只有连续竞价期间才允许策略操作
+                    processUserEvent(user_event);
                 }
             }
+            // 清空成交事件队列
+            pending_trade_events_.clear();
+            strategy_events.clear();
         }
     }
     
@@ -306,20 +325,47 @@ void BacktestEngine::run() {
     printResults();
 }
 
-// 发布市场数据到队列，并触发回调
-void BacktestEngine::publishMarketData(const std::string& event_type, const std::string& datetime) {
-    MarketData data;
-    data.datetime = datetime;
-    data.symbol = symbol_;
-    data.best_bid = orderbook_->bestBid();
-    data.best_ask = orderbook_->bestAsk();
-    data.event_type = event_type;
+// 尝试立即成交USER订单
+bool BacktestEngine::tryFillImmediately(std::shared_ptr<Order> user_order) {
+    bool is_buy = user_order->direction == Direction::Buy;
+    Price best_opp_price = is_buy ? orderbook_->bestAsk() : orderbook_->bestBid();
     
-    market_data_queue_.push(data);
-    if (market_data_callback_) {
-        market_data_callback_(data);
+    // 检查是否可以立即成交
+    bool can_fill = false;
+    if (is_buy && best_opp_price > 0 && user_order->price >= best_opp_price) {
+        can_fill = true;
+    } else if (!is_buy && best_opp_price > 0 && user_order->price <= best_opp_price) {
+        can_fill = true;
     }
+    
+    if (can_fill) {
+        // 立即全部成交
+        Price fill_price = best_opp_price;
+        Quantity fill_qty = user_order->volume;
+        
+        user_order->traded_volume = fill_qty;
+        user_order->status = OrderStatus::Filled;
+        
+        // 虚拟成交只通知对应策略，不触发其他回调
+        // 找到对应的策略并通知成交
+        for (auto& strategy : strategies_) {
+            if (strategy->getStrategyId() == user_order->account) { // account字段存储的是strategy_id
+                strategy->onOrderFilled(user_order->order_local_id, fill_price, fill_qty);
+                break;
+            }
+        }
+        
+        std::cout << "[虚拟成交] USER订单 " << user_order->order_local_id 
+                  << " 立即成交 " << fill_qty << "@" << fill_price / 10000.0 << std::endl;
+        return true;
+    }
+    
+    return false;
 }
+
+
+
+
 
 // 处理用户策略下发的订单，仅在连续竞价阶段允许
 void BacktestEngine::processUserOrder(const UserOrder& user_order) {
@@ -339,21 +385,15 @@ void BacktestEngine::processUserOrder(const UserOrder& user_order) {
         
         // 记录用户订单号与系统订单号的映射
         user_order_mapping_[user_order.order_id] = order->order_id;
-        con_engine_->accept(order);
         
-        // 如果订单立即成交，更新持仓并通知策略
-        ////// 未完成！！！！！ /////
-        if (order->traded_volume > 0) {
-            updatePosition(user_order.strategy_id, user_order.symbol,
-                          user_order.direction, order->traded_volume, 
-                          order->traded_volume > 0 ? order->price : 0); // 简化：使用订单价格
-            
-            // 通知对应策略订单成交
-            for (auto& strategy : strategies_) {
-                if (strategy->getStrategyId() == user_order.strategy_id) {
-                    strategy->onOrderFilled(user_order.order_id, order->price, order->traded_volume);
-                }
-            }
+        // 记录虚拟订单映射，用于成交回调时识别
+        virtual_order_strategy_[order->order_id] = user_order.strategy_id;
+        virtual_order_local_id_[order->order_id] = user_order.order_id;
+        
+        // 先尝试立即成交
+        if (!tryFillImmediately(order)) {
+            // 如果无法立即成交，则送入撮合引擎
+            con_engine_->accept(order);
         }
         
     } catch (const std::exception& e) {
@@ -592,20 +632,42 @@ const std::vector<TradeRecord>& BacktestEngine::getTradeRecords() const {
     return trade_records_;
 }
 
-
-
-// 事件到MarketData的转换
-MarketData BacktestEngine::eventToMarketData(const Event& ev) {
-    MarketData data;
-    data.datetime = ev.datetime;
-    data.symbol = symbol_;
-    data.best_bid = orderbook_->bestBid();
-    data.best_ask = orderbook_->bestAsk();
-    data.event_type = (ev.source == "ord") ? "order" : "cancel";
-    data.last_price = 0;  // 将在后续成交时更新
-    data.last_volume = 0;
-    return data;
+// 处理用户事件（下单或撤单）
+void BacktestEngine::processUserEvent(const UserEvent& user_event) {
+    switch (user_event.type) {
+        case UserEvent::ORDER:
+            processUserOrder(user_event.order);
+            break;
+        case UserEvent::CANCEL:
+            processUserCancel(user_event.cancel);
+            break;
+    }
 }
+
+// 处理用户撤单
+void BacktestEngine::processUserCancel(const UserCancel& user_cancel) {
+    auto it = user_order_mapping_.find(user_cancel.order_id);
+    if (it != user_order_mapping_.end()) {
+        uint64_t system_order_id = it->second;
+        
+        if (continuous_mode_) {
+            con_engine_->cancel(system_order_id);
+        } else {
+            call_engine_->cancel(system_order_id);
+        }
+        
+        std::cout << "[策略撤单] " << user_cancel.strategy_id 
+                  << " 撤销订单: " << user_cancel.order_id 
+                  << " (系统ID: " << system_order_id << ")" << std::endl;
+    } else {
+        std::cout << "[策略撤单失败] " << user_cancel.strategy_id 
+                  << " 找不到订单: " << user_cancel.order_id << std::endl;
+    }
+}
+
+
+
+
 
 // 通知策略订单成交
 void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {

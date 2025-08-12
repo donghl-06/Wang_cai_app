@@ -3,6 +3,7 @@
 #include "backtest_engine.hpp"
 #include <iostream>
 #include <string>
+#include <deque>
 
 namespace wangcai_orderbook_cpp {
 
@@ -19,141 +20,80 @@ public:
           price_offset_(price_offset),
           order_count_(0) {}
 
-    std::vector<UserOrder> onMarketData(const MarketData& data) override {
-        std::vector<UserOrder> orders;
+    std::vector<UserEvent> onOrderEvent(const Event& event) override {
+        std::vector<UserEvent> events;
         
-        // 对成交数据的响应
-        if (data.event_type == "trade") {
-            std::cout << "[" << strategy_id_ << "] 看到成交: " 
-                      << " 价格=" << data.last_price / 10000.0 
-                      << " 数量=" << data.last_volume 
-                      << " 时间=" << data.datetime << std::endl;
-            
-            // 可以根据成交情况决定是否跟单
-            if (data.last_volume >= 500) {  // 大单成交时跟单
+        // 只对新订单事件进行跟单
+        if (event.source == "ord" && event.datetime.substr(11, 8) >= "09:30:00") {
+            // 简单的跟单逻辑：每N个事件尝试下单一次
+            if (order_count_ < 30 && ++event_count_ % 50 == 0) { // 最多下30单
                 UserOrder order;
-                order.order_id = strategy_id_ + "_FOLLOW_TRADE_" + std::to_string(++order_count_);
-                order.symbol = data.symbol;
-                order.direction = Direction::Buy;  // 简单跟买
+                order.order_id = strategy_id_ + "_FOLLOW_" + std::to_string(++order_count_);
+                order.symbol = event.sym;
+                order.direction = (order_count_ % 2 == 1) ? Direction::Buy : Direction::Sell;
                 order.order_type = OrderType::Limit;
-                order.price = data.last_price - price_offset_;  // 稍低价买入
-                order.volume = 50;  // 小量跟单
+                
+                if (order.direction == Direction::Buy) {
+                    order.price = event.price - price_offset_; // 买单价格稍低
+                } else {
+                    order.price = event.price + price_offset_; // 卖单价格稍高
+                }
+                
+                order.volume = follow_volume_;
                 order.strategy_id = strategy_id_;
                 
-                orders.push_back(order);
+                events.push_back(UserEvent(order));
                 
-                std::cout << "[" << strategy_id_ << "] 大单跟单: " << order.order_id 
-                          << " 价格: " << order.price / 10000.0 << std::endl;
-            }
-        }
-        // 只对订单事件进行跟单（演示同步处理）
-        else if (data.event_type == "order") {
-            // 检查最佳买卖盘的变化，假设有大单进入
-            if (data.best_bid > 0 && data.best_ask > 0) {
-                // 简单的跟单逻辑：每N个事件尝试下单一次
-                if (++event_count_ % 50 == 0) { // 每50个事件跟单一次
-                    UserOrder order;
-                    order.order_id = strategy_id_ + "_FOLLOW_" + std::to_string(++order_count_);
-                    order.symbol = data.symbol;
-                    order.direction = (order_count_ % 2 == 1) ? Direction::Buy : Direction::Sell;
-                    order.order_type = OrderType::Limit;
-                    
-                    if (order.direction == Direction::Buy) {
-                        order.price = data.best_bid - price_offset_; // 买单价格稍低
-                    } else {
-                        order.price = data.best_ask + price_offset_; // 卖单价格稍高
-                    }
-                    
-                    order.volume = follow_volume_;
-                    order.strategy_id = strategy_id_;
-                    
-                    orders.push_back(order);
-                    
-                    std::cout << "[" << strategy_id_ << "] 跟单: " << order.order_id 
-                              << " 方向: " << (order.direction == Direction::Buy ? "买" : "卖")
-                              << " 价格: " << order.price / 10000.0 
-                              << " 数量: " << order.volume << std::endl;
-                }
+                std::cout << "[" << strategy_id_ << "] 跟单: " << order.order_id 
+                          << " 方向: " << (order.direction == Direction::Buy ? "买" : "卖")
+                          << " 价格: " << order.price / 10000.0 
+                          << " 数量: " << order.volume << std::endl;
             }
         }
         
-        return orders;
+        return events;
+    }
+
+    std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) override {
+        std::vector<UserEvent> events;
+        
+        // 可以根据成交情况决定是否跟单
+        if (execution.volume >= 500 && order_count_ < 30) {  // 大单成交时跟单，最多下30单
+            UserOrder order;
+            order.order_id = strategy_id_ + "_FOLLOW_TRADE_" + std::to_string(++order_count_);
+            order.symbol = "000001SZ";  // 简化处理，使用固定symbol
+            order.direction = Direction::Buy;  // 简单跟买
+            order.order_type = OrderType::Limit;
+            order.price = execution.price - price_offset_;  // 稍低价买入
+            order.volume = 50;  // 小量跟单
+            order.strategy_id = strategy_id_;
+            
+            events.push_back(UserEvent(order));
+            
+            std::cout << "[" << strategy_id_ << "] 大单跟单: " << order.order_id 
+                      << " 价格: " << order.price / 10000.0 << std::endl;
+        }
+        
+        return events;
     }
 
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
-        std::cout << "[" << strategy_id_ << "] 订单成交: " << order_id 
-                  << " 价格: " << price / 10000.0 
-                  << " 数量: " << volume << std::endl;
+        std::cout << "========== 策略成交回报 ==========" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "订单ID: " << order_id << std::endl;
+        std::cout << "成交价格: " << price / 10000.0 << " 元" << std::endl;
+        std::cout << "成交数量: " << volume << std::endl;
+        std::cout << "累计成交量: " << total_filled_volume_ + volume << std::endl;
+        std::cout << "=================================" << std::endl;
         total_filled_volume_ += volume;
-        
-        // 成交后可以追加订单
-        // 这里可以根据成交情况决定是否需要下新单
-    }
-    
-    std::vector<UserOrder> onMarketData(const MarketData& data) override {
-        std::vector<UserOrder> orders;
-        
-        // 对成交数据的响应
-        if (data.event_type == "trade") {
-            std::cout << "[" << strategy_id_ << "] 看到成交: " 
-                      << " 价格=" << data.last_price / 10000.0 
-                      << " 数量=" << data.last_volume 
-                      << " 时间=" << data.datetime << std::endl;
-            
-            // 可以根据成交情况决定是否跟单
-            if (data.last_volume >= 500) {  // 大单成交时跟单
-                UserOrder order;
-                order.order_id = strategy_id_ + "_FOLLOW_TRADE_" + std::to_string(++order_count_);
-                order.symbol = data.symbol;
-                order.direction = Direction::Buy;  // 简单跟买
-                order.order_type = OrderType::Limit;
-                order.price = data.last_price - price_offset_;  // 稍低价买入
-                order.volume = 50;  // 小量跟单
-                order.strategy_id = strategy_id_;
-                
-                orders.push_back(order);
-                
-                std::cout << "[" << strategy_id_ << "] 大单跟单: " << order.order_id 
-                          << " 价格: " << order.price / 10000.0 << std::endl;
-            }
-        }
-        // 只对订单事件进行跟单（演示同步处理）
-        else if (data.event_type == "order") {
-            // 检查最佳买卖盘的变化，假设有大单进入
-            if (data.best_bid > 0 && data.best_ask > 0) {
-                // 简单的跟单逻辑：每N个事件尝试下单一次
-                if (++event_count_ % 50 == 0) { // 每50个事件跟单一次
-                    UserOrder order;
-                    order.order_id = strategy_id_ + "_FOLLOW_" + std::to_string(++order_count_);
-                    order.symbol = data.symbol;
-                    order.direction = (order_count_ % 2 == 1) ? Direction::Buy : Direction::Sell;
-                    order.order_type = OrderType::Limit;
-                    
-                    if (order.direction == Direction::Buy) {
-                        order.price = data.best_bid - price_offset_; // 买单价格稍低
-                    } else {
-                        order.price = data.best_ask + price_offset_; // 卖单价格稍高
-                    }
-                    
-                    order.volume = follow_volume_;
-                    order.strategy_id = strategy_id_;
-                    
-                    orders.push_back(order);
-                    
-                    std::cout << "[" << strategy_id_ << "] 跟单: " << order.order_id 
-                              << " 方向: " << (order.direction == Direction::Buy ? "买" : "卖")
-                              << " 价格: " << order.price / 10000.0 
-                              << " 数量: " << order.volume << std::endl;
-                }
-            }
-        }
-        
-        return orders;
     }
 
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
-        std::cout << "[" << strategy_id_ << "] 订单撤销: " << order_id 
-                  << " 原因: " << reason << std::endl;
+        std::cout << "========== 策略撤单回报 ==========" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "订单ID: " << order_id << std::endl;
+        std::cout << "撤单原因: " << reason << std::endl;
+        std::cout << "=================================" << std::endl;
     }
 
     std::string getStrategyId() const override { return strategy_id_; }
@@ -181,56 +121,76 @@ public:
     MeanReversionStrategy(const std::string& strategy_id, double threshold = 0.02)
         : strategy_id_(strategy_id), threshold_(threshold), last_price_(0), order_count_(0) {}
     
-    std::vector<UserOrder> onMarketData(const MarketData& data) override {
-        std::vector<UserOrder> orders;
+    std::vector<UserEvent> onOrderEvent(const Event& event) override {
+        // 均值回归策略不需要对订单事件做出响应
+        return {};
+    }
+
+    std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) override {
+        std::vector<UserEvent> events;
         
-        // 简单策略：如果价格偏离前收盘价超过阈值，则反向下单
-        if (data.best_bid > 0 && data.best_ask > 0) {
-            double mid_price = (data.best_bid + data.best_ask) / 2.0 / 10000.0;
-            double prev_close = 5.0; // 简化：假设前收盘价为5元
+        // 基于成交价格进行均值回归判断
+        double trade_price = execution.price / 10000.0;
+        double prev_close = 5.0; // 简化：假设前收盘价为5元
+        
+        if (last_price_ > 0) {
+            double price_change = (trade_price - last_price_) / last_price_;
             
-            if (mid_price > prev_close * (1 + threshold_)) {
-                // 价格过高，卖出
+            // 如果价格下跌超过阈值，买入
+            if (price_change < -threshold_ && order_count_ < 30) {
                 UserOrder order;
-                order.order_id = strategy_id_ + "_" + std::to_string(++order_count_);
-                order.symbol = data.symbol;
-                order.direction = Direction::Sell;
-                order.order_type = OrderType::Limit;
-                order.price = data.best_bid; // 以买一价卖出
-                order.volume = 100;
-                order.strategy_id = strategy_id_;
-                orders.push_back(order);
-                
-                std::cout << "[策略] " << strategy_id_ << " 卖出信号，价格=" 
-                         << mid_price << " > " << prev_close * (1 + threshold_) << std::endl;
-            } else if (mid_price < prev_close * (1 - threshold_)) {
-                // 价格过低，买入
-                UserOrder order;
-                order.order_id = strategy_id_ + "_" + std::to_string(++order_count_);
-                order.symbol = data.symbol;
+                order.order_id = strategy_id_ + "_BUY_" + std::to_string(++order_count_);
+                order.symbol = "000001SZ";  // 简化处理
                 order.direction = Direction::Buy;
                 order.order_type = OrderType::Limit;
-                order.price = data.best_ask; // 以卖一价买入
+                order.price = static_cast<Price>(trade_price * 0.999 * 10000); // 稍低于当前价
                 order.volume = 100;
                 order.strategy_id = strategy_id_;
-                orders.push_back(order);
                 
-                std::cout << "[策略] " << strategy_id_ << " 买入信号，价格=" 
-                         << mid_price << " < " << prev_close * (1 - threshold_) << std::endl;
+                events.push_back(UserEvent(order));
+                
+                std::cout << "[" << strategy_id_ << "] 价格下跌 " << (price_change * 100) 
+                          << "%，买入订单: " << order.order_id 
+                          << " 价格: " << order.price / 10000.0 << std::endl;
+            }
+            // 如果价格上涨超过阈值，卖出
+            else if (price_change > threshold_ && order_count_ < 30) {
+                UserOrder order;
+                order.order_id = strategy_id_ + "_SELL_" + std::to_string(++order_count_);
+                order.symbol = "000001SZ";  // 简化处理
+                order.direction = Direction::Sell;
+                order.order_type = OrderType::Limit;
+                order.price = static_cast<Price>(trade_price * 1.001 * 10000); // 稍高于当前价
+                order.volume = 100;
+                order.strategy_id = strategy_id_;
+                
+                events.push_back(UserEvent(order));
+                
+                std::cout << "[" << strategy_id_ << "] 价格上涨 " << (price_change * 100) 
+                          << "%，卖出订单: " << order.order_id 
+                          << " 价格: " << order.price / 10000.0 << std::endl;
             }
         }
         
-        return orders;
+        last_price_ = trade_price;
+        return events;
     }
     
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
-        std::cout << "[策略] " << strategy_id_ << " 订单成交: " << order_id 
-                 << " 价格=" << price / 10000.0 << " 数量=" << volume << std::endl;
+        std::cout << "========== 策略成交回报 ==========" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "订单ID: " << order_id << std::endl;
+        std::cout << "成交价格: " << price / 10000.0 << " 元" << std::endl;
+        std::cout << "成交数量: " << volume << std::endl;
+        std::cout << "=================================" << std::endl;
     }
     
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
-        std::cout << "[策略] " << strategy_id_ << " 订单取消: " << order_id 
-                 << " 原因=" << reason << std::endl;
+        std::cout << "========== 策略撤单回报 ==========" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "订单ID: " << order_id << std::endl;
+        std::cout << "撤单原因: " << reason << std::endl;
+        std::cout << "=================================" << std::endl;
     }
     
     std::string getStrategyId() const override {
@@ -242,6 +202,277 @@ private:
     double threshold_;
     double last_price_;
     int order_count_;
+};
+
+// 专门测试成交回报和撤单回报的策略
+class TestCallbackStrategy : public Strategy {
+public:
+    TestCallbackStrategy(const std::string& strategy_id = "TEST_CALLBACK")
+        : strategy_id_(strategy_id), test_phase_(0), order_counter_(0) {}
+    
+    std::vector<UserEvent> onOrderEvent(const Event& event) override {
+        std::vector<UserEvent> events;
+        
+        // 只在连续竞价阶段进行测试
+        if (event.source == "ord" && event.datetime.substr(11, 8) >= "09:30:00" && test_phase_ < 6) {
+            
+            // 每处理100个事件执行一次测试
+            if (++event_count_ % 100 == 0) {
+                switch (test_phase_) {
+                    case 0: // 测试立即成交
+                        events = testImmediateFill(event);
+                        break;
+                    case 1: // 测试撮合引擎成交
+                        events = testMatchingFill(event);
+                        break;
+                    case 2: // 测试主动撤单
+                        events = testActiveCancel(event);
+                        break;
+                    case 3: // 测试批量下单成交
+                        events = testBatchOrders(event);
+                        break;
+                    case 4: // 测试不同价格成交
+                        events = testDifferentPrices(event);
+                        break;
+                    case 5: // 测试大单成交
+                        events = testLargeOrders(event);
+                        break;
+                }
+                test_phase_++;
+                
+                std::cout << "\n[测试策略] 开始第 " << test_phase_ << " 阶段测试" << std::endl;
+            }
+        }
+        
+        return events;
+    }
+    
+    std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) override {
+        // 不响应成交事件，专注于测试回调
+        return {};
+    }
+    
+    void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
+        filled_count_++;
+        total_filled_volume_ += volume;
+        
+        std::cout << "\n🎉========== 测试策略成交回报 ==========" << std::endl;
+        std::cout << "✅ 策略ID: " << strategy_id_ << std::endl;
+        std::cout << "✅ 订单ID: " << order_id << std::endl;
+        std::cout << "✅ 成交价格: " << price / 10000.0 << " 元" << std::endl;
+        std::cout << "✅ 成交数量: " << volume << std::endl;
+        std::cout << "✅ 累计成交次数: " << filled_count_ << std::endl;
+        std::cout << "✅ 累计成交量: " << total_filled_volume_ << std::endl;
+        std::cout << "🎉========================================" << std::endl;
+        
+        // 如果是需要撤单的测试订单，记录下来准备撤单
+        if (order_id.find("CANCEL_TEST") != std::string::npos) {
+            orders_to_cancel_.push_back(order_id);
+        }
+    }
+    
+    void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
+        cancelled_count_++;
+        
+        std::cout << "\n❌========== 测试策略撤单回报 ==========" << std::endl;
+        std::cout << "❌ 策略ID: " << strategy_id_ << std::endl;
+        std::cout << "❌ 订单ID: " << order_id << std::endl;
+        std::cout << "❌ 撤单原因: " << reason << std::endl;
+        std::cout << "❌ 累计撤单次数: " << cancelled_count_ << std::endl;
+        std::cout << "❌========================================" << std::endl;
+    }
+    
+    std::string getStrategyId() const override { return strategy_id_; }
+    
+    void printStatistics() const {
+        std::cout << "\n🔍======= 测试策略统计报告 =======" << std::endl;
+        std::cout << "📊 策略ID: " << strategy_id_ << std::endl;
+        std::cout << "📊 总下单数: " << order_counter_ << std::endl;
+        std::cout << "📊 成交回报次数: " << filled_count_ << std::endl;
+        std::cout << "📊 撤单回报次数: " << cancelled_count_ << std::endl;
+        std::cout << "📊 总成交量: " << total_filled_volume_ << std::endl;
+        std::cout << "📊 处理事件数: " << event_count_ << std::endl;
+        std::cout << "📊 测试阶段: " << test_phase_ << "/6" << std::endl;
+        std::cout << "🔍===============================" << std::endl;
+    }
+
+private:
+    // 测试立即成交（市价单或者价格很优的限价单）
+    std::vector<UserEvent> testImmediateFill(const Event& event) {
+        std::vector<UserEvent> events;
+        
+        std::cout << "[测试阶段1] 测试立即成交订单" << std::endl;
+        
+        UserOrder order;
+        order.order_id = strategy_id_ + "_IMMEDIATE_" + std::to_string(++order_counter_);
+        order.symbol = event.sym;
+        order.direction = Direction::Buy;
+        order.order_type = OrderType::Limit;
+        order.price = event.price + 1000; // 高价买入，确保立即成交
+        order.volume = 100;
+        order.strategy_id = strategy_id_;
+        
+        events.push_back(UserEvent(order));
+        
+        std::cout << "📝 下单: " << order.order_id 
+                  << " 高价买入 " << order.price / 10000.0 
+                  << " 元，预期立即成交" << std::endl;
+                  
+        return events;
+    }
+    
+    // 测试撮合引擎成交
+    std::vector<UserEvent> testMatchingFill(const Event& event) {
+        std::vector<UserEvent> events;
+        
+        std::cout << "[测试阶段2] 测试撮合引擎成交" << std::endl;
+        
+        UserOrder order;
+        order.order_id = strategy_id_ + "_MATCHING_" + std::to_string(++order_counter_);
+        order.symbol = event.sym;
+        order.direction = Direction::Sell;
+        order.order_type = OrderType::Limit;
+        order.price = event.price - 200; // 低价卖出，等待撮合
+        order.volume = 50;
+        order.strategy_id = strategy_id_;
+        
+        events.push_back(UserEvent(order));
+        
+        std::cout << "📝 下单: " << order.order_id 
+                  << " 低价卖出 " << order.price / 10000.0 
+                  << " 元，等待撮合成交" << std::endl;
+                  
+        return events;
+    }
+    
+    // 测试主动撤单
+    std::vector<UserEvent> testActiveCancel(const Event& event) {
+        std::vector<UserEvent> events;
+        
+        std::cout << "[测试阶段3] 测试主动撤单" << std::endl;
+        
+        // 先下一个不容易成交的订单
+        UserOrder order;
+        order.order_id = strategy_id_ + "_CANCEL_TEST_" + std::to_string(++order_counter_);
+        order.symbol = event.sym;
+        order.direction = Direction::Buy;
+        order.order_type = OrderType::Limit;
+        order.price = event.price - 1000; // 很低的价格，不容易成交
+        order.volume = 200;
+        order.strategy_id = strategy_id_;
+        
+        events.push_back(UserEvent(order));
+        
+        // 记录订单ID，稍后撤单
+        pending_cancel_orders_.push_back(order.order_id);
+        
+        std::cout << "📝 下单: " << order.order_id 
+                  << " 低价买入 " << order.price / 10000.0 
+                  << " 元，准备稍后撤单" << std::endl;
+                  
+        // 如果有之前的订单需要撤单，现在撤掉
+        if (!pending_cancel_orders_.empty() && pending_cancel_orders_.size() > 1) {
+            std::string cancel_id = pending_cancel_orders_.front();
+            pending_cancel_orders_.pop_front();
+            
+            UserCancel cancel(cancel_id, strategy_id_);
+            events.push_back(UserEvent(cancel));
+            
+            std::cout << "❌ 撤单: " << cancel_id << std::endl;
+        }
+                  
+        return events;
+    }
+    
+    // 测试批量订单
+    std::vector<UserEvent> testBatchOrders(const Event& event) {
+        std::vector<UserEvent> events;
+        
+        std::cout << "[测试阶段4] 测试批量订单成交" << std::endl;
+        
+        // 下多个小单
+        for (int i = 0; i < 3; i++) {
+            UserOrder order;
+            order.order_id = strategy_id_ + "_BATCH_" + std::to_string(++order_counter_);
+            order.symbol = event.sym;
+            order.direction = (i % 2 == 0) ? Direction::Buy : Direction::Sell;
+            order.order_type = OrderType::Limit;
+            order.price = event.price + (i % 2 == 0 ? 500 : -500); // 买高卖低
+            order.volume = 30;
+            order.strategy_id = strategy_id_;
+            
+            events.push_back(UserEvent(order));
+            
+            std::cout << "📝 批量下单 " << (i+1) << "/3: " << order.order_id 
+                      << " " << (order.direction == Direction::Buy ? "买入" : "卖出")
+                      << " " << order.price / 10000.0 << " 元" << std::endl;
+        }
+                  
+        return events;
+    }
+    
+    // 测试不同价格成交
+    std::vector<UserEvent> testDifferentPrices(const Event& event) {
+        std::vector<UserEvent> events;
+        
+        std::cout << "[测试阶段5] 测试不同价格成交" << std::endl;
+        
+        UserOrder order;
+        order.order_id = strategy_id_ + "_PRICE_" + std::to_string(++order_counter_);
+        order.symbol = event.sym;
+        order.direction = Direction::Buy;
+        order.order_type = OrderType::Limit;
+        order.price = event.price + 300; // 稍高价格
+        order.volume = 150;
+        order.strategy_id = strategy_id_;
+        
+        events.push_back(UserEvent(order));
+        
+        std::cout << "📝 下单: " << order.order_id 
+                  << " 买入 " << order.price / 10000.0 
+                  << " 元，测试不同价格成交" << std::endl;
+                  
+        return events;
+    }
+    
+    // 测试大单成交
+    std::vector<UserEvent> testLargeOrders(const Event& event) {
+        std::vector<UserEvent> events;
+        
+        std::cout << "[测试阶段6] 测试大单成交" << std::endl;
+        
+        UserOrder order;
+        order.order_id = strategy_id_ + "_LARGE_" + std::to_string(++order_counter_);
+        order.symbol = event.sym;
+        order.direction = Direction::Sell;
+        order.order_type = OrderType::Limit;
+        order.price = event.price - 100; // 稍低价格
+        order.volume = 500; // 大单
+        order.strategy_id = strategy_id_;
+        
+        events.push_back(UserEvent(order));
+        
+        std::cout << "📝 下大单: " << order.order_id 
+                  << " 卖出 " << order.price / 10000.0 
+                  << " 元，数量 " << order.volume << std::endl;
+                  
+        return events;
+    }
+
+private:
+    std::string strategy_id_;
+    int test_phase_;
+    int order_counter_;
+    int event_count_ = 0;
+    
+    // 统计数据
+    int filled_count_ = 0;
+    int cancelled_count_ = 0;
+    int64_t total_filled_volume_ = 0;
+    
+    // 测试用的数据结构
+    std::vector<std::string> orders_to_cancel_;
+    std::deque<std::string> pending_cancel_orders_;
 };
 
 } // namespace wangcai_orderbook_cpp

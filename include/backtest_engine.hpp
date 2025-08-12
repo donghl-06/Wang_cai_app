@@ -51,7 +51,7 @@ struct TradeRecord {
           exectype(exec_type), tradebsflag(trade_flag), channelno(channel), bizindex(biz_idx) {}
 };
 
-// 用户订单结构
+// 用户下单结构
 struct UserOrder {
     std::string order_id;
     std::string symbol;
@@ -60,6 +60,29 @@ struct UserOrder {
     Price price;
     Quantity volume;
     std::string strategy_id; // 用于区分不同策略
+};
+
+// 用户撤单结构
+struct UserCancel {
+    std::string order_id;     // 要撤销的订单ID
+    std::string strategy_id;  // 策略ID
+    
+    UserCancel(const std::string& oid, const std::string& sid) 
+        : order_id(oid), strategy_id(sid) {}
+};
+
+// 用户事件结构（统一的输入）
+struct UserEvent {
+    enum Type { ORDER, CANCEL };
+    Type type;
+    UserOrder order;    // 下单信息（当type为ORDER时使用）
+    UserCancel cancel;  // 撤单信息（当type为CANCEL时使用）
+    
+    // 构造函数：下单事件
+    explicit UserEvent(const UserOrder& ord) : type(ORDER), order(ord), cancel("", "") {}
+    
+    // 构造函数：撤单事件
+    explicit UserEvent(const UserCancel& can) : type(CANCEL), order(), cancel(can) {}
 };
 
 // 持仓信息
@@ -76,8 +99,11 @@ class Strategy {
 public:
     virtual ~Strategy() = default;
     
-    // 处理市场数据，返回要下的订单列表
-    virtual std::vector<UserOrder> onMarketData(const MarketData& data) = 0;
+    // 接收订单事件，返回要处理的事件列表（下单或撤单）
+    virtual std::vector<UserEvent> onOrderEvent(const Event& event) = 0;
+    
+    // 接收成交事件，返回要处理的事件列表（下单或撤单）
+    virtual std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) = 0;
     
     // 处理订单成交回报
     virtual void onOrderFilled(const std::string& order_id, Price price, Quantity volume) = 0;
@@ -113,10 +139,12 @@ public:
     const std::vector<TradeRecord>& getTradeRecords() const;    // 获取所有交易记录
 
 private:
-    // 原有方法
     void initialize();
-    void publishMarketData(const std::string& event_type, const std::string& datetime = "");
     void processUserOrder(const UserOrder& user_order);
+    void processUserCancel(const UserCancel& user_cancel);
+    void processUserEvent(const UserEvent& user_event);
+    bool tryFillImmediately(std::shared_ptr<Order> user_order);
+
     void updatePosition(const std::string& strategy_id, const std::string& symbol, 
                        Direction direction, Quantity volume, Price price);
     void printResults() const;
@@ -125,12 +153,8 @@ private:
     void recordCancelWithOrderInfo(uint64_t original_id, const std::string& datetime, 
                                   std::shared_ptr<Order> order_info);
     
-    // 新增：事件到MarketData的转换
-    MarketData eventToMarketData(const Event& ev);
-    
     // 新增：通知策略成交
     void notifyStrategiesOnExecution(const Execution& ex);
-    void checkAndNotifyOrderFilled(const MarketData& trade_data, std::shared_ptr<Strategy> strategy);
     
     // 成员变量
     std::string symbol_;
@@ -152,6 +176,9 @@ private:
     std::queue<MarketData> market_data_queue_;
     std::function<void(const MarketData&)> market_data_callback_;
     
+    // 成交事件产生的策略事件队列
+    std::vector<UserEvent> pending_trade_events_;
+    
     // 事件数据
     bool continuous_mode_;
     bool closing_mode_ = false;                       // 是否进入收盘集合竞价阶段
@@ -162,6 +189,10 @@ private:
     uint64_t next_order_id_;
     uint64_t next_trade_id_;        // 交易ID生成器
     std::map<std::string, uint64_t> user_order_mapping_; // user_order_id -> system_order_id
+    
+    // 虚拟订单映射 - 用于成交回调时识别虚拟订单
+    std::map<uint64_t, std::string> virtual_order_strategy_; // system_order_id -> strategy_id
+    std::map<uint64_t, std::string> virtual_order_local_id_; // system_order_id -> local_order_id
     
     // 价格信息
     Price prev_close_;

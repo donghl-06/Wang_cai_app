@@ -31,16 +31,22 @@ int main(int argc, char* argv[]) {
             // }
         });
         
-        // 创建并注册策略 - 演示同步事件处理
-        auto sync_strategy = std::make_shared<SyncFollowStrategy>("同步跟单策略", 1000, 100, 100);
-        auto mean_strategy = std::make_shared<MeanReversionStrategy>("均值回归策略", 0.01);
+        // 创建并注册专门的测试策略
+        auto test_strategy = std::make_shared<TestCallbackStrategy>("回调测试策略");
+
+        // 创建并注册同步跟单策略
+        // auto sync_strategy = std::make_shared<SyncFollowStrategy>("同步跟单策略", 1000, 100, 100);
+        // auto mean_strategy = std::make_shared<MeanReversionStrategy>("均值回归策略", 0.01);
+
+        // engine.registerStrategy(sync_strategy);
+        // engine.registerStrategy(mean_strategy);
         
-        engine.registerStrategy(sync_strategy);
-        engine.registerStrategy(mean_strategy);
+        engine.registerStrategy(test_strategy);
         
-        std::cout << "已注册策略：" << std::endl;
-        std::cout << "1. " << sync_strategy->getStrategyId() << std::endl;
-        std::cout << "2. " << mean_strategy->getStrategyId() << std::endl;
+        std::cout << "已注册测试策略：" << std::endl;
+        std::cout << "1. " << test_strategy->getStrategyId() << " - 专门测试成交回报和撤单回报" << std::endl;
+        // std::cout << "2. " << sync_strategy->getStrategyId() << " - 同步跟单策略" << std::endl;
+        // std::cout << "3. " << mean_strategy->getStrategyId() << " - 均值回归策略" << std::endl;
         
         // 运行回测
         engine.run();
@@ -59,10 +65,10 @@ int main(int argc, char* argv[]) {
             std::cout << "末笔成交时间: " << trades.back().datetime << std::endl;
         }
         
-        // 打印策略统计信息
-        std::cout << "\n=== 策略统计信息 ===" << std::endl;
-        if (auto sync_ptr = std::dynamic_pointer_cast<SyncFollowStrategy>(sync_strategy)) {
-            sync_ptr->printStatistics();
+        // 打印测试策略统计信息
+        std::cout << "\n=== 测试策略统计信息 ===" << std::endl;
+        if (auto test_ptr = std::dynamic_pointer_cast<TestCallbackStrategy>(test_strategy)) {
+            test_ptr->printStatistics();
         }
         
     } catch (const std::exception& e) {

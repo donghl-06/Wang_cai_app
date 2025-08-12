@@ -31,7 +31,12 @@ void ConAuctionEngine::accept_sh(std::shared_ptr<Order> od)
     auto& side = buy ? ob_._buy : ob_._sell;
     side[idx].orders.push_back(od);
     od->level_iter = std::prev(side[idx].orders.end());
-    ob_.bucketAdd(idx, buy, od->remaining_volume());
+    
+    // 只有历史订单才更新vol_sum统计
+    if (od->broker == "BRK") {
+        ob_.bucketAdd(idx, buy, od->remaining_volume());
+    }
+    
     ob_._loc[od->order_id] = { buy, idx, od->level_iter };
 
 
@@ -41,17 +46,7 @@ void ConAuctionEngine::accept_sh(std::shared_ptr<Order> od)
 void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
 {
     bool buy = od->direction == Direction::Buy;
-    // 或者转换为字符串打印
-        if(od->order_local_id == "1282779"){
-        std::cout<<"od->broker"<<od->broker<<std::endl;
-        std::cout << "od->order_type: " << 
-        (od->order_type == OrderType::Market ? "Market" :
-        od->order_type == OrderType::Limit ? "Limit" :
-        od->order_type == OrderType::BestOwn ? "BestOwn" : "Unknown") 
-        << std::endl;
-        std::cout<<"od->order_id"<<od->order_id<<std::endl;
-        std::cout<<"od->order_local_id"<<od->order_local_id<<std::endl;
-    }
+
     //深市：市价 / 本方最优 保护价转换 
     if (od->broker == "BRK" &&
         (od->order_type == OrderType::Market || od->order_type == OrderType::BestOwn)) {
@@ -97,7 +92,12 @@ void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
     auto& side = buy ? ob_._buy : ob_._sell;
     side[idx].orders.push_back(od);
     od->level_iter = std::prev(side[idx].orders.end());
-    ob_.bucketAdd(idx, buy, od->remaining_volume());
+    
+    // 只有历史订单才更新vol_sum统计
+    if (od->broker == "BRK") {
+        ob_.bucketAdd(idx, buy, od->remaining_volume());
+    }
+    
     ob_._loc[od->order_id] = { buy, idx, od->level_iter }; // 记录订单位置
 }
 
@@ -140,7 +140,48 @@ void ConAuctionEngine::match_sh(std::shared_ptr<Order>& inc)
                 continue;
             }
 
-            // 计算可撮合量
+            // 虚拟订单处理：如果一方是USER订单，另一方是历史订单
+            bool inc_is_user = (inc->broker != "BRK");
+            bool oppo_is_user = (oppo->broker != "BRK");
+            
+            if (inc_is_user ^ oppo_is_user) {
+                // 只有一方是USER订单的情况 - 进行虚拟成交
+                auto virt = inc_is_user ? inc : oppo;
+                
+                Quantity q = virt->remaining_volume();
+                Price fill_price = px;  // 使用当前撮合价格
+                
+                // 虚拟成交：只影响USER订单，不影响历史订单
+                virt->traded_volume = virt->volume;
+                virt->status = OrderStatus::Filled;
+                
+                // 虚拟成交回调：使用正常的订单ID，BacktestEngine通过映射识别
+                if (ob_._on_exec) {
+                    Execution ex(
+                        buy ? inc->order_id : oppo->order_id,
+                        buy ? oppo->order_id : inc->order_id,
+                        fill_price, q);
+                    ob_._on_exec(ex);  // BacktestEngine通过映射识别虚拟成交
+                }
+                
+                // 从订单簿移除虚拟订单，但不影响历史订单
+                if (inc_is_user) {
+                    // inc是虚拟订单，移除虚拟订单但历史订单继续撮合
+                    std::cout << "[虚拟成交-SH] USER订单 " << inc->order_local_id 
+                              << " 与历史订单虚拟成交 " << q << "@" << fill_price / 10000.0 << std::endl;
+                    return;  // 虚拟订单处理完毕，历史订单继续正常撮合
+                } else {
+                    // oppo是虚拟订单，移除虚拟订单，继续与下一个对手撮合
+                    bkt.orders.pop_front();
+                    ob_._loc.erase(oppo->order_id);
+                    ob_._omap.erase(oppo->order_id);
+                    std::cout << "[虚拟成交-SH] USER订单 " << oppo->order_local_id 
+                              << " 与历史订单虚拟成交 " << q << "@" << fill_price / 10000.0 << std::endl;
+                    continue;  // 继续处理下一个对手订单（历史订单继续撮合）
+                }
+            }
+
+            // 正常撮合逻辑（双方都是历史订单）
             Quantity q = std::min(inc->remaining_volume(), oppo->remaining_volume());
             if (q == 0) break;
 
@@ -213,7 +254,48 @@ void ConAuctionEngine::match_sz(std::shared_ptr<Order>& inc)
                 continue;
             }
 
-            // 计算可撮合量
+            // 虚拟订单处理：如果一方是USER订单，另一方是历史订单
+            bool inc_is_user = (inc->broker != "BRK");
+            bool oppo_is_user = (oppo->broker != "BRK");
+            
+            if (inc_is_user ^ oppo_is_user) {
+                // 只有一方是USER订单的情况 - 进行虚拟成交
+                auto virt = inc_is_user ? inc : oppo;
+                
+                Quantity q = virt->remaining_volume();
+                Price fill_price = px;  // 使用当前撮合价格
+                
+                // 虚拟成交：只影响USER订单，不影响历史订单
+                virt->traded_volume = virt->volume;
+                virt->status = OrderStatus::Filled;
+                
+                // 虚拟成交回调：使用正常的订单ID，BacktestEngine通过映射识别
+                if (ob_._on_exec) {
+                    Execution ex(
+                        buy ? inc->order_id : oppo->order_id,
+                        buy ? oppo->order_id : inc->order_id,
+                        fill_price, q);
+                    ob_._on_exec(ex);  // BacktestEngine通过映射识别虚拟成交
+                }
+                
+                // 从订单簿移除虚拟订单，但不影响历史订单
+                if (inc_is_user) {
+                    // inc是虚拟订单，移除虚拟订单但历史订单继续撮合
+                    std::cout << "[虚拟成交-SZ] USER订单 " << inc->order_local_id 
+                              << " 与历史订单虚拟成交 " << q << "@" << fill_price / 10000.0 << std::endl;
+                    return;  // 虚拟订单处理完毕，历史订单继续正常撮合
+                } else {
+                    // oppo是虚拟订单，移除虚拟订单，继续与下一个对手撮合
+                    bkt.orders.pop_front();
+                    ob_._loc.erase(oppo->order_id);
+                    ob_._omap.erase(oppo->order_id);
+                    std::cout << "[虚拟成交-SZ] USER订单 " << oppo->order_local_id 
+                              << " 与历史订单虚拟成交 " << q << "@" << fill_price / 10000.0 << std::endl;
+                    continue;  // 继续处理下一个对手订单（历史订单继续撮合）
+                }
+            }
+
+            // 正常撮合逻辑（双方都是历史订单）
             Quantity q = std::min(inc->remaining_volume(), oppo->remaining_volume());
             if (q == 0) break;
 
