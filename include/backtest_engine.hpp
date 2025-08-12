@@ -113,31 +113,24 @@ public:
     const std::vector<TradeRecord>& getTradeRecords() const;    // 获取所有交易记录
 
 private:
-    // 初始化订单簿和引擎
+    // 原有方法
     void initialize();
-    
-    // 发布市场数据
     void publishMarketData(const std::string& event_type, const std::string& datetime = "");
-    
-    // 处理用户订单
     void processUserOrder(const UserOrder& user_order);
-    
-    // 更新持仓
     void updatePosition(const std::string& strategy_id, const std::string& symbol, 
                        Direction direction, Quantity volume, Price price);
-    
-    // 打印结果
     void printResults() const;
-    
-    // 记录交易
     void recordTrade(const Execution& ex, const std::string& datetime);
-    
-    // 记录撤单
     void recordCancel(uint64_t order_id, const std::string& datetime);
-    
-    // 记录撤单信息，包含订单详细信息
     void recordCancelWithOrderInfo(uint64_t original_id, const std::string& datetime, 
                                   std::shared_ptr<Order> order_info);
+    
+    // 新增：事件到MarketData的转换
+    MarketData eventToMarketData(const Event& ev);
+    
+    // 新增：通知策略成交
+    void notifyStrategiesOnExecution(const Execution& ex);
+    void checkAndNotifyOrderFilled(const MarketData& trade_data, std::shared_ptr<Strategy> strategy);
     
     // 成员变量
     std::string symbol_;

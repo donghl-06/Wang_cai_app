@@ -31,12 +31,16 @@ int main(int argc, char* argv[]) {
             // }
         });
         
-        // 创建并注册策略
-        // auto strategy1 = std::make_shared<MeanReversionStrategy>("均值回归策略1", 0.01);
-        // auto strategy2 = std::make_shared<MeanReversionStrategy>("均值回归策略2", 0.02);
+        // 创建并注册策略 - 演示同步事件处理
+        auto sync_strategy = std::make_shared<SyncFollowStrategy>("同步跟单策略", 1000, 100, 100);
+        auto mean_strategy = std::make_shared<MeanReversionStrategy>("均值回归策略", 0.01);
         
-        // engine.registerStrategy(strategy1);
-        // engine.registerStrategy(strategy2);
+        engine.registerStrategy(sync_strategy);
+        engine.registerStrategy(mean_strategy);
+        
+        std::cout << "已注册策略：" << std::endl;
+        std::cout << "1. " << sync_strategy->getStrategyId() << std::endl;
+        std::cout << "2. " << mean_strategy->getStrategyId() << std::endl;
         
         // 运行回测
         engine.run();
@@ -53,6 +57,12 @@ int main(int argc, char* argv[]) {
         if (!trades.empty()) {
             std::cout << "首笔成交时间: " << trades.front().datetime << std::endl;
             std::cout << "末笔成交时间: " << trades.back().datetime << std::endl;
+        }
+        
+        // 打印策略统计信息
+        std::cout << "\n=== 策略统计信息 ===" << std::endl;
+        if (auto sync_ptr = std::dynamic_pointer_cast<SyncFollowStrategy>(sync_strategy)) {
+            sync_ptr->printStatistics();
         }
         
     } catch (const std::exception& e) {

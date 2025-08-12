@@ -60,23 +60,21 @@ void BacktestEngine::initialize() {
             data.last_volume = ex.volume;
             data.event_type = "trade";
             
-            // // 添加调试日志
-            // std::cout << "[成交] " << current_datetime_ 
-            //           << " 价格=" << ex.price / 10000.0 
-            //           << " 数量=" << ex.volume 
-            //           << " 买方ID=" << ex.buy_order_id
-            //           << " 卖方ID=" << ex.sell_order_id << std::endl;
-            
             market_data_queue_.push(data);
+            
             // 更新最新成交价（供后续集合竞价使用）
             orderbook_->setLastTradePrice(ex.price);
-            if (market_data_callback_) {
-                market_data_callback_(data);
-            }
+            
+            // 检查并通知策略订单成交
+            notifyStrategiesOnExecution(ex);
             
             // 记录交易信息（如果启用了记录）
             if (recording_enabled_) {
                 recordTrade(ex, continuous_mode_ ? last_brk_datetime_ : current_datetime_);
+            }
+            
+            if (market_data_callback_) {
+                market_data_callback_(data);
             }
         });
     
@@ -147,83 +145,57 @@ void BacktestEngine::registerStrategy(std::shared_ptr<Strategy> strategy) {
     positions_[strategy->getStrategyId()] = std::map<std::string, Position>();
 }
 
-// 回测主循环，驱动事件流和策略
+// 回测主循环，实现简单的同步事件处理
 void BacktestEngine::run() {
-    std::cout << "开始回测 " << symbol_ << " " << date_ << std::endl;
+    std::cout << "开始同步交互式回测 " << symbol_ << " " << date_ << std::endl;
     
     static constexpr const char* Call_Open_Time = "09:25:00"; // 开盘集合竞价结束点
     static constexpr const char* Call_Close_Time = "14:57:00"; // 收盘集合竞价开始点
     
-    // 直接遍历 OrderBook::whole_events，按 sort_key 顺序处理
+    // 主循环：按事件顺序处理
     for (const auto& pair : OrderBook::whole_events) {
         const auto& events_in_bucket = pair.second;
         
-        // 遍历同一个 sort_key 下的所有事件
         for (size_t i = 0; i < events_in_bucket.size(); ++i) {
             const Event& ev = events_in_bucket[i];
-            current_datetime_ = ev.datetime;  // 更新当前时间
-            // 集合竞价阶段
-            if (!continuous_mode_) {
-
-                std::string tm_cur = ev.datetime.substr(11, 8); // 当前事件时间（时:分:秒）
-                
-                // 判断是否到达集合竞价结束点
-                bool hit_cut = false;
-                if (tm_cur < Call_Open_Time) {
-                    // 检查下一个事件
-                    if (i + 1 < events_in_bucket.size()) {
-                        // 同一个bucket内的下一个事件
-                        std::string tm_nxt = events_in_bucket[i + 1].datetime.substr(11, 8);
-                        hit_cut = (tm_nxt >= Call_Open_Time);
-                    } else {
-                        // 检查下一个bucket的第一个事件
-                        auto next_bucket = std::next(std::find_if(OrderBook::whole_events.begin(), 
-                            OrderBook::whole_events.end(), 
-                            [&pair](const auto& p) { return p.first == pair.first; }));
-                        
-                        if (next_bucket != OrderBook::whole_events.end() && !next_bucket->second.empty()) {
-                            std::string tm_nxt = next_bucket->second[0].datetime.substr(11, 8);
-                            hit_cut = (tm_nxt >= Call_Open_Time);
-                        } else {
-                            hit_cut = true; // 没有更多事件了
-                        }
-                    }
+            current_datetime_ = ev.datetime;
+            
+            // Step 1: 将事件转换为MarketData推送给策略
+            MarketData market_data = eventToMarketData(ev);
+            std::vector<UserOrder> strategy_orders;
+            
+            // 收集所有策略的订单响应
+            for (auto& strategy : strategies_) {
+                auto user_orders = strategy->onMarketData(market_data);
+                for (const auto& order : user_orders) {
+                    strategy_orders.push_back(order);
                 }
+            }
+            
+            // Step 2: 处理当前历史事件
+            if (!continuous_mode_) {
+                // 集合竞价阶段
+                std::string tm_cur = ev.datetime.substr(11, 8);
                 
-                // 处理当前事件
                 if (ev.source == "ord") {
-                    // 新订单事件
                     Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
                     auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(), 
                                                       ev.sym, std::to_string(ev.orderid),
                                                       toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
                     call_engine_->accept(ord);
                 } else {
-                    // 撤单事件
                     uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
-                    // //调试消息
-                    // std::cout << "[处理撤单] 时间=" << ev.datetime 
-                    //           << " bidorderid=" << ev.bidorderid 
-                    //           << " askorderid=" << ev.askorderid 
-                    //           << " 使用ID=" << oid_raw << std::endl;
-                    
-                    if (continuous_mode_) {
-                        con_engine_->cancel_by_input_id(oid_raw);
-                    } else {
-                        call_engine_->cancel_by_input_id(oid_raw);
-                    }
+                    call_engine_->cancel_by_input_id(oid_raw);
                 }
                 
-                // 发布市场数据（订单簿快照）
+                // 发布市场数据快照
                 publishMarketData("order", ev.datetime);
                 
-                // 在处理集合竞价结算时设置统一的成交时间
-                if (hit_cut) {
-                    // 设置统一的集合竞价成交时间
+                // 检查是否结束集合竞价
+                if (tm_cur >= Call_Open_Time) {
                     std::string auction_time = ev.datetime.substr(0, 11) + "09:25:00.000";
-                    current_datetime_ = auction_time;  // 临时设置为集合竞价成交时间
+                    current_datetime_ = auction_time;
                     
-                    // 集合竞价结束，结算撮合，切换到连续竞价
                     call_engine_->settle();
                     continuous_mode_ = true;
                     publishMarketData("auction_settle", auction_time);
@@ -232,16 +204,13 @@ void BacktestEngine::run() {
                               << " 开盘成交量=" << call_engine_->getPredictVolume() << std::endl;
                     std::cout << "连续竞价开始" << std::endl;
                     
-                    // 恢复当前事件时间
                     current_datetime_ = ev.datetime;
                 }
-            } // 集合竞价阶段结束,连续竞价阶段
-            else {
-                // 检查是否进入收盘集合竞价
+            } else {
+                // 连续竞价阶段
                 std::string tm_cur = ev.datetime.substr(11,8);
                 if (!closing_mode_ && tm_cur >= Call_Close_Time) {
                     closing_mode_ = true;
-                    // 将当前订单簿挂单转入收盘集合竞价引擎的统计结构
                     close_engine_->bootstrap_from_orderbook();
                     std::cout << "[" << tm_cur << "] 进入收盘集合竞价阶段" << std::endl;
                 }
@@ -273,21 +242,46 @@ void BacktestEngine::run() {
                     }
                 }
 
-                // 发布市场数据（订单簿快照）
                 publishMarketData("order", ev.datetime);
             }
             
-            // 处理市场数据队列，驱动所有策略做出决策
+            // Step 3: 处理策略订单（在历史事件之后）
+            for (const auto& user_order : strategy_orders) {
+                if (continuous_mode_) {  // 只有连续竞价期间才允许策略下单
+                    processUserOrder(user_order);
+                }
+            }
+            
+            // Step 4: 处理市场数据队列，包括成交推送
             while (!market_data_queue_.empty()) {
                 MarketData data = market_data_queue_.front();
                 market_data_queue_.pop();
                 
-                // 通知所有策略，获取用户订单
-                for (auto& strategy : strategies_) {
-                    auto user_orders = strategy->onMarketData(data);
-                    for (const auto& user_order : user_orders) {
-                        processUserOrder(user_order);
+                // 如果是成交数据，推送给策略并收集新的订单
+                if (data.event_type == "trade") {
+                    std::vector<UserOrder> trade_strategy_orders;
+                    
+                    for (auto& strategy : strategies_) {
+                        // 先检查是否是该策略的订单成交
+                        checkAndNotifyOrderFilled(data, strategy);
+                        
+                        // 推送成交数据给策略
+                        auto user_orders = strategy->onMarketData(data);
+                        for (const auto& order : user_orders) {
+                            trade_strategy_orders.push_back(order);
+                        }
                     }
+                    
+                    // 处理成交后的策略订单
+                    for (const auto& user_order : trade_strategy_orders) {
+                        if (continuous_mode_) {
+                            processUserOrder(user_order);
+                        }
+                    }
+                }
+                
+                if (market_data_callback_) {
+                    market_data_callback_(data);
                 }
             }
         }
@@ -300,7 +294,7 @@ void BacktestEngine::run() {
                   << " 成交量=" << close_engine_->getPredictVolume() << std::endl;
     }
 
-    std::cout << "回测完成" << std::endl;
+    std::cout << "同步交互式回测完成" << std::endl;
     
     // 输出交易记录
     if (recording_enabled_) {
@@ -348,6 +342,7 @@ void BacktestEngine::processUserOrder(const UserOrder& user_order) {
         con_engine_->accept(order);
         
         // 如果订单立即成交，更新持仓并通知策略
+        ////// 未完成！！！！！ /////
         if (order->traded_volume > 0) {
             updatePosition(user_order.strategy_id, user_order.symbol,
                           user_order.direction, order->traded_volume, 
@@ -596,5 +591,47 @@ void BacktestEngine::writeTradeRecords() const {
 const std::vector<TradeRecord>& BacktestEngine::getTradeRecords() const {
     return trade_records_;
 }
+
+
+
+// 事件到MarketData的转换
+MarketData BacktestEngine::eventToMarketData(const Event& ev) {
+    MarketData data;
+    data.datetime = ev.datetime;
+    data.symbol = symbol_;
+    data.best_bid = orderbook_->bestBid();
+    data.best_ask = orderbook_->bestAsk();
+    data.event_type = (ev.source == "ord") ? "order" : "cancel";
+    data.last_price = 0;  // 将在后续成交时更新
+    data.last_volume = 0;
+    return data;
+}
+
+// 通知策略订单成交
+void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
+    // 检查买方订单是否属于某个策略
+    for (const auto& mapping : user_order_mapping_) {
+        if (mapping.second == ex.buy_order_id) {
+            // 找到对应的策略并通知
+            for (auto& strategy : strategies_) {
+                strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+            }
+            break;
+        }
+    }
+    
+    // 检查卖方订单是否属于某个策略
+    for (const auto& mapping : user_order_mapping_) {
+        if (mapping.second == ex.sell_order_id) {
+            // 找到对应的策略并通知
+            for (auto& strategy : strategies_) {
+                strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+            }
+            break;
+        }
+    }
+}
+
+
 
 } // namespace wangcai_orderbook_cpp 
