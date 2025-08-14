@@ -16,7 +16,7 @@
 namespace wangcai_orderbook_cpp {
 
 // 工具函数：将价格字符串转为int64_t，*10000并四舍五入到100
-inline int64_t parse_price(const std::string& price_str) {
+inline uint64_t parse_price(const std::string& price_str) {
     if (price_str.empty()) return 0;
     double price_raw = std::stod(price_str);
     double price_multiplied = price_raw * 10000;
@@ -293,34 +293,34 @@ void load_cstick_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
                 parse_price(ask10_str)
             };
             std::array<std::uint64_t, 10> bid_sizes = {
-                bsize1_str.empty() ? 0 : std::stod(bsize1_str), 
-                bsize2_str.empty() ? 0 : std::stod(bsize2_str),
-                bsize3_str.empty() ? 0 : std::stod(bsize3_str),
-                bsize4_str.empty() ? 0 : std::stod(bsize4_str),
-                bsize5_str.empty() ? 0 : std::stod(bsize5_str),
-                bsize6_str.empty() ? 0 : std::stod(bsize6_str),
-                bsize7_str.empty() ? 0 : std::stod(bsize7_str),
-                bsize8_str.empty() ? 0 : std::stod(bsize8_str),
-                bsize9_str.empty() ? 0 : std::stod(bsize9_str),
-                bsize10_str.empty() ? 0 : std::stod(bsize10_str)
+                bsize1_str.empty() ? 0 : std::stoul(bsize1_str), 
+                bsize2_str.empty() ? 0 : std::stoul(bsize2_str),
+                bsize3_str.empty() ? 0 : std::stoul(bsize3_str),
+                bsize4_str.empty() ? 0 : std::stoul(bsize4_str),
+                bsize5_str.empty() ? 0 : std::stoul(bsize5_str),
+                bsize6_str.empty() ? 0 : std::stoul(bsize6_str),
+                bsize7_str.empty() ? 0 : std::stoul(bsize7_str),
+                bsize8_str.empty() ? 0 : std::stoul(bsize8_str),
+                bsize9_str.empty() ? 0 : std::stoul(bsize9_str),
+                bsize10_str.empty() ? 0 : std::stoul(bsize10_str)
             };
             std::array<std::uint64_t, 10> ask_sizes = {
-                asize1_str.empty() ? 0 : std::stod(asize1_str),
-                asize2_str.empty() ? 0 : std::stod(asize2_str),
-                asize3_str.empty() ? 0 : std::stod(asize3_str),
-                asize4_str.empty() ? 0 : std::stod(asize4_str),
-                asize5_str.empty() ? 0 : std::stod(asize5_str),
-                asize6_str.empty() ? 0 : std::stod(asize6_str),
-                asize7_str.empty() ? 0 : std::stod(asize7_str),
-                asize8_str.empty() ? 0 : std::stod(asize8_str),
-                asize9_str.empty() ? 0 : std::stod(asize9_str),
-                asize10_str.empty() ? 0 : std::stod(asize10_str)
+                asize1_str.empty() ? 0 : std::stoul(asize1_str),
+                asize2_str.empty() ? 0 : std::stoul(asize2_str),
+                asize3_str.empty() ? 0 : std::stoul(asize3_str),
+                asize4_str.empty() ? 0 : std::stoul(asize4_str),
+                asize5_str.empty() ? 0 : std::stoul(asize5_str),
+                asize6_str.empty() ? 0 : std::stoul(asize6_str),
+                asize7_str.empty() ? 0 : std::stoul(asize7_str),
+                asize8_str.empty() ? 0 : std::stoul(asize8_str),
+                asize9_str.empty() ? 0 : std::stoul(asize9_str),
+                asize10_str.empty() ? 0 : std::stoul(asize10_str)
             };
 
             int64_t avgbid = parse_price(avgbid_str);
             int64_t avgask = parse_price(avgask_str);
-            int64_t totalbsize = totalbsize_str.empty() ? 0 : std::stod(totalbsize_str);
-            int64_t totalasize = totalasize_str.empty() ? 0 : std::stod(totalasize_str);
+            int64_t totalbsize = totalbsize_str.empty() ? 0 : std::stoul(totalbsize_str);
+            int64_t totalasize = totalasize_str.empty() ? 0 : std::stoul(totalasize_str);
             int64_t iopv = iopv_str.empty() ? 0 : std::stod(iopv_str);
 
             Event tick_event(datetime, sym, -1, -1, -1, -1, -1, -1, -1, -1, 

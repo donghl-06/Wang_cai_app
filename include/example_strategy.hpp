@@ -258,12 +258,12 @@ public:
         auto bid = snapshot.bids;
         auto ask = snapshot.asks;
         std::cout << "Tick Time is " << snapshot.datetime << '\n';
-        std::cout << "Bid: ";
+        std::cout << "Bid: \n";
         for (auto x: bid) {
             std::cout << "价格: " << x / 10000.0 << " 元" << std::endl;
         }
 
-        std::cout << "Ask: ";
+        std::cout << "Ask: \n";
         for (auto x: ask) {
             std::cout << "价格: " << x / 10000.0 << " 元"<< std::endl;
         }
