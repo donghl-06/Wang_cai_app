@@ -18,30 +18,6 @@
 
 namespace wangcai_orderbook_cpp {
 
-//枚举类型
-
-enum class OrderStatus : uint8_t {
-    Submitted,      ///< 已提交
-    PartFilled,     ///< 部分成交
-    Filled,         ///< 全部成交
-    Cancelled,      ///< 已撤销
-    Rejected        ///< 拒绝
-};
-
-enum class OrderType : uint8_t {
-    Limit,              ///< 限价
-    Market,             ///< 市价
-    BestCounterpart,    ///< 对手价
-    BestOwn             ///< 本方价
-};
-
-enum class Direction : uint8_t { Buy, Sell };
-
-//基础类型
-using Timestamp = std::chrono::time_point<
-                     std::chrono::system_clock,
-                     std::chrono::nanoseconds>;
-
 struct PriceLevel;     // 前置声明
 
 //订单对象
@@ -146,18 +122,6 @@ struct PriceStats {
     Quantity  same_price_sell_vol{}; // 此价格的卖单量
 };
 
-//五档快照  
-struct Snapshot {
-    uint64_t   timeid{}; // 时间ID
-    Timestamp  datetime; // 时间
-    std::string sym; // 代码
-    Price      last_price{}; // 最新成交价
-
-    std::array<Price, 5> bids{}; // 买方价格
-    std::array<Quantity, 5> bid_sizes{}; // 买方数量
-    std::array<Price, 5> asks{}; // 卖方价格
-    std::array<Quantity, 5> ask_sizes{}; // 卖方数量
-};
 
 //撮合统计
 struct Stats {

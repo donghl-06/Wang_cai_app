@@ -1,8 +1,8 @@
 /*
  * @Author: linzhuoyu
  * @Date: 2025-07-07 08:43:04
- * @LastEditTime: 2025-07-08 06:01:00
- * @FilePath: /wangcai_orderbook_cpp/src/orderbook.cpp
+ * @LastEditTime: 2025-08-13 13:16:39
+ * @FilePath: /wangcai_cpp/src/orderbook.cpp
  */
 
 #include "../include/orderbook.h"
@@ -21,7 +21,9 @@
 namespace wangcai_orderbook_cpp {
 
 // 在文件开头添加静态变量定义
-std::map<uint64_t, std::vector<Event>> OrderBook::whole_events;
+std::vector<Event> OrderBook::whole_events;
+std::vector<Event> OrderBook::tick_events;
+bool Event::is_SZ = false;
 
 // 构造函数
 OrderBook::OrderBook(double hi, double lo, bool is_etf, ExecCallback cb)
@@ -52,7 +54,16 @@ void OrderBook::insertEvent(const Event& event) {
     if (time_part < "09:15:00" ) {
          return; // 跳过不在集合竞价时间段的事件
     }  
-    whole_events[event.sort_key].push_back(event);
+    whole_events.push_back(event);
+}
+
+void OrderBook::insertTick(const Event& event) {
+    // 时间过滤：只处理集合竞价时间段 09:15:00 到 09:25:00  
+    std::string time_part = event.datetime.substr(11); // 提取时间部分 HH:MM:SS
+    if (time_part < "09:15:00" ) {
+         return; // 跳过不在集合竞价时间段的事件
+    }  
+    tick_events.push_back(event);
 }
 
 //链表维护

@@ -61,15 +61,13 @@ void CallAuctionEngine::accept(std::shared_ptr<Order> od)
 void CallAuctionEngine::cancel(uint64_t oid)
 {
     // std::cout << "[集合竞价撤单] 系统订单ID=" << oid;
-    
     auto it=ob_._loc.find(oid);
     if(it==ob_._loc.end()) {
         // 订单不存在，撤单失败
-        std::cout << " -> 失败：订单不存在" << std::endl;
+        std::cout << oid << " 开盘集合竞价 -> 失败：订单不存在" << std::endl;
         if(on_cancel_) on_cancel_(oid, false, "订单不存在", nullptr);
         return;
     }
-    
     auto loc=it->second;
     auto& side = loc.is_buy?ob_._buy:ob_._sell;
     auto ord=*loc.it;
@@ -106,7 +104,7 @@ void CallAuctionEngine::cancel_by_input_id(uint64_t input_id)
         return;
     } else {
         // 输入订单ID不存在
-        std::cout << " -> 失败：输入订单ID不存在" << std::endl;
+        std::cout << " 开盘集合竞价 -> 失败：输入订单ID不存在" << std::endl;
         if (on_cancel_) on_cancel_(input_id, false, "输入订单ID不存在", nullptr);
     }
 }

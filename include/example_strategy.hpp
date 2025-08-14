@@ -252,6 +252,23 @@ public:
         return {};
     }
     
+    std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) override {
+        // 不响应Tick事件，专注于测试回调
+        std::cout << "Tick is Coming!" << std::endl;
+        auto bid = snapshot.bids;
+        auto ask = snapshot.asks;
+        std::cout << "Tick Time is " << snapshot.datetime << '\n';
+        std::cout << "Bid: ";
+        for (auto x: bid) {
+            std::cout << "价格: " << x / 10000.0 << " 元" << std::endl;
+        }
+
+        std::cout << "Ask: ";
+        for (auto x: ask) {
+            std::cout << "价格: " << x / 10000.0 << " 元"<< std::endl;
+        }
+        return {};
+    }
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
         filled_count_++;
         total_filled_volume_ += volume;

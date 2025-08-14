@@ -3,7 +3,7 @@
 #include <iomanip>
 #include <cmath>
 #include <fstream> // Added for file operations
-
+#include <ranges>
 namespace wangcai_orderbook_cpp {
 static OrderType toOrderType(const Event& ev) {
     // 仅深市有 1/2/3 的区分；沪市全用限价
@@ -32,7 +32,10 @@ void BacktestEngine::initialize() {
     std::string cstick_file = data_path_ + "/cstick_" + symbol_ + "_" + date_ + ".csv";
     prev_close_ = loadPrevClosePrice(cstick_file);
     actual_open_ = loadOpenPrice(cstick_file);
-    
+    if (symbol_.find("SZ") != std::string::npos) {
+        Event::is_SZ = true;
+    }
+
     if (prev_close_ == 0) {
         // 如果前收盘价读取失败，抛出异常
         throw std::runtime_error("无法读取前收盘价");
@@ -171,19 +174,58 @@ void BacktestEngine::initialize() {
                                                                 recordCancelWithOrderInfo(original_id, current_datetime_, order_info);
                                                             }
                                                         });
- 
+
+
+    data_manager_ = std::make_unique<DataManager>(orderbook_.get(), call_engine_.get(), con_engine_.get(), close_engine_.get());
     // 7. 加载历史订单和成交数据，合并为事件流
     OrderBook::clearEvents(); // 清空事件
+    OrderBook::clearTicks(); // 清空tick事件
     std::string ord_file = data_path_ + "/csord_" + symbol_ + "_" + date_ + ".csv";
     std::string tra_file = data_path_ + "/cstra_" + symbol_ + "_" + date_ + ".csv";
     load_orders_from_csv(ord_file, *orderbook_);
     load_traders_from_csv(tra_file, *orderbook_);
-
-    // 计算总事件数（仅用于日志输出）
-    size_t total_events = 0;
-    for (const auto& pair : OrderBook::whole_events) {
-        total_events += pair.second.size();
+    if (Event::is_SZ) {
+        std::sort(OrderBook::whole_events.begin(), OrderBook::whole_events.end(), [&](auto a, auto b) {
+            return a.orderid < b.orderid; // SZ
+        });
+    } else {
+        std::sort(OrderBook::whole_events.begin(), OrderBook::whole_events.end(), [&](auto a, auto b) {
+            return a.bizindex < b.bizindex; // SH
+        });
     }
+    
+    load_cstick_from_csv(cstick_file, *orderbook_);
+    std::vector<Event> tmp;
+    auto record_it = OrderBook::whole_events.begin();
+    auto tick_it = OrderBook::tick_events.begin();
+
+    while (record_it != OrderBook::whole_events.end() and tick_it != OrderBook::tick_events.end()) {
+        if (tick_it->datetime < record_it->datetime) {
+            tmp.push_back(*tick_it);
+            tick_it ++;
+        } else {
+            tmp.push_back(*record_it);
+            record_it ++;
+        }
+    }
+    tmp.insert(tmp.end(), record_it, OrderBook::whole_events.end());
+    tmp.insert(tmp.end(), tick_it, OrderBook::tick_events.end());
+    OrderBook::whole_events = std::move(tmp);
+
+    size_t total_events = OrderBook::whole_events.size();
+    // std::ofstream event_file(data_path_ + "/events_" + symbol_ + "_" + date_ + ".csv");
+    // for (const auto& ev : OrderBook::whole_events) {
+    //     event_file << ev.datetime << ","
+    //                << ev.source << ","
+    //                << ev.orderid << ","
+    //                << ev.price << ","
+    //                << ev.size << ","
+    //                << ev.side << ","
+    //                << ev.exectype << ","
+    //                << ev.ordertype << ", "
+    //                << ev.bizindex << "\n";
+    // }
+    // event_file.close();
     std::cout << "加载了 " << total_events << " 个历史事件" << std::endl;
 }
 
@@ -202,108 +244,136 @@ void BacktestEngine::run() {
     static constexpr const char* Call_Close_Time = "14:57:00"; // 收盘集合竞价开始点
     
     // 主循环：按事件顺序处理
-    for (const auto& pair : OrderBook::whole_events) {
-        const auto& events_in_bucket = pair.second;
+    for (const Event& ev : OrderBook::whole_events) {
+        current_datetime_ = ev.datetime;
+            
+        // Step 1: 推送订单事件给策略
+        std::vector<UserEvent> strategy_events;
         
-        for (size_t i = 0; i < events_in_bucket.size(); ++i) {
-            const Event& ev = events_in_bucket[i];
-            current_datetime_ = ev.datetime;
-            
-            // Step 1: 推送订单事件给策略
-            std::vector<UserEvent> strategy_events;
-            
-            // 收集所有策略的事件响应
-            for (auto& strategy : strategies_) {
-                auto user_events = strategy->onOrderEvent(ev);
-                for (const auto& event : user_events) {
-                    strategy_events.push_back(event);
-                }
+        // 收集所有策略的事件响应
+        for (auto& strategy : strategies_) {
+            auto user_events = strategy->onOrderEvent(ev);
+            for (const auto& event : user_events) {
+                strategy_events.push_back(event);
             }
+        }
+        
+        // Step 2: 处理当前历史事件
+        if (!continuous_mode_) {
+            // 集合竞价阶段
+            std::string tm_cur = ev.datetime.substr(11, 8);
             
-            // Step 2: 处理当前历史事件
-            if (!continuous_mode_) {
-                // 集合竞价阶段
-                std::string tm_cur = ev.datetime.substr(11, 8);
-                
-                if (ev.source == "ord") {
-                    Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
-                    auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(), 
-                                                      ev.sym, std::to_string(ev.orderid),
-                                                      toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
-                    call_engine_->accept(ord);
-                } else {
+            if (ev.source == "ord") {
+                Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
+                auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(), 
+                                                    ev.sym, std::to_string(ev.orderid),
+                                                    toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+                call_engine_->accept(ord);
+                data_manager_ -> updateOrderDetail(ev, 'A'); // 更新委托明细
+            } else if (ev.source == "tra") {
                     uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
                     call_engine_->cancel_by_input_id(oid_raw);
-                }
-                               
-                // 检查是否结束集合竞价
-                if (tm_cur >= Call_Open_Time) {
-                    std::string auction_time = ev.datetime.substr(0, 11) + "09:25:00.000";
-                    current_datetime_ = auction_time;
-                    
-                    call_engine_->settle();
-                    continuous_mode_ = true;
-                    std::cout << "[09:25] 集合竞价完成，开盘价=" << call_engine_->getPredictPrice() / 10000.0 
-                              << " 真实开盘价=" << actual_open_ / 10000.0
-                              << " 开盘成交量=" << call_engine_->getPredictVolume() << std::endl;
-                    std::cout << "连续竞价开始" << std::endl;
-                    
-                    current_datetime_ = ev.datetime;
-                }
+                    // data_manager_->updateTradeDetail()
             } else {
-                // 连续竞价阶段
-                std::string tm_cur = ev.datetime.substr(11,8);
-                if (!closing_mode_ && tm_cur >= Call_Close_Time) {
-                    closing_mode_ = true;
-                    close_engine_->bootstrap_from_orderbook();
-                    std::cout << "[" << tm_cur << "] 进入收盘集合竞价阶段" << std::endl;
+                // tick
+                data_manager_->updateSnapshot(ev);
+                auto snapshot = data_manager_->getSnapshot();
+                for (auto& strategy : strategies_) {
+                    auto user_events = strategy->onTickEvent(snapshot);
+                    for (const auto& event : user_events) {
+                        pending_trade_events_.push_back(event);
+                    }
                 }
+            }
+                            
+            // 检查是否结束集合竞价
+            if (tm_cur >= Call_Open_Time) {
+                std::string auction_time = ev.datetime.substr(0, 11) + "09:25:00.000";
+                current_datetime_ = auction_time;
+                
+                call_engine_->settle();
+                continuous_mode_ = true;
+                std::cout << "[09:25] 集合竞价完成，开盘价=" << call_engine_->getPredictPrice() / 10000.0 
+                            << " 真实开盘价=" << actual_open_ / 10000.0
+                            << " 开盘成交量=" << call_engine_->getPredictVolume() << std::endl;
+                std::cout << "连续竞价开始" << std::endl;
+                
+                current_datetime_ = ev.datetime;
+            }
+        } else {
+            // 连续竞价阶段
+            std::string tm_cur = ev.datetime.substr(11,8);
+            if (!closing_mode_ && tm_cur >= Call_Close_Time) {
+                closing_mode_ = true;
+                close_engine_->bootstrap_from_orderbook();
+                std::cout << "[" << tm_cur << "] 进入收盘集合竞价阶段" << std::endl;
+            }
 
-                if (!closing_mode_) {
-                    // 普通连续竞价处理
-                    if (ev.source == "ord") {
-                        Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
-                        auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
-                                                          ev.sym, std::to_string(ev.orderid),
-                                                          toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
-                        con_engine_->accept(ord);
-                        last_brk_datetime_ = ev.datetime;
-                    } else {
+            if (!closing_mode_) {
+                // 普通连续竞价处理
+                if (ev.source == "ord") {
+                    Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
+                    auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
+                                                        ev.sym, std::to_string(ev.orderid),
+                                                        toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+                    con_engine_->accept(ord);
+                    data_manager_->updateOrderDetail(ev, 'A'); // 更新委托明细
+                    last_brk_datetime_ = ev.datetime;
+                } else if (ev.source == "tra") {
                         uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
                         con_engine_->cancel_by_input_id(oid_raw);
-                    }
                 } else {
-                    // 收盘集合竞价期间：订单进入 close_engine_
-                    if (ev.source == "ord") {
-                        Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
-                        auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
-                                                          ev.sym, std::to_string(ev.orderid),
-                                                          toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
-                        close_engine_->accept(ord);
-                    } else {
+                    data_manager_->updateSnapshot(ev);
+                    auto snapshot = data_manager_->getSnapshot();
+                    for (auto& strategy : strategies_) {
+                        auto user_events = strategy->onTickEvent(snapshot);
+                        for (const auto& event : user_events) {
+                            pending_trade_events_.push_back(event);
+                        }
+                    }
+                }
+
+            } else {
+                // 收盘集合竞价期间：订单进入 close_engine_
+                if (ev.source == "ord") {
+                    Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
+                    auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
+                                                        ev.sym, std::to_string(ev.orderid),
+                                                        toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+                    close_engine_->accept(ord);
+                    data_manager_->updateOrderDetail(ev, 'A'); // 更新委托明细
+                } else if (ev.source == "tra") {
                         uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
                         close_engine_->cancel_by_input_id(oid_raw);
+                } else {
+                    data_manager_->updateSnapshot(ev);
+                    auto snapshot = data_manager_->getSnapshot();
+                    for (auto& strategy : strategies_) {
+                        auto user_events = strategy->onTickEvent(snapshot);
+                        for (const auto& event : user_events) {
+                            pending_trade_events_.push_back(event);
+                        }
                     }
                 }
             }
-            
-            // Step 3: 处理策略事件（在历史事件之后）
-            for (const auto& user_event : strategy_events) {
-                if (continuous_mode_) {  // 只有连续竞价期间才允许策略操作
-                    processUserEvent(user_event);
-                }
-            }
-            
-            // Step 4: 处理成交事件产生的策略事件
-            for (const auto& user_event : pending_trade_events_) {
-                if (continuous_mode_) {  // 只有连续竞价期间才允许策略操作
-                    processUserEvent(user_event);
-                }
-            }
-            // 清空成交事件队列
-            pending_trade_events_.clear();
-            strategy_events.clear();
         }
+        
+        // Step 3: 处理策略事件（在历史事件之后）
+        for (const auto& user_event : strategy_events) {
+            if (continuous_mode_) {  // 只有连续竞价期间才允许策略操作
+                processUserEvent(user_event);
+            }
+        }
+        
+        // Step 4: 处理成交事件产生的策略事件
+        for (const auto& user_event : pending_trade_events_) {
+            if (continuous_mode_) {  // 只有连续竞价期间才允许策略操作
+                processUserEvent(user_event);
+            }
+        }
+        // 清空成交事件队列
+        pending_trade_events_.clear();
+        strategy_events.clear();
     }
     
     // 收盘集合竞价结算
@@ -522,6 +592,10 @@ void BacktestEngine::enableTradeRecording(const std::string& output_file) {
 
 // 记录单笔交易信息
 void BacktestEngine::recordTrade(const Execution& ex, const std::string& datetime) {
+    // 更新成交明细
+    // data_manager_->updateTradeDetail(ex, datetime);
+
+    // 创建交易记录
     TradeRecord record(
         datetime,                           // 交易时间
         symbol_,                           // 合约代码

@@ -1,8 +1,8 @@
 /*
  * @Author: linzhuoyu
  * @Date: 2025-07-07 08:43:04
- * @LastEditTime: 2025-07-08 03:01:00
- * @FilePath: /wangcai_orderbook_cpp/include/orderbook.h
+ * @LastEditTime: 2025-08-14 03:13:23
+ * @FilePath: /wangcai_cpp/include/orderbook.h
  */
 
 #pragma once
@@ -32,22 +32,51 @@ struct Event {
     int64_t tradeid;
     std::string exectype;
     std::string tradebsflag;
-    std::string source; // "ord" 或 "tra"
-    uint64_t sort_key; // 排序键：SZ用orderid，SH用bizindex
+
+    // tick 数据 
+    int64_t prevclose;
+    int64_t open;
+    int64_t high;
+    int64_t low;
+    int64_t close;
+    int64_t volume;
+    int64_t turnover;
+    int64_t tradecount;
+    std::array<std::uint64_t, 10> bids_{};
+    std::array<Quantity, 10> bid_sizes_{};
+    std::array<std::uint64_t, 10> asks_{};
+    std::array<Quantity, 10> ask_sizes_{};
+    int64_t avgbid;
+    int64_t avgask;
+    int64_t totalbsize;
+    int64_t totalasize;
+    int64_t iopv;
+    // tick end
+    std::string source; // "ord" 或 "tra" 或 “tick"
+
+    static bool is_SZ;
+    // uint64_t sort_key; // 排序键：SZ用orderid，SH用bizindex
     
     Event(const std::string& dt, const std::string& symbol, int64_t p, int64_t sz, int64_t sd, 
           int64_t ot, int64_t oid, int64_t ch, int64_t seq, int64_t biz, int64_t bid, int64_t ask, 
-          int64_t tid, const std::string& et, const std::string& tbf, const std::string& src) 
+          int64_t tid, const std::string& et, const std::string& tbf,
+          // tick data 
+          int64_t prev, int64_t op, int64_t hi, int64_t lo, int64_t cl,
+          int64_t vol, int64_t trn, int64_t trcnt,
+          const std::array<std::uint64_t, 10>& bids, const std::array<Quantity, 10>& bid_sizes,
+          const std::array<std::uint64_t, 10>& asks, const std::array<Quantity, 10>& ask_sizes,
+          int64_t avgb, int64_t avga, int64_t total_b, int64_t total_a, int64_t iopv,
+          // tick data end
+          const std::string& src) 
         : datetime(dt), sym(symbol), price(p), size(sz), side(sd), ordertype(ot), orderid(oid),
           channelno(ch), seqno(seq), bizindex(biz), bidorderid(bid), askorderid(ask), tradeid(tid),
-          exectype(et), tradebsflag(tbf), source(src) {
-        // 根据交易所设置排序键
-        if (symbol.substr(symbol.size() - 2) == "SZ") {
-            sort_key = static_cast<uint64_t>(orderid);
-        } else {
-            sort_key = static_cast<uint64_t>(bizindex);
-        }
-    }
+          exectype(et), tradebsflag(tbf),
+          prevclose(prev), open(op), high(hi), low(lo), close(cl),
+          volume(vol), turnover(trn), tradecount(trcnt),
+          bids_(bids), bid_sizes_(bid_sizes), asks_(asks), ask_sizes_(ask_sizes),
+          avgbid(avgb), avgask(avga), totalbsize(total_b), totalasize(total_a), iopv(iopv),
+        
+          source(src) {}
 };
 
 
@@ -58,6 +87,7 @@ class OrderBook {
     friend class CallAuctionEngine;
     friend class ConAuctionEngine;
     friend class CloseAuctionEngine;
+    friend class DataManager;
 public:
     // 定义回调函数类型
     using ExecCallback = std::function<void(const Execution&)>;
@@ -124,8 +154,14 @@ public:
     void setPrevClosePrice(Price price) { _prev_close_price = price; }
     void setExchange(const std::string& exchange) { _exchange = exchange; }
     // 全局有序列表
-    static std::map<uint64_t, std::vector<Event>> whole_events; // 全局事件列表
-    const std::map<uint64_t, std::vector<Event>>& getEvents() const { return whole_events; }
+    // static std::map<uint64_t, std::vector<Event>> whole_events; // 全局事件列表
+    // const std::map<uint64_t, std::vector<Event>>& getEvents() const { return whole_events; }
+    static std::vector<Event> whole_events;
+    static std::vector<Event> tick_events;
+    static void clearTicks() { tick_events.clear(); }
+    static void insertTick(const Event& event);
+
+    const std::vector<Event>& getEvents() const { return whole_events; }
     static void clearEvents() { whole_events.clear(); }
     static void insertEvent(const Event& event);
 

@@ -66,7 +66,8 @@ void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
 
             // 创建并插入订单事件
             Event order_event(datetime, sym, price, size, side, ordertype, orderid, channelno, 
-                            seqno, bizindex, -1, -1, -1, "", "", "ord");
+                            seqno, bizindex, -1, -1, -1, "", "", 
+                            -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1, "ord");
             OrderBook::insertEvent(order_event);
 
             // 创建订单对象用于引擎处理
@@ -155,14 +156,16 @@ void load_traders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::O
                 }
             }
 
+
             // 创建并插入撤单事件
-            if (exectype == "2") {
+           if (exectype == "2") {
                 // std::cout << "[创建撤单事件] 时间=" << datetime 
                 //           << " bidorderid=" << bidorderid 
                 //           << " askorderid=" << askorderid << std::endl;
               
                 Event cancel_event(datetime, sym, price, size, -1, -1, tradeid, channelno, -1, bizindex, 
-                                bidorderid, askorderid, tradeid, exectype, tradebsflag, "tra");
+                            bidorderid, askorderid, tradeid, exectype, tradebsflag, 
+                            -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1,"tra");
                 OrderBook::insertEvent(cancel_event);
             }
         } catch (const std::exception& e) {
@@ -172,66 +175,161 @@ void load_traders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::O
 
 }
 
-// 打印事件统计信息
-void print_event_statistics() {
-    std::cout << "=== 事件统计信息 ===" << std::endl;
-    std::cout << "沪市事件数量: " << std::endl;
-    size_t sh_total = 0;
-    for (const auto& pair : OrderBook::whole_events) {
-        size_t count = pair.second.size();
-        sh_total += count;
-        if (count > 1) {
-            std::cout << "  bizindex " << pair.first << ": " << count << " 个事件" << std::endl;
-        }
-    }
-    std::cout << "  总计: " << sh_total << " 个事件" << std::endl;
-    
-    std::cout << "深市事件数量: " << std::endl;
-    size_t sz_total = 0;
-    for (const auto& pair : OrderBook::whole_events) {
-        size_t count = pair.second.size();
-        sz_total += count;
-        if (count > 1) {
-            std::cout << "  orderid " << pair.first << ": " << count << " 个事件" << std::endl;
-        }
-    }
-    std::cout << "  总计: " << sz_total << " 个事件" << std::endl;
-    std::cout << "总事件数: " << (sh_total + sz_total) << std::endl;
-}
 
 // 加载cstick用来获取开盘价
 void load_cstick_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
-    std::istringstream file(csv_file);
+    std::ifstream file(csv_file);
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
 
-    std::string last_line;
     while (std::getline(file, line)) {
-        if (!line.empty()) {
-            last_line = line;
-        }
-    }
-
-    if (!last_line.empty()) {
         try {
-            std::istringstream ss(last_line);
-            std::string datetime, sym, prevclose_str, open_str;
-            
+            std::istringstream ss(line);
+            std::string datetime, sym, prevclose_str, open_str, high_str, low_str,
+                        close_str, volume_str, turnover_str, tradecount_str, 
+
+                        bid1_str, bsize1_str, 
+                        bid2_str, bsize2_str, 
+                        bid3_str, bsize3_str, 
+                        bid4_str, bsize4_str, 
+                        bid5_str, bsize5_str, 
+                        bid6_str, bsize6_str, 
+                        bid7_str, bsize7_str, 
+                        bid8_str, bsize8_str, 
+                        bid9_str, bsize9_str, 
+                        bid10_str, bsize10_str, 
+
+                        ask1_str, asize1_str, 
+                        ask2_str, asize2_str, 
+                        ask3_str, asize3_str, 
+                        ask4_str, asize4_str, 
+                        ask5_str, asize5_str, 
+                        ask6_str, asize6_str, 
+                        ask7_str, asize7_str, 
+                        ask8_str, asize8_str, 
+                        ask9_str, asize9_str, 
+                        ask10_str, asize10_str, 
+                        
+                        avgbid_str, avgask_str, totalbsize_str, totalasize_str, iopv_str;
+
+            // 解析CSV行
             std::getline(ss, datetime, ',');
             std::getline(ss, sym, ',');
             std::getline(ss, prevclose_str, ',');
             std::getline(ss, open_str, ',');
-            
-            wangcai_orderbook_cpp::Price prev_close = parse_price(prevclose_str);
-            wangcai_orderbook_cpp::Price open_price = parse_price(open_str);
-            
-            order_book.setPrevClosePrice(prev_close);
-            
-            std::cout << "前收盘价: " << prev_close / 10000.0 << " 元" << std::endl;
-            std::cout << "开盘价: " << open_price / 10000.0 << " 元" << std::endl;
-            
+            std::getline(ss, high_str, ',');
+            std::getline(ss, low_str, ',');
+            std::getline(ss, close_str, ',');
+            std::getline(ss, volume_str, ',');
+            std::getline(ss, turnover_str, ',');
+            std::getline(ss, tradecount_str, ',');
+            // 10 bid
+            std::getline(ss, bid1_str, ',');
+            std::getline(ss, bsize1_str, ',');
+            std::getline(ss, bid2_str, ',');
+            std::getline(ss, bsize2_str, ',');
+            std::getline(ss, bid3_str, ',');
+            std::getline(ss, bsize3_str, ',');
+            std::getline(ss, bid4_str, ',');
+            std::getline(ss, bsize4_str, ',');
+            std::getline(ss, bid5_str, ',');
+            std::getline(ss, bsize5_str, ',');
+            std::getline(ss, bid6_str, ',');
+            std::getline(ss, bsize6_str, ',');
+            std::getline(ss, bid7_str, ',');
+            std::getline(ss, bsize7_str, ',');
+            std::getline(ss, bid8_str, ',');
+            std::getline(ss, bsize8_str, ',');
+            std::getline(ss, bid9_str, ',');
+            std::getline(ss, bsize9_str, ',');
+            std::getline(ss, bid10_str, ',');
+            std::getline(ss, bsize10_str, ',');
+            // 10 ask
+            std::getline(ss, ask1_str, ',');
+            std::getline(ss, asize1_str, ',');
+            std::getline(ss, ask2_str, ',');
+            std::getline(ss, asize2_str, ',');
+            std::getline(ss, ask3_str, ',');
+            std::getline(ss, asize3_str, ',');
+            std::getline(ss, ask4_str, ',');
+            std::getline(ss, asize4_str, ',');
+            std::getline(ss, ask5_str, ',');
+            std::getline(ss, asize5_str, ',');
+            std::getline(ss, ask6_str, ',');
+            std::getline(ss, asize6_str, ',');
+            std::getline(ss, ask7_str, ',');
+            std::getline(ss, asize7_str, ',');
+            std::getline(ss, ask8_str, ',');
+            std::getline(ss, asize8_str, ',');
+            std::getline(ss, ask9_str, ',');
+            std::getline(ss, asize9_str, ',');
+            std::getline(ss, ask10_str, ',');
+            std::getline(ss, asize10_str, ',');
+
+            std::getline(ss, avgbid_str, ',');
+            std::getline(ss, avgask_str, ',');
+            std::getline(ss, totalbsize_str, ',');
+            std::getline(ss, totalasize_str, ',');
+            std::getline(ss, iopv_str, ',');
+
+            int64_t prevclose = parse_price(prevclose_str);
+            int64_t open = parse_price(open_str);
+            int64_t high = parse_price(high_str);
+            int64_t low = parse_price(low_str);
+            int64_t close = parse_price(close_str);
+            int64_t volume = volume_str.empty() ? 0 : std::stod(volume_str);
+            int64_t turnover = turnover_str.empty() ? 0 : std::stod(turnover_str);
+            int64_t tradecount = tradecount_str.empty() ? 0 : std::stoi(tradecount_str);
+            std::array<std::uint64_t, 10> bids = {
+                parse_price(bid1_str), parse_price(bid2_str), parse_price(bid3_str),
+                parse_price(bid4_str), parse_price(bid5_str), parse_price(bid6_str),
+                parse_price(bid7_str), parse_price(bid8_str), parse_price(bid9_str),
+                parse_price(bid10_str)
+            };
+            std::array<std::uint64_t, 10> asks = {
+                parse_price(ask1_str), parse_price(ask2_str), parse_price(ask3_str),
+                parse_price(ask4_str), parse_price(ask5_str), parse_price(ask6_str),
+                parse_price(ask7_str), parse_price(ask8_str), parse_price(ask9_str),
+                parse_price(ask10_str)
+            };
+            std::array<std::uint64_t, 10> bid_sizes = {
+                bsize1_str.empty() ? 0 : std::stod(bsize1_str), 
+                bsize2_str.empty() ? 0 : std::stod(bsize2_str),
+                bsize3_str.empty() ? 0 : std::stod(bsize3_str),
+                bsize4_str.empty() ? 0 : std::stod(bsize4_str),
+                bsize5_str.empty() ? 0 : std::stod(bsize5_str),
+                bsize6_str.empty() ? 0 : std::stod(bsize6_str),
+                bsize7_str.empty() ? 0 : std::stod(bsize7_str),
+                bsize8_str.empty() ? 0 : std::stod(bsize8_str),
+                bsize9_str.empty() ? 0 : std::stod(bsize9_str),
+                bsize10_str.empty() ? 0 : std::stod(bsize10_str)
+            };
+            std::array<std::uint64_t, 10> ask_sizes = {
+                asize1_str.empty() ? 0 : std::stod(asize1_str),
+                asize2_str.empty() ? 0 : std::stod(asize2_str),
+                asize3_str.empty() ? 0 : std::stod(asize3_str),
+                asize4_str.empty() ? 0 : std::stod(asize4_str),
+                asize5_str.empty() ? 0 : std::stod(asize5_str),
+                asize6_str.empty() ? 0 : std::stod(asize6_str),
+                asize7_str.empty() ? 0 : std::stod(asize7_str),
+                asize8_str.empty() ? 0 : std::stod(asize8_str),
+                asize9_str.empty() ? 0 : std::stod(asize9_str),
+                asize10_str.empty() ? 0 : std::stod(asize10_str)
+            };
+
+            int64_t avgbid = parse_price(avgbid_str);
+            int64_t avgask = parse_price(avgask_str);
+            int64_t totalbsize = totalbsize_str.empty() ? 0 : std::stod(totalbsize_str);
+            int64_t totalasize = totalasize_str.empty() ? 0 : std::stod(totalasize_str);
+            int64_t iopv = iopv_str.empty() ? 0 : std::stod(iopv_str);
+
+            Event tick_event(datetime, sym, -1, -1, -1, -1, -1, -1, -1, -1, 
+                            -1, -1, -1, "", "", 
+                            prevclose, open, high, low, close, volume, turnover, tradecount, bids, bid_sizes, asks, ask_sizes, avgbid, avgask, totalbsize, totalasize, iopv, "tick");
+                            
+            OrderBook::insertTick(tick_event);
         } catch (const std::exception& e) {
-            std::cerr << "处理价格数据时发生错误: " << e.what() << std::endl;
+            std::cerr << "处理Tick时发生错误: " << e.what() << std::endl;
         }
     }
 }
@@ -241,116 +339,6 @@ void clear_events() {
     OrderBook::clearEvents();
 }
 
-// 从文件读取数据的辅助函数
-std::vector<Event> loadOrderData(const std::string& filename) {
-    std::vector<Event> orders;
-    std::ifstream file(filename);
-    
-    if (!file.is_open()) {
-        std::cout << "错误：无法打开订单文件 " << filename << std::endl;
-        return orders;
-    }
-    
-    std::string line;
-    std::getline(file, line); // 跳过标题行
-    // std::cout << "订单文件标题: " << line << std::endl;
-    
-    while (std::getline(file, line)) {
-        if (line.empty()) continue;
-        
-        std::istringstream ss(line);
-        std::string field;
-        
-        std::string datetime, sym, price_str, size_str, side_str, ordertype_str, orderid_str, channelno_str, seqno_str, bizindex_str;
-        
-        // datetime,sym,price,size,side,ordertype,orderid,channelno,seqno,bizindex
-        std::getline(ss, datetime, ',');
-        std::getline(ss, sym, ',');
-        std::getline(ss, price_str, ',');
-        std::getline(ss, size_str, ',');
-        std::getline(ss, side_str, ',');
-        std::getline(ss, ordertype_str, ',');
-        std::getline(ss, orderid_str, ',');
-        std::getline(ss, channelno_str, ',');
-        std::getline(ss, seqno_str, ',');
-        std::getline(ss, bizindex_str, ',');
-        
-        int64_t price = parse_price(price_str);
-        int64_t size = static_cast<int64_t>(std::stod(size_str));
-        int64_t side = std::stoi(side_str);
-        int64_t ordertype = std::stoi(ordertype_str);
-        int64_t orderid = std::stoull(orderid_str);
-        int64_t channelno = std::stoi(channelno_str);
-        int64_t seqno = std::stoull(seqno_str);
-        int64_t bizindex = std::stoull(bizindex_str);
-        
-        Event order_event(datetime, sym, price, size, side, ordertype, orderid, channelno, 
-                        seqno, bizindex, -1, -1, -1, "", "", "ord");
-        orders.push_back(order_event);
-    }
-    
-    std::cout << "加载了 " << orders.size() << " 条订单记录" << std::endl;
-    return orders;
-}
-
-// 加载撤单数据
-std::vector<Event> loadCancelData(const std::string& filename) {
-    std::vector<Event> cancels;
-    std::ifstream file(filename);
-    
-    if (!file.is_open()) {
-        std::cout << "错误：无法打开撤单文件 " << filename << std::endl;
-        return cancels;
-    }
-    
-    std::string line;
-    std::getline(file, line); // 跳过标题行
-    // std::cout << "撤单文件标题: " << line << std::endl;
-    
-    while (std::getline(file, line)) {
-        if (line.empty()) continue;
-        
-        std::istringstream ss(line);
-        std::string field;
-        
-        std::string datetime, sym, price_str, size_str, bidorderid_str, askorderid_str, tradeid_str, ordertype_str, tradebsflag, channelno_str, bizindex_str;
-        
-        // datetime,sym,price,size,bidorderid,askorderid,tradeid,exectype,tradebsflag,channelno,bizindex
-        std::getline(ss, datetime, ',');
-        std::getline(ss, sym, ',');
-        std::getline(ss, price_str, ',');
-        std::getline(ss, size_str, ',');
-        std::getline(ss, bidorderid_str, ',');
-        std::getline(ss, askorderid_str, ',');
-        std::getline(ss, tradeid_str, ',');
-        std::getline(ss, ordertype_str, ',');
-        std::getline(ss, tradebsflag, ',');
-        std::getline(ss, channelno_str, ',');
-        std::getline(ss, bizindex_str, ',');
-        
-        // 去除空格
-        tradebsflag.erase(std::remove(tradebsflag.begin(), tradebsflag.end(), ' '), tradebsflag.end());
-        
-        int64_t price = parse_price(price_str);
-        int64_t size = static_cast<int64_t>(std::stod(size_str));
-        int64_t bidorderid = std::stoull(bidorderid_str);
-        int64_t askorderid = std::stoull(askorderid_str);
-        int64_t tradeid = std::stoull(tradeid_str);
-        int64_t ordertype = std::stoi(ordertype_str);
-        int64_t channelno = std::stoi(channelno_str);
-        int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoull(bizindex_str);
-        
-        // 只处理exectype=2的撤单
-        if (ordertype == 2) {
-            Event cancel_event(datetime, sym, price, size, -1, -1, tradeid, channelno, -1, bizindex, 
-                             bidorderid, askorderid, tradeid, std::to_string(ordertype), tradebsflag, "tra");
-            cancels.push_back(cancel_event);
-        }
-    }
-    
-    std::cout << "加载了 " << cancels.size() << " 条撤单记录" << std::endl;
-    return cancels;
-}
 
 wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename) {
     std::ifstream file(filename);
@@ -429,177 +417,4 @@ wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename) {
     
     return 0;
 }
-/*
-// 集合竞价验证主函数
-void validateCallAuction(const std::string& stock_code, const std::string& date) {
-    std::cout << "========== 集合竞价验证程序 ==========" << std::endl;
-    std::cout << "股票代码: " << stock_code << ", 日期: " << date << std::endl;
-    
-    // 构建文件路径
-    std::string csord_file = "../logs/csord_" + stock_code + "_" + date + ".csv";
-    std::string cstra_file = "../logs/cstra_" + stock_code + "_" + date + ".csv";
-    std::string cstick_file = "../logs/cstick_" + stock_code + "_" + date + ".csv";
-    
-    // 1. 读取前收盘价和实际开盘价
-    wangcai_orderbook_cpp::Price prev_close = loadPrevClosePrice(cstick_file);
-    wangcai_orderbook_cpp::Price actual_open = loadOpenPrice(cstick_file);
-    
-    if (prev_close == 0) {
-        std::cout << "无法获取前收盘价，退出验证" << std::endl;
-        return;
-    }
-    
-    // 2. 初始化订单簿和集合竞价引擎
-    double upper_raw = prev_close * 1.1 / 10000.0;  // 按开盘价上10%
-    double lower_raw = prev_close * 0.9 / 10000.0;  // 按开盘价下10%
-    double upper = std::round(upper_raw * 100) / 100.0;  // 四舍五入到0.01
-    double lower = std::floor(lower_raw * 100) / 100.0;  // 向下取0.01
-    int lower_int = parse_price(std::to_string(lower));
-    int upper_int = parse_price(std::to_string(upper));
-    
-    std::cout << "价格范围(基于前收盘价): " << lower << " - " << upper << " 元" << std::endl;
-    
-    wangcai_orderbook_cpp::OrderBook ob(upper_int, lower_int, false);
-    ob.setPrevClosePrice(prev_close);
-    ob.setExchange(stock_code.substr(stock_code.size() - 2)); // 从股票代码获取交易所
-    
-    wangcai_orderbook_cpp::CallAuctionEngine auction_engine(ob, prev_close, stock_code.substr(stock_code.size() - 2),
-        nullptr, // 价格回调
-        nullptr);
-    
-    // 3. 清空全局事件列表并加载数据
-    clear_events();
-    auto orders = loadOrderData(csord_file);
-    auto cancels = loadCancelData(cstra_file);
-    
-    // 将数据插入到有序列表中
-    for (const auto& order : orders) {
-        insert_event(order);
-    }
-    for (const auto& cancel : cancels) {
-        insert_event(cancel);
-    }
-    
-    if (orders.empty()) {
-        std::cout << "没有订单数据，无法进行验证" << std::endl;
-        return;
-    }
-    
-    std::cout << "\n--- 开始处理集合竞价订单 ---" << std::endl;
-    
-    // 4. 获取合并后的有序事件列表
-    auto merged_events = get_merged_events();
-    std::cout << "总事件数: " << merged_events.size() << std::endl;
-    
-    // 5. 按时间顺序处理事件
-    int processed_orders = 0;
-    int processed_cancels = 0;
-    int skipped_price_range = 0;
-    int buy_orders = 0, sell_orders = 0;
-    
-    for (const auto& event : merged_events) {
-        try {
-            if (event.source == "ord") { // 订单
-                // 检查价格范围并对齐
-                wangcai_orderbook_cpp::Price aligned_price = event.price;
-                wangcai_orderbook_cpp::Price lower_bound = lower_int;
-                wangcai_orderbook_cpp::Price upper_bound = upper_int;
-                
-                if (aligned_price < lower_bound || aligned_price > upper_bound || aligned_price == 0) {
-                    skipped_price_range++;
-                    if (skipped_price_range <= 5) { // 只打印前5个被跳过的订单
-                        std::cout << "跳过订单: 价格=" << aligned_price << " 超出范围[" << lower_bound << "," << upper_bound << "]" << std::endl;
-                    }
-                    continue; // 跳过超出涨跌停范围的订单
-                }
-                
-                // 对齐到tick（股票tick=100）
-                wangcai_orderbook_cpp::Price offset_from_lower = aligned_price - lower_bound;
-                aligned_price = lower_bound + (offset_from_lower / 100) * 100;
-                
-                wangcai_orderbook_cpp::Direction dir = (event.side == 1) ? 
-                    wangcai_orderbook_cpp::Direction::Buy : wangcai_orderbook_cpp::Direction::Sell;
-                
-                // 根据原始数据判断订单类型
-                wangcai_orderbook_cpp::OrderType order_type;
-                if (event.sym.substr(event.sym.size() - 2) == "SZ") {
-                    // 深市：1为市价；2为限价；3为本方最优
-                    if (event.ordertype == 1) order_type = wangcai_orderbook_cpp::OrderType::Market;
-                    else if (event.ordertype == 2) order_type = wangcai_orderbook_cpp::OrderType::Limit;
-                    else if (event.ordertype == 3) order_type = wangcai_orderbook_cpp::OrderType::BestOwn;
-                    else order_type = wangcai_orderbook_cpp::OrderType::Limit;
-                } else {
-                    // 沪市全部为限价
-                    order_type = wangcai_orderbook_cpp::OrderType::Limit;
-                }
-                
-                // if (processed_orders < 5) { // 打印前5个订单的调试信息
-                //     std::cout << "订单 " << processed_orders << ": 方向=" << (event.side == 1 ? "买" : "卖") 
-                //               << ", 类型=" << event.ordertype << ", 价格=" << aligned_price 
-                //               << ", id=" << event.orderid
-                //               << ", 数量=" << event.size << std::endl;
-                // }
-                
-                auto order = ob.createOrder(
-                    "BROKER", "ACCOUNT", event.sym.substr(event.sym.size() - 2), event.sym, std::to_string(event.orderid),
-                    order_type, dir, aligned_price, event.size, event.bizindex
-                );
-                
-                auction_engine.accept(order);
-                processed_orders++;
-                if (event.side == 1) buy_orders++; else sell_orders++;
-                
-            } else { // 撤单
-                // 根据撤单记录中的bidorderid或askorderid中不为零的那个来撤单
-                uint64_t original_order_id = (event.bidorderid != 0) ? event.bidorderid : event.askorderid;
-                
-                // if (processed_cancels < 3) { // 打印前3个撤单的调试信息
-                //     std::cout << "撤单 - 原始订单ID: " << original_order_id << std::endl;
-                // }
-                auction_engine.cancel_by_input_id(original_order_id);
-                // processed_cancels++;
-            }
-            
-        } catch (const std::exception& e) {
-            std::cout << "处理事件时发生错误: " << e.what() << std::endl;
-        }
-    }
-    
-    std::cout << "处理完成 - 订单: " << processed_orders << ", 撤单: " << processed_cancels << std::endl;
-    std::cout << "买单数量: " << buy_orders << ", 卖单数量: " << sell_orders << std::endl;
-    std::cout << "因价格超范围跳过的订单: " << skipped_price_range << std::endl;
-    
-    // 6. 获取集合竞价结果
-    wangcai_orderbook_cpp::Price predicted_price = auction_engine.getPredictPrice();
-    wangcai_orderbook_cpp::Quantity predicted_volume = auction_engine.getPredictVolume();
-
-    // 7. 打印订单簿到csv
-    //auction_engine.print_orderbook_to_csv("../logs/orderbook_" + stock_code + "_" + date + ".csv");
-    
-    // 添加调试信息
-    // std::cout << "\n--- 集合竞价引擎状态 ---" << std::endl;
-    // std::cout << "总买量: " << auction_engine.getTotalBuy() << std::endl;
-    // std::cout << "总卖量: " << auction_engine.getTotalSell() << std::endl;
-    
-    // 7. 对比结果
-    std::cout << "\n========== 验证结果 ==========" << std::endl;
-    std::cout << "前收盘价: " << prev_close / 10000.0 << " 元" << std::endl;
-    std::cout << "预测开盘价: " << predicted_price / 10000.0 << " 元" << std::endl;
-    std::cout << "实际开盘价: " << actual_open / 10000.0 << " 元" << std::endl;
-    std::cout << "预测成交量: " << predicted_volume << " 股" << std::endl;
-    
-    if (predicted_price == actual_open) {
-        std::cout << "✅ 验证成功！预测价格与实际开盘价完全一致" << std::endl;
-    } else {
-        double diff_percent = std::abs(static_cast<double>(predicted_price - actual_open)) / actual_open * 100;
-        std::cout << "❌ 预测价格与实际开盘价不一致，差异: " << 
-            std::fixed << std::setprecision(4) << diff_percent << "%" << std::endl;
-    }
-    
-    std::cout << "=================================" << std::endl;
-    
-    // 清理事件列表
-    clear_events();
-}
-*/
-} // namespace wangcai_orderbook_cpp
+};

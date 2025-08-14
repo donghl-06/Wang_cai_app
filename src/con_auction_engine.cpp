@@ -399,6 +399,7 @@ bool ConAuctionEngine::cancel_by_input_id(uint64_t input_id)
         return result;
     } else {
         // 输入订单ID不存在
+        std::cout << " 连续竞价 -> 失败：输入订单ID不存在" << std::endl;
         if (on_cancel_) on_cancel_(input_id, false, "输入订单ID不存在", nullptr);
         // std::cout << "撤单失败：输入订单ID不存在" << std::endl;
         return false;
