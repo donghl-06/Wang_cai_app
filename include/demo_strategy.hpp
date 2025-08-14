@@ -11,8 +11,8 @@ class DemoStrategy : public Strategy {
 public:
     DemoStrategy(const std::string& strategy_id = "DEMO_STRATEGY")
         : strategy_id_(strategy_id), phase_(0), order_counter_(0) {
-        std::cout << "\n🚀 [" << strategy_id_ << "] 全接口演示策略已启动" << std::endl;
-        std::cout << "📋 将依次演示：下单回调 → 成交回调 → 撤单回调 → 持仓管理" << std::endl;
+        std::cout << "\n[" << strategy_id_ << "] 全接口演示策略已启动" << std::endl;
+        std::cout << "将依次演示：下单回调 → 成交回调 → 撤单回调 → 持仓管理" << std::endl;
     }
 
     // 【接口1】订单事件处理
@@ -47,7 +47,7 @@ public:
     std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) override {
         trade_event_count_++;
         if (trade_event_count_ <= 5) {  // 只打印前5个
-            std::cout << "📈 [" << strategy_id_ << "] 收到成交事件 #" << trade_event_count_ << ": "
+            std::cout << "[" << strategy_id_ << "] 收到成交事件 #" << trade_event_count_ << ": "
                       << "价格=" << (execution.price / 10000.0)
                       << " 数量=" << execution.volume 
                       << " 时间=" << datetime << std::endl;
@@ -61,7 +61,7 @@ public:
     int tick_count = 0;
     std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) override {
         if (tick_count < 5) {
-        std::cout << "📊 [" << strategy_id_ << "] 收到行情快照: "
+        std::cout << "[" << strategy_id_ << "] 收到行情快照: "
                   << "最新价=" << (snapshot.last_price / 10000.0)
                   << " 买一=" << (snapshot.bids[0] / 10000.0)
                   << " 卖一=" << (snapshot.asks[0] / 10000.0)
@@ -74,22 +74,22 @@ public:
 
     // 【接口4】统一交易回调（新接口）
     void onTradeCallback(const TradeCallback& callback) override {
-        std::cout << "\n🎯 [" << strategy_id_ << "] ==== 统一交易回调 ====" << std::endl;
-        std::cout << "   📝 订单ID: " << callback.localid << std::endl;
-        std::cout << "   🎬 回调类型: " << (callback.matchtype == 'T' ? "💰成交" : "❌撤单") << std::endl;
-        std::cout << "   📍 方向: " << (callback.direction == 'B' ? "🟢买入" : "🔴卖出") << std::endl;
-        std::cout << "   📊 数量: " << callback.volume << std::endl;
-        std::cout << "   💰 价格: " << std::fixed << std::setprecision(4) << (callback.price / 10000.0) << " 元" << std::endl;
+        std::cout << "\n[" << strategy_id_ << "] ==== 统一交易回调 ====" << std::endl;
+        std::cout << "   订单ID: " << callback.localid << std::endl;
+        std::cout << "   回调类型: " << (callback.matchtype == 'T' ? "成交" : "撤单") << std::endl;
+        std::cout << "   方向: " << (callback.direction == 'B' ? "买入" : "卖出") << std::endl;
+        std::cout << "   数量: " << callback.volume << std::endl;
+        std::cout << "   价格: " << std::fixed << std::setprecision(4) << (callback.price / 10000.0) << " 元" << std::endl;
         if (callback.matchtype == 'T') {
-            std::cout << "   💵 成交金额: " << std::fixed << std::setprecision(2) << callback.matchamount << " 元" << std::endl;
+            std::cout << "   成交金额: " << std::fixed << std::setprecision(2) << callback.matchamount << " 元" << std::endl;
         }
-        std::cout << "   📈 当前总持仓: " << callback.deltapos << std::endl;
-        std::cout << "   ⏰ 时间: " << callback.matchtime << std::endl;
+        std::cout << "   当前总持仓: " << callback.deltapos << std::endl;
+        std::cout << "   时间: " << callback.matchtime << std::endl;
         
         // 显示当前所有持仓
         auto positions = getAllPositions();
         if (!positions.empty()) {
-            std::cout << "   📦 持仓明细: ";
+            std::cout << "   持仓明细: ";
             for (const auto& pos : positions) {
                 std::cout << pos.first << "=" << pos.second << " ";
             }
@@ -108,73 +108,73 @@ public:
 
     // 【接口5】下单回调（新接口）
     void onOrderCallback(const OrderCallback& callback) override {
-        std::cout << "\n📋 [" << strategy_id_ << "] ==== 下单回调 ====" << std::endl;
-        std::cout << "   🆔 订单ID: " << callback.orderlocalid << std::endl;
-        std::cout << "   📍 方向: " << (callback.direction == 1 ? "🟢买入" : "🔴卖出") << std::endl;
-        std::cout << "   📊 数量: " << callback.volume << std::endl;
-        std::cout << "   💰 价格: " << std::fixed << std::setprecision(4) << (callback.price / 10000.0) << " 元" << std::endl;
-        std::cout << "   🏛️  交易所: " << (callback.exchange == 0 ? "🌀上海" : "🔥深圳") << std::endl;
-        std::cout << "   📈 买一: " << std::fixed << std::setprecision(4) << (callback.bid1 / 10000.0) << " 元" << std::endl;
-        std::cout << "   📉 卖一: " << std::fixed << std::setprecision(4) << (callback.ask1 / 10000.0) << " 元" << std::endl;
-        std::cout << "   💼 当前总持仓: " << callback.deltapos << std::endl;
-        std::cout << "   ⏰ 时间: " << callback.time << std::endl;
+        std::cout << "\n[" << strategy_id_ << "] ==== 下单回调 ====" << std::endl;
+        std::cout << "   订单ID: " << callback.orderlocalid << std::endl;
+        std::cout << "   方向: " << (callback.direction == 1 ? "买入" : "卖出") << std::endl;
+        std::cout << "   数量: " << callback.volume << std::endl;
+        std::cout << "   价格: " << std::fixed << std::setprecision(4) << (callback.price / 10000.0) << " 元" << std::endl;
+        std::cout << "   交易所: " << (callback.exchange == 0 ? "上海" : "深圳") << std::endl;
+        std::cout << "   买一: " << std::fixed << std::setprecision(4) << (callback.bid1 / 10000.0) << " 元" << std::endl;
+        std::cout << "   卖一: " << std::fixed << std::setprecision(4) << (callback.ask1 / 10000.0) << " 元" << std::endl;
+        std::cout << "   当前总持仓: " << callback.deltapos << std::endl;
+        std::cout << "   时间: " << callback.time << std::endl;
         std::cout << "==============================" << std::endl;
     }
 
     // 【接口6】成交回调（旧接口，保持兼容）
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
-        std::cout << "🔄 [" << strategy_id_ << "] 旧接口-成交回调: " << order_id 
+        std::cout << "[" << strategy_id_ << "] 旧接口-成交回调: " << order_id 
                   << " 价格=" << (price / 10000.0) << " 数量=" << volume << std::endl;
     }
 
     // 【接口7】撤单回调（旧接口，保持兼容）
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
-        std::cout << "🔄 [" << strategy_id_ << "] 旧接口-撤单回调: " << order_id 
+        std::cout << "[" << strategy_id_ << "] 旧接口-撤单回调: " << order_id 
                   << " 原因=" << reason << std::endl;
     }
 
     std::string getStrategyId() const override { return strategy_id_; }
 
     void printStatistics() const {
-        std::cout << "\n🎊============ 演示策略统计报告 ============" << std::endl;
-        std::cout << "📊 策略ID: " << strategy_id_ << std::endl;
-        std::cout << "🎯 演示阶段: " << (phase_ >= 3 ? "✅全部完成" : "🔄进行中") << std::endl;
+        std::cout << "\n============ 演示策略统计报告 ============" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "演示阶段: " << (phase_ >= 3 ? "全部完成" : "进行中") << std::endl;
         
-        std::cout << "\n📋 === 接口测试统计 ===" << std::endl;
-        std::cout << "📝 总下单数: " << order_counter_ << " (目标: 10个)" << std::endl;
-        std::cout << "✅ 累计成交次数: " << filled_count_ << " (目标: 5个立即成交)" << std::endl;
-        std::cout << "✅ 累计成交量: " << total_filled_volume_ << std::endl;
-        std::cout << "❌ 累计撤单次数: " << cancelled_count_ << " (目标: 5个撤单)" << std::endl;
-        std::cout << "📈 收到成交或者撤单事件数: " << trade_event_count_ << " (显示前5个)" << std::endl;
+        std::cout << "\n=== 接口测试统计 ===" << std::endl;
+        std::cout << "总下单数: " << order_counter_ << " (目标: 10个)" << std::endl;
+        std::cout << "累计成交次数: " << filled_count_ << " (目标: 5个立即成交)" << std::endl;
+        std::cout << "累计成交量: " << total_filled_volume_ << std::endl;
+        std::cout << "累计撤单次数: " << cancelled_count_ << " (目标: 5个撤单)" << std::endl;
+        std::cout << "收到成交或者撤单事件数: " << trade_event_count_ << " (显示前5个)" << std::endl;
         
-        std::cout << "\n🎪 === 演示阶段完成情况 ===" << std::endl;
-        std::cout << "   🟢 阶段0-下单回调: " << (phase_ >= 1 ? "✅完成(5个订单)" : "🔄进行中") << std::endl;
-        std::cout << "   🟡 阶段1-挂单演示: " << (phase_ >= 2 ? "✅完成(5个挂单)" : (phase_ >= 1 ? "🔄进行中" : "⏳等待")) << std::endl;
-        std::cout << "   🔴 阶段2-撤单回调: " << (phase_ >= 3 ? "✅完成(5个撤单)" : (phase_ >= 2 ? "🔄进行中" : "⏳等待")) << std::endl;
+        std::cout << "\n=== 演示阶段完成情况 ===" << std::endl;
+        std::cout << "   阶段0-下单回调: " << (phase_ >= 1 ? "完成(5个订单)" : "进行中") << std::endl;
+        std::cout << "   阶段1-挂单演示: " << (phase_ >= 2 ? "完成(5个挂单)" : (phase_ >= 1 ? "进行中" : "等待")) << std::endl;
+        std::cout << "   阶段2-撤单回调: " << (phase_ >= 3 ? "完成(5个撤单)" : (phase_ >= 2 ? "进行中" : "等待")) << std::endl;
         
         // 持仓汇总
         auto positions = getAllPositions();
         if (!positions.empty()) {
-            std::cout << "\n📦 === 持仓汇总 ===" << std::endl;
+            std::cout << "\n=== 持仓汇总 ===" << std::endl;
             int64_t total_net_position = 0;
             for (const auto& pos : positions) {
-                std::cout << "   📈 " << pos.first << ": " << pos.second << std::endl;
+                std::cout << "   " << pos.first << ": " << pos.second << std::endl;
                 total_net_position += pos.second;
             }
-            std::cout << "   📊 总净持仓: " << total_net_position << std::endl;
+            std::cout << "   总净持仓: " << total_net_position << std::endl;
         } else {
-            std::cout << "\n📦 === 持仓汇总 ===" << std::endl;
-            std::cout << "   💭 暂无持仓" << std::endl;
+            std::cout << "\n=== 持仓汇总 ===" << std::endl;
+            std::cout << "   暂无持仓" << std::endl;
         }
         
-        std::cout << "\n🏆 === 接口演示总结 ===" << std::endl;
-        std::cout << "   ✅ onOrderEvent() - 订单事件处理" << std::endl;
-        std::cout << "   ✅ onTradeEvent() - 成交事件处理(显示前5个)" << std::endl;
-        std::cout << "   ✅ onTickEvent() - 行情快照处理" << std::endl;
-        std::cout << "   ✅ onTradeCallback() - 统一交易回调(新接口)" << std::endl;
-        std::cout << "   ✅ onOrderCallback() - 下单回调(新接口)" << std::endl;
-        std::cout << "   ✅ onOrderFilled() - 成交回调(旧接口兼容)" << std::endl;
-        std::cout << "   ✅ onOrderCancelled() - 撤单回调(旧接口兼容)" << std::endl;
+        std::cout << "\n=== 接口演示总结 ===" << std::endl;
+        std::cout << "   onOrderEvent() - 订单事件处理" << std::endl;
+        std::cout << "   onTradeEvent() - 成交事件处理(显示前5个)" << std::endl;
+        std::cout << "   onTickEvent() - 行情快照处理" << std::endl;
+        std::cout << "   onTradeCallback() - 统一交易回调(新接口)" << std::endl;
+        std::cout << "   onOrderCallback() - 下单回调(新接口)" << std::endl;
+        std::cout << "   onOrderFilled() - 成交回调(旧接口兼容)" << std::endl;
+        std::cout << "   onOrderCancelled() - 撤单回调(旧接口兼容)" << std::endl;
         std::cout << "========================================" << std::endl;
     }
 
@@ -188,7 +188,7 @@ private:
         event_count++;
         
         if (demo_count == 0 && event_count == 1) {
-            std::cout << "\n🎪 === 阶段0：演示下单回调和成交回调（5个订单）===" << std::endl;
+            std::cout << "\n=== 阶段0：演示下单回调和成交回调（5个订单）===" << std::endl;
         }
         
         if (demo_count < 5 && event_count % 3 == 1) {  // 每3个事件下一单
@@ -210,12 +210,12 @@ private:
             
             events.emplace_back(order);
             
-            std::cout << "📝 [" << demo_count << "/5] 提交" << direction_str << "单: " << order_id 
+            std::cout << "[" << demo_count << "/5] 提交" << direction_str << "单: " << order_id 
                       << " 数量=" << order.volume << " (预期立即成交)" << std::endl;
             
             if (demo_count == 5) {
                 phase_ = 1; // 进入下一阶段
-                std::cout << "✅ 阶段0完成：已演示5个下单回调和成交回调" << std::endl;
+                std::cout << "阶段0完成：已演示5个下单回调和成交回调" << std::endl;
             }
         }
         
@@ -231,7 +231,7 @@ private:
         event_count++;
         
         if (demo_count == 0 && event_count == 1) {
-            std::cout << "\n🎪 === 阶段1：演示挂单（5个待撤单）===" << std::endl;
+            std::cout << "\n=== 阶段1：演示挂单（5个待撤单）===" << std::endl;
         }
         
         if (demo_count < 5 && event_count % 2 == 1) {  // 每2个事件下一单
@@ -255,12 +255,12 @@ private:
             events.emplace_back(order);
             pending_orders_.push_back(order_id);  // 记录待撤单
             
-            std::cout << "📝 [" << demo_count << "/5] 提交限价" << direction_str << "单: " << order_id 
+            std::cout << "[" << demo_count << "/5] 提交限价" << direction_str << "单: " << order_id 
                       << " 数量=" << order.volume << " (挂单等待)" << std::endl;
             
             if (demo_count == 5) {
                 phase_ = 2; // 进入撤单阶段
-                std::cout << "✅ 阶段1完成：已演示5个挂单，准备撤单演示" << std::endl;
+                std::cout << "阶段1完成：已演示5个挂单，准备撤单演示" << std::endl;
             }
         }
         
@@ -276,7 +276,7 @@ private:
         event_count++;
         
         if (demo_count == 0 && event_count == 1) {
-            std::cout << "\n🎪 === 阶段2：演示撤单回调（5个撤单）===" << std::endl;
+            std::cout << "\n=== 阶段2：演示撤单回调（5个撤单）===" << std::endl;
         }
         
         if (demo_count < 5 && !pending_orders_.empty() && event_count % 2 == 1) {
@@ -289,12 +289,12 @@ private:
             UserCancel cancel(cancel_id, strategy_id_);
             events.emplace_back(cancel);
             
-            std::cout << "❌ [" << demo_count << "/5] 提交撤单: " << cancel_id << " (演示撤单回调)" << std::endl;
+            std::cout << "[" << demo_count << "/5] 提交撤单: " << cancel_id << " (演示撤单回调)" << std::endl;
             
             if (demo_count == 5) {
                 phase_ = 3; // 演示完成
-                std::cout << "✅ 阶段2完成：已演示5个撤单回调" << std::endl;
-                std::cout << "\n🎉 === 所有接口演示完成！===" << std::endl;
+                std::cout << "阶段2完成：已演示5个撤单回调" << std::endl;
+                std::cout << "\n=== 所有接口演示完成！===" << std::endl;
             }
         }
         
