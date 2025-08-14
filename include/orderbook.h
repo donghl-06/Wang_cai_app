@@ -14,7 +14,7 @@
 #include <utility>
 #include <map>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 // 事件结构
 struct Event {
     std::string datetime;
@@ -225,4 +225,4 @@ private:
     
 };
 
-} // namespace wangcai_orderbook_cpp
+} // namespace wangcai

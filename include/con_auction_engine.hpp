@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include "OrderLoader.h"
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 市场类型枚举
 enum class MarketType {
@@ -40,4 +40,4 @@ private:
     
 };
 
-} // namespace wangcai_orderbook_cpp 
+} // namespace wangcai 

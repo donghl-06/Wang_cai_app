@@ -13,7 +13,7 @@
 #include <atomic>
 #include <chrono>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
     using Price = uint64_t;
     using Quantity = uint64_t;
     inline std::atomic<uint64_t> g_order_id_counter{0};
@@ -143,4 +143,4 @@ struct Position {
 };
     
 
-}// namespace wangcai_orderbook_cpp
+}// namespace wangcai

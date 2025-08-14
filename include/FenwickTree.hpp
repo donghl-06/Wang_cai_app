@@ -6,7 +6,7 @@
 #include <vector>
 #include <cstdint>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 class Fenwick {
 public:
@@ -27,4 +27,4 @@ private:
     std::vector<int64_t> tree_;
 };
 
-} // namespace wangcai_orderbook_cpp 
+} // namespace wangcai 

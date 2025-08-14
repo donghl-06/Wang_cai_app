@@ -3,7 +3,7 @@
 #include <iostream>
 #include <memory>
 
-using namespace wangcai_orderbook_cpp;
+using namespace wangcai;
 
 int main(int argc, char* argv[]) {
     if (argc != 4) {

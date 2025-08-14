@@ -5,7 +5,7 @@
 #include <functional>
 #include <unordered_map>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 集合竞价撮合引擎类，负责集合竞价阶段的订单管理与撮合
 class CloseAuctionEngine {
@@ -101,4 +101,4 @@ private:
     Price    _real_px{0};
 };
 
-} // namespace wangcai_orderbook_cpp
+} // namespace wangcai

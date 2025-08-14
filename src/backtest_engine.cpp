@@ -4,7 +4,7 @@
 #include <cmath>
 #include <fstream> // Added for file operations
 #include <ranges>
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 static OrderType toOrderType(const Event& ev) {
     // 仅深市有 1/2/3 的区分；沪市全用限价
     if (ev.sym.size() >= 2 && ev.sym.substr(ev.sym.size()-2) == "SZ") {
@@ -775,4 +775,4 @@ void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
 
 
 
-} // namespace wangcai_orderbook_cpp 
+} // namespace wangcai 

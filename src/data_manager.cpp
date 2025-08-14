@@ -14,7 +14,7 @@
 #include <algorithm>
 #include <iostream>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 DataManager::DataManager(OrderBook* ob, CallAuctionEngine* call_engine, 
                         ConAuctionEngine* con_engine, CloseAuctionEngine* close_engine)

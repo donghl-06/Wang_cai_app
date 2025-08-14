@@ -13,7 +13,7 @@
 #include "close_auction_engine.hpp"
 
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 class DataManager {
 public:

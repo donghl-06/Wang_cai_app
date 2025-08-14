@@ -18,7 +18,7 @@
 #include <string>       // std::string
 #include <algorithm>    // std::sort
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 在文件开头添加静态变量定义
 std::vector<Event> OrderBook::whole_events;
@@ -163,4 +163,4 @@ void OrderBook::bucketSub(int idx, bool is_buy, Quantity q)
 Price OrderBook::bestBid() const { return _best_bid == -1 ? 0 : idxToPx(_best_bid); }
 Price OrderBook::bestAsk() const { return _best_ask == -1 ? 0 : idxToPx(_best_ask); }
 
-} // namespace wangcai_orderbook_cpp
+} // namespace wangcai

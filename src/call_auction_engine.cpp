@@ -5,7 +5,7 @@
 #include <iostream> // Added for debugging output
 #include <fstream>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 构造函数：初始化集合竞价引擎，绑定订单簿、前收盘价、交易所、回调等 
 CallAuctionEngine::CallAuctionEngine(OrderBook& ob, Price pc,
@@ -467,4 +467,4 @@ void CallAuctionEngine::print_orderbook_to_csv(const std::string& filename) {
              << tradable << "\n";
     }
 }
-} // namespace wangcai_orderbook_cpp 
+} // namespace wangcai 

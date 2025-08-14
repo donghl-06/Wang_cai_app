@@ -1,11 +1,10 @@
 #pragma once
-
 #include "backtest_engine.hpp"
 #include <iostream>
 #include <string>
 #include <deque>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 同步跟单策略示例 - 演示严格同步的事件处理
 class SyncFollowStrategy : public Strategy {
@@ -253,20 +252,20 @@ public:
     }
     
     std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) override {
-        // 不响应Tick事件，专注于测试回调
-        std::cout << "Tick is Coming!" << std::endl;
-        auto bid = snapshot.bids;
-        auto ask = snapshot.asks;
-        std::cout << "Tick Time is " << snapshot.datetime << '\n';
-        std::cout << "Bid: \n";
-        for (auto x: bid) {
-            std::cout << "价格: " << x / 10000.0 << " 元" << std::endl;
-        }
+        // // 不响应Tick事件，专注于测试回调
+        // std::cout << "Tick is Coming!" << std::endl;
+        // auto bid = snapshot.bids;
+        // auto ask = snapshot.asks;
+        // std::cout << "Tick Time is " << snapshot.datetime << '\n';
+        // std::cout << "Bid: \n";
+        // for (auto x: bid) {
+        //     std::cout << "价格: " << x / 10000.0 << " 元" << std::endl;
+        // }
 
-        std::cout << "Ask: \n";
-        for (auto x: ask) {
-            std::cout << "价格: " << x / 10000.0 << " 元"<< std::endl;
-        }
+        // std::cout << "Ask: \n";
+        // for (auto x: ask) {
+        //     std::cout << "价格: " << x / 10000.0 << " 元"<< std::endl;
+        // }
         return {};
     }
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
@@ -492,4 +491,4 @@ private:
     std::deque<std::string> pending_cancel_orders_;
 };
 
-} // namespace wangcai_orderbook_cpp
+} // namespace wangcai

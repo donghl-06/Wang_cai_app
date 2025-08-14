@@ -14,7 +14,7 @@
 #include <array>
 #include "types.h"
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 struct Snapshot {
  ///交易所代码

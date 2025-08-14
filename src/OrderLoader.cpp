@@ -13,7 +13,7 @@
 #include <map>
 
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 工具函数：将价格字符串转为int64_t，*10000并四舍五入到100
 inline uint64_t parse_price(const std::string& price_str) {
@@ -25,7 +25,7 @@ inline uint64_t parse_price(const std::string& price_str) {
 }
 
 // 加载订单数据
-void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
+void load_orders_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
     std::ifstream file(csv_file);  
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
@@ -79,13 +79,13 @@ void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
                 orderid_str,      // order_local_id (使用原始字符串)
                 // 根据委托价格类型和交易所判断OrderType
                 (sym.substr(sym.size() - 2) == "SZ"
-                    ? (ordertype == 1 ? wangcai_orderbook_cpp::OrderType::Market
-                        : (ordertype == 2 ? wangcai_orderbook_cpp::OrderType::Limit
-                            : (ordertype == 3 ? wangcai_orderbook_cpp::OrderType::BestOwn
-                                : wangcai_orderbook_cpp::OrderType::Limit)))
-                    : wangcai_orderbook_cpp::OrderType::Limit), // 沪市全部为限价
+                    ? (ordertype == 1 ? wangcai::OrderType::Market
+                        : (ordertype == 2 ? wangcai::OrderType::Limit
+                            : (ordertype == 3 ? wangcai::OrderType::BestOwn
+                                : wangcai::OrderType::Limit)))
+                    : wangcai::OrderType::Limit), // 沪市全部为限价
                 // 根据方向判断Direction
-                side == 1 ? wangcai_orderbook_cpp::Direction::Buy : wangcai_orderbook_cpp::Direction::Sell,
+                side == 1 ? wangcai::Direction::Buy : wangcai::Direction::Sell,
                 price,           // price
                 size,            // volume
                 bizindex
@@ -98,7 +98,7 @@ void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
 }
 
 // 加载撤单数据
-void load_traders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
+void load_traders_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
     std::ifstream file(csv_file);  // ✅ 正确：用ifstream读取文件
     if (!file.is_open()) {
         std::cerr << "无法打开文件: " << csv_file << std::endl;
@@ -177,7 +177,7 @@ void load_traders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::O
 
 
 // 加载cstick用来获取开盘价
-void load_cstick_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
+void load_cstick_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
     std::ifstream file(csv_file);
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
@@ -340,7 +340,7 @@ void clear_events() {
 }
 
 
-wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename) {
+wangcai::Price loadPrevClosePrice(const std::string& filename) {
     std::ifstream file(filename);
 
     if (!file.is_open()) {
@@ -370,14 +370,14 @@ wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename) {
         // 先乘以10000，再四舍五入到100
         double prev_close_multiplied = prev_close_raw * 10000;
         double prev_close_rounded = std::round(prev_close_multiplied / 100.0) * 100.0;
-        wangcai_orderbook_cpp::Price prev_close = static_cast<wangcai_orderbook_cpp::Price>(prev_close_rounded);
+        wangcai::Price prev_close = static_cast<wangcai::Price>(prev_close_rounded);
         return prev_close;
     }
 
     return 0;
 }
 
-wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename) {
+wangcai::Price loadOpenPrice(const std::string& filename) {
     std::ifstream file(filename);
     
     if (!file.is_open()) {
@@ -409,7 +409,7 @@ wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename) {
          // 先乘以10000，再四舍五入到100
          double open_multiplied = open_raw * 10000;
          double open_rounded = std::round(open_multiplied / 100.0) * 100.0;
-         wangcai_orderbook_cpp::Price open_price = static_cast<wangcai_orderbook_cpp::Price>(open_rounded);
+         wangcai::Price open_price = static_cast<wangcai::Price>(open_rounded);
 
         //  std::cout << "开盘价(最后一行): " << open_price / 10000.0 << " 元" << std::endl;
          return open_price;

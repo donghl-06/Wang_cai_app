@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <iostream>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 
 // 连续竞价订单接收函数
@@ -406,4 +406,4 @@ bool ConAuctionEngine::cancel_by_input_id(uint64_t input_id)
     }
 }
 
-} // namespace wangcai_orderbook_cpp 
+} // namespace wangcai 

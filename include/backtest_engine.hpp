@@ -14,7 +14,7 @@
 #include <map>
 #include <fstream>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 用户策略接口
 class Strategy {
@@ -131,4 +131,4 @@ private:
     bool recording_enabled_;                  // 是否启用记录
 };
 
-} // namespace wangcai_orderbook_cpp 
+} // namespace wangcai 

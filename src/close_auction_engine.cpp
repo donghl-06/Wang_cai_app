@@ -5,7 +5,7 @@
 #include <iostream> // Added for debugging output
 #include <fstream>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 构造函数实现
 CloseAuctionEngine::CloseAuctionEngine(OrderBook& ob, Price pc,
@@ -470,4 +470,4 @@ void CloseAuctionEngine::bootstrap_from_orderbook() {
     }
     publish(); // 更新一次预测价
 }
-} // namespace wangcai_orderbook_cpp 
+} // namespace wangcai 

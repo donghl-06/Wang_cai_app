@@ -2,7 +2,7 @@
  * @Author: linzhuoyu
  * @Date  : 2025-07-07 03:11:27
  * @Update: 2025-07-08 14:35
- * @File  : /wangcai_orderbook_cpp/include/order.h
+ * @File  : /wangcai/include/order.h
  * @brief : 撮合引擎订单 / 档位 / 成交 等核心实体
  */
 #pragma once
@@ -16,7 +16,7 @@
 
 #include "types.h"   // Price / Quantity / generate_order_id()
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 struct PriceLevel;     // 前置声明
 
@@ -132,4 +132,4 @@ struct Stats {
     Price    last_open_volume{}; // 最新开盘量
 };
 
-} // namespace wangcai_orderbook_cpp
+} // namespace wangcai

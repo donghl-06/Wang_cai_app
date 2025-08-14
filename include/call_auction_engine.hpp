@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include "OrderLoader.h"
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 class CallAuctionEngine {
 public:
@@ -64,4 +64,4 @@ private:
     Price    _real_px{0};
 };
 
-} // namespace wangcai_orderbook_cpp 
+} // namespace wangcai 

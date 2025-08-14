@@ -5,7 +5,7 @@
 #include <new>          // placement new
 #include "order.h"
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 class OrderPool {
 public:
@@ -36,4 +36,4 @@ private:
     boost::object_pool<Order> pool_;
 };
 
-} // namespace wangcai_orderbook_cpp
+} // namespace wangcai
