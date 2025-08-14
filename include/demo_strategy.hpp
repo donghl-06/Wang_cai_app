@@ -11,7 +11,7 @@ class DemoStrategy : public Strategy {
 public:
     DemoStrategy(const std::string& strategy_id = "DEMO_STRATEGY")
         : strategy_id_(strategy_id), phase_(0), order_counter_(0) {
-        std::cout << "\n[" << strategy_id_ << "] 全接口演示策略已启动" << std::endl;
+        std::cout << "\n▶️ [" << strategy_id_ << "] 全接口演示策略已启动" << std::endl;
         std::cout << "将依次演示：下单回调 → 成交回调 → 撤单回调 → 持仓管理" << std::endl;
     }
 
@@ -47,7 +47,7 @@ public:
     std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) override {
         trade_event_count_++;
         if (trade_event_count_ <= 5) {  // 只打印前5个
-            std::cout << "[" << strategy_id_ << "] 收到成交事件 #" << trade_event_count_ << ": "
+            std::cout << "🔔 [" << strategy_id_ << "] 收到成交事件 #" << trade_event_count_ << ": "
                       << "价格=" << (execution.price / 10000.0)
                       << " 数量=" << execution.volume 
                       << " 时间=" << datetime << std::endl;
@@ -61,11 +61,11 @@ public:
     int tick_count = 0;
     std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) override {
         if (tick_count < 5) {
-        std::cout << "[" << strategy_id_ << "] 收到行情快照: "
-                  << "最新价=" << (snapshot.last_price / 10000.0)
-                  << " 买一=" << (snapshot.bids[0] / 10000.0)
-                  << " 卖一=" << (snapshot.asks[0] / 10000.0)
-                  << " 时间=" << snapshot.datetime << std::endl;
+            std::cout << "📈 [" << strategy_id_ << "] 收到行情快照: "
+                      << "最新价=" << (snapshot.last_price / 10000.0)
+                      << " 买一=" << (snapshot.bids[0] / 10000.0)
+                      << " 卖一=" << (snapshot.asks[0] / 10000.0)
+                      << " 时间=" << snapshot.datetime << std::endl;
         }
         tick_count++;    
         // 在这里可以根据行情变化做出策略决策
@@ -74,7 +74,7 @@ public:
 
     // 【接口4】统一交易回调（新接口）
     void onTradeCallback(const TradeCallback& callback) override {
-        std::cout << "\n[" << strategy_id_ << "] ==== 统一交易回调 ====" << std::endl;
+        std::cout << "\n🧾 [" << strategy_id_ << "] ==== 统一交易回调 ====" << std::endl;
         std::cout << "   订单ID: " << callback.localid << std::endl;
         std::cout << "   回调类型: " << (callback.matchtype == 'T' ? "成交" : "撤单") << std::endl;
         std::cout << "   方向: " << (callback.direction == 'B' ? "买入" : "卖出") << std::endl;
@@ -108,7 +108,7 @@ public:
 
     // 【接口5】下单回调（新接口）
     void onOrderCallback(const OrderCallback& callback) override {
-        std::cout << "\n[" << strategy_id_ << "] ==== 下单回调 ====" << std::endl;
+        std::cout << "\n📥 [" << strategy_id_ << "] ==== 下单回调 ====" << std::endl;
         std::cout << "   订单ID: " << callback.orderlocalid << std::endl;
         std::cout << "   方向: " << (callback.direction == 1 ? "买入" : "卖出") << std::endl;
         std::cout << "   数量: " << callback.volume << std::endl;
@@ -123,20 +123,20 @@ public:
 
     // 【接口6】成交回调（旧接口，保持兼容）
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
-        std::cout << "[" << strategy_id_ << "] 旧接口-成交回调: " << order_id 
+        std::cout << "✅ [" << strategy_id_ << "] 旧接口-成交回调: " << order_id 
                   << " 价格=" << (price / 10000.0) << " 数量=" << volume << std::endl;
     }
 
     // 【接口7】撤单回调（旧接口，保持兼容）
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
-        std::cout << "[" << strategy_id_ << "] 旧接口-撤单回调: " << order_id 
+        std::cout << "✖️ [" << strategy_id_ << "] 旧接口-撤单回调: " << order_id 
                   << " 原因=" << reason << std::endl;
     }
 
     std::string getStrategyId() const override { return strategy_id_; }
 
     void printStatistics() const {
-        std::cout << "\n============ 演示策略统计报告 ============" << std::endl;
+        std::cout << "\n📊 ============ 演示策略统计报告 ============" << std::endl;
         std::cout << "策略ID: " << strategy_id_ << std::endl;
         std::cout << "演示阶段: " << (phase_ >= 3 ? "全部完成" : "进行中") << std::endl;
         
@@ -188,7 +188,7 @@ private:
         event_count++;
         
         if (demo_count == 0 && event_count == 1) {
-            std::cout << "\n=== 阶段0：演示下单回调和成交回调（5个订单）===" << std::endl;
+            std::cout << "\n🔁 === 阶段0：演示下单回调和成交回调（5个订单）===" << std::endl;
         }
         
         if (demo_count < 5 && event_count % 3 == 1) {  // 每3个事件下一单
@@ -215,7 +215,7 @@ private:
             
             if (demo_count == 5) {
                 phase_ = 1; // 进入下一阶段
-                std::cout << "阶段0完成：已演示5个下单回调和成交回调" << std::endl;
+                std::cout << "✅ 阶段0完成：已演示5个下单回调和成交回调" << std::endl;
             }
         }
         
@@ -231,7 +231,7 @@ private:
         event_count++;
         
         if (demo_count == 0 && event_count == 1) {
-            std::cout << "\n=== 阶段1：演示挂单（5个待撤单）===" << std::endl;
+            std::cout << "\n🧾 === 阶段1：演示挂单（5个待撤单）===" << std::endl;
         }
         
         if (demo_count < 5 && event_count % 2 == 1) {  // 每2个事件下一单
@@ -260,7 +260,7 @@ private:
             
             if (demo_count == 5) {
                 phase_ = 2; // 进入撤单阶段
-                std::cout << "阶段1完成：已演示5个挂单，准备撤单演示" << std::endl;
+                std::cout << "✅ 阶段1完成：已演示5个挂单，准备撤单演示" << std::endl;
             }
         }
         
@@ -276,7 +276,7 @@ private:
         event_count++;
         
         if (demo_count == 0 && event_count == 1) {
-            std::cout << "\n=== 阶段2：演示撤单回调（5个撤单）===" << std::endl;
+            std::cout << "\n✖️ === 阶段2：演示撤单回调（5个撤单）===" << std::endl;
         }
         
         if (demo_count < 5 && !pending_orders_.empty() && event_count % 2 == 1) {
@@ -289,12 +289,12 @@ private:
             UserCancel cancel(cancel_id, strategy_id_);
             events.emplace_back(cancel);
             
-            std::cout << "[" << demo_count << "/5] 提交撤单: " << cancel_id << " (演示撤单回调)" << std::endl;
+            std::cout << "[" << demo_count << "/5] 提交撤單: " << cancel_id << " (演示撤单回调)" << std::endl;
             
             if (demo_count == 5) {
                 phase_ = 3; // 演示完成
-                std::cout << "阶段2完成：已演示5个撤单回调" << std::endl;
-                std::cout << "\n=== 所有接口演示完成！===" << std::endl;
+                std::cout << "✅ 阶段2完成：已演示5个撤单回调" << std::endl;
+                std::cout << "\n🎉 === 所有接口演示完成！===" << std::endl;
             }
         }
         

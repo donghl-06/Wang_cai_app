@@ -119,10 +119,7 @@ void BacktestEngine::initialize() {
             } else {
                 // 历史订单成交：正常处理并记录到CSV
                 
-                // 1. 检查并通知策略订单成交
-                notifyStrategiesOnExecution(ex);
-                
-                // 2. 推送成交事件给所有策略，收集新事件（暂存到pending队列）
+                // 1. 推送成交事件给所有策略，收集新事件（暂存到pending队列）
                 for (auto& strategy : strategies_) {
                     auto user_events = strategy->onTradeEvent(ex, trade_datetime);
                     for (const auto& event : user_events) {
@@ -130,7 +127,7 @@ void BacktestEngine::initialize() {
                     }
                 }
                 
-                // 3. 记录交易信息（如果启用了记录）- 只记录历史订单成交
+                // 2. 记录交易信息（如果启用了记录）- 只记录历史订单成交
                 if (recording_enabled_) {
                     recordTrade(ex, trade_datetime);
                 }
@@ -188,6 +185,12 @@ void BacktestEngine::initialize() {
                             break;
                         }
                     }
+                    
+                    // 撤单后清理虚拟订单映射，防止影响后续订单识别
+                    virtual_order_strategy_.erase(order_id);
+                    virtual_order_local_id_.erase(order_id);  
+                    user_order_direction_.erase(order_id);
+                    
                     // 注意：虚拟订单撤单不记录到CSV，不调用recordCancel()
                 }
             }
@@ -469,6 +472,11 @@ bool BacktestEngine::tryFillImmediately(std::shared_ptr<Order> user_order) {
                 break;
             }
         }
+        
+        // 立即成交后必须清理虚拟订单映射，防止影响后续订单识别
+        virtual_order_strategy_.erase(user_order->order_id);
+        virtual_order_local_id_.erase(user_order->order_id);
+        user_order_direction_.erase(user_order->order_id);
         
         std::cout << "[虚拟成交] USER订单 " << user_order->order_local_id 
                   << " 立即成交 " << fill_qty << "@" << fill_price / 10000.0 << std::endl;
