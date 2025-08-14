@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <atomic>
 #include <chrono>
+#include <map>
 
 namespace wangcai {
     using Price = uint64_t;
@@ -140,6 +141,69 @@ struct Position {
     double avg_cost;       // 平均成本价
     double unrealized_pnl; // 未实现盈亏
     double realized_pnl;   // 已实现盈亏
+};
+
+// 交易回调信息结构体
+struct TradeCallback {
+    std::string localid;      // 本地订单ID
+    char direction;           // 'B'=买入, 'S'=卖出
+    Quantity volume;          // 成交数量
+    Price price;              // 成交价格（厘为单位）
+    double matchamount;       // 成交金额（元）
+    int64_t deltapos;         // 当前总持仓量（正数=多头，负数=空头）
+    std::string matchtime;    // 成交时间
+    char matchtype;           // 'T'=成交回调, 'D'=撤单回调
+    
+    TradeCallback(const std::string& id, char dir, Quantity vol, Price px, 
+                 double amount, int64_t delta, const std::string& time, char type)
+        : localid(id), direction(dir), volume(vol), price(px), 
+          matchamount(amount), deltapos(delta), matchtime(time), matchtype(type) {}
+};
+
+// 下单回调信息结构体
+struct OrderCallback {
+    std::string time;         // 下单时间
+    int exchange;             // 交易所（0=上海, 1=深圳）
+    Price ask1;               // 卖一价格（厘为单位）
+    Price bid1;               // 买一价格（厘为单位）
+    int64_t deltapos;         // 当前总持仓量（正数=多头，负数=空头）
+    Price price;              // 下单价格（厘为单位）
+    Quantity volume;          // 下单数量
+    int direction;            // 方向（1=买入, 2=卖出）
+    std::string orderlocalid; // 本地订单ID
+    
+    OrderCallback(const std::string& tm, int exch, Price a1, Price b1, 
+                 int64_t delta, Price px, Quantity vol, int dir, const std::string& id)
+        : time(tm), exchange(exch), ask1(a1), bid1(b1), 
+          deltapos(delta), price(px), volume(vol), direction(dir), orderlocalid(id) {}
+};
+
+// 策略持仓管理器
+class StrategyPositionManager {
+public:
+    // 更新持仓：买入为正，卖出为负
+    void updatePosition(const std::string& symbol, int64_t quantity_change) {
+        positions_[symbol] += quantity_change;
+    }
+    
+    // 获取当前持仓
+    int64_t getPosition(const std::string& symbol) const {
+        auto it = positions_.find(symbol);
+        return it != positions_.end() ? it->second : 0;
+    }
+    
+    // 获取所有持仓
+    const std::map<std::string, int64_t>& getAllPositions() const {
+        return positions_;
+    }
+    
+    // 清空持仓
+    void clearPositions() {
+        positions_.clear();
+    }
+    
+private:
+    std::map<std::string, int64_t> positions_;  // symbol -> quantity
 };
     
 

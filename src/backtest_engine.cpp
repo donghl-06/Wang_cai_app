@@ -21,7 +21,7 @@ static OrderType toOrderType(const Event& ev) {
 // 构造函数，初始化回测引擎，设置合约、日期、数据路径等基本参数
 BacktestEngine::BacktestEngine(const std::string& symbol, const std::string& date, const std::string& data_path)
     : symbol_(symbol), date_(date), data_path_(data_path), continuous_mode_(false), 
-      next_order_id_(1000000), next_trade_id_(1000000), recording_enabled_(false)
+      next_order_id_(1), next_trade_id_(1), recording_enabled_(false)
 {
     initialize();
 }
@@ -76,7 +76,26 @@ void BacktestEngine::initialize() {
                 // 虚拟成交：只通知对应策略，不记录到CSV
                 for (auto& strategy : strategies_) {
                     if (strategy->getStrategyId() == virtual_strategy_id) {
-                        strategy->onOrderFilled(virtual_order_id, ex.price, ex.volume);
+                        // 调用原有成交接口（兼容性）
+                        // strategy->onOrderFilled(virtual_order_id, ex.price, ex.volume);
+                        
+                        // 确定虚拟订单的方向
+                        Direction virtual_direction;
+                        uint64_t virtual_sys_id = buy_is_virtual ? ex.buy_order_id : ex.sell_order_id;
+                        auto dir_it = user_order_direction_.find(virtual_sys_id);
+                        if (dir_it != user_order_direction_.end()) {
+                            virtual_direction = dir_it->second;
+                        } else {
+                            // 如果找不到记录，根据买卖方ID推断
+                            virtual_direction = buy_is_virtual ? Direction::Buy : Direction::Sell;
+                        }
+                        
+                        // 调用新的统一成交回调接口
+                        auto callback = createTradeCallback(virtual_strategy_id, virtual_order_id,
+                                                          virtual_direction, ex.volume, ex.price,
+                                                          trade_datetime, 'T');
+                        notifyStrategyTradeCallback(virtual_strategy_id, callback);
+                        
                         std::cout << "[虚拟成交] 策略 " << virtual_strategy_id 
                                   << " 订单 " << virtual_order_id 
                                   << " 成交 " << ex.volume << "@" << ex.price / 10000.0 << std::endl;
@@ -88,10 +107,12 @@ void BacktestEngine::initialize() {
                 if (buy_is_virtual) {
                     virtual_order_strategy_.erase(ex.buy_order_id);
                     virtual_order_local_id_.erase(ex.buy_order_id);
+                    user_order_direction_.erase(ex.buy_order_id);  // 清理方向映射
                 }
                 if (sell_is_virtual) {
                     virtual_order_strategy_.erase(ex.sell_order_id);
                     virtual_order_local_id_.erase(ex.sell_order_id);
+                    user_order_direction_.erase(ex.sell_order_id);  // 清理方向映射
                 }
                 
                 // 注意：虚拟成交不记录到CSV，不调用recordTrade()
@@ -151,7 +172,16 @@ void BacktestEngine::initialize() {
                     // 虚拟订单撤单：只通知对应策略，不记录到CSV
                     for (auto& strategy : strategies_) {
                         if (strategy->getStrategyId() == order_info->account) {
-                            strategy->onOrderCancelled(order_info->order_local_id, reason);
+                            // 调用原有撤单接口（兼容性）
+                            // strategy->onOrderCancelled(order_info->order_local_id, reason);
+                            
+                            // 调用新的统一撤单回调接口
+                            std::string cancel_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
+                            auto callback = createTradeCallback(strategy->getStrategyId(), order_info->order_local_id,
+                                                              order_info->direction, 0, order_info->price,
+                                                              cancel_datetime, 'D');
+                            strategy->onTradeCallback(callback);
+                            
                             std::cout << "[虚拟撤单] 策略 " << order_info->account 
                                       << " 订单 " << order_info->order_local_id 
                                       << " 已撤单，原因: " << reason << std::endl;
@@ -427,7 +457,15 @@ bool BacktestEngine::tryFillImmediately(std::shared_ptr<Order> user_order) {
         // 找到对应的策略并通知成交
         for (auto& strategy : strategies_) {
             if (strategy->getStrategyId() == user_order->account) { // account字段存储的是strategy_id
-                strategy->onOrderFilled(user_order->order_local_id, fill_price, fill_qty);
+                // 调用原有成交接口（兼容性）
+                // strategy->onOrderFilled(user_order->order_local_id, fill_price, fill_qty);
+                
+                // 调用新的统一成交回调接口
+                std::string trade_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
+                auto callback = createTradeCallback(strategy->getStrategyId(), user_order->order_local_id,
+                                                  user_order->direction, fill_qty, fill_price,
+                                                  trade_datetime, 'T');
+                notifyStrategyTradeCallback(strategy->getStrategyId(), callback);
                 break;
             }
         }
@@ -459,10 +497,17 @@ void BacktestEngine::processUserOrder(const UserOrder& user_order) {
         
         // 记录用户订单号与系统订单号的映射
         user_order_mapping_[user_order.order_id] = order->order_id;
+        user_order_direction_[order->order_id] = user_order.direction;  // 记录订单方向
         
         // 记录虚拟订单映射，用于成交回调时识别
         virtual_order_strategy_[order->order_id] = user_order.strategy_id;
         virtual_order_local_id_[order->order_id] = user_order.order_id;
+        
+        // 创建并发送下单回调
+        auto order_callback = createOrderCallback(user_order.strategy_id, user_order.order_id,
+                                                user_order.direction, user_order.volume, user_order.price,
+                                                continuous_mode_ ? last_brk_datetime_ : current_datetime_);
+        notifyStrategyOrderCallback(user_order.strategy_id, order_callback);
         
         // 先尝试立即成交
         if (!tryFillImmediately(order)) {
@@ -750,12 +795,24 @@ void BacktestEngine::processUserCancel(const UserCancel& user_cancel) {
 
 // 通知策略订单成交
 void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
+    std::string trade_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
+    
     // 检查买方订单是否属于某个策略
     for (const auto& mapping : user_order_mapping_) {
         if (mapping.second == ex.buy_order_id) {
-            // 找到对应的策略并通知
+            // 找到对应的策略
             for (auto& strategy : strategies_) {
-                strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+                if (strategy->getStrategyId() == virtual_order_strategy_[ex.buy_order_id]) {
+                    // 调用原有接口（兼容性）
+                    // strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+                    
+                    // 调用新的统一接口
+                    auto callback = createTradeCallback(strategy->getStrategyId(), mapping.first,
+                                                      Direction::Buy, ex.volume, ex.price, 
+                                                      trade_datetime, 'T');
+                    notifyStrategyTradeCallback(strategy->getStrategyId(), callback);
+                    break;
+                }
             }
             break;
         }
@@ -764,10 +821,93 @@ void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
     // 检查卖方订单是否属于某个策略
     for (const auto& mapping : user_order_mapping_) {
         if (mapping.second == ex.sell_order_id) {
-            // 找到对应的策略并通知
+            // 找到对应的策略
             for (auto& strategy : strategies_) {
-                strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+                if (strategy->getStrategyId() == virtual_order_strategy_[ex.sell_order_id]) {
+                    // 调用原有接口（兼容性）
+                    // strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+                    
+                    // 调用新的统一接口
+                    auto callback = createTradeCallback(strategy->getStrategyId(), mapping.first,
+                                                      Direction::Sell, ex.volume, ex.price, 
+                                                      trade_datetime, 'T');
+                    notifyStrategyTradeCallback(strategy->getStrategyId(), callback);
+                    break;
+                }
             }
+            break;
+        }
+    }
+}
+
+// 创建交易回调对象
+TradeCallback BacktestEngine::createTradeCallback(const std::string& strategy_id, const std::string& order_id, 
+                                                 Direction direction, Quantity volume, Price price, 
+                                                 const std::string& datetime, char match_type) {
+    char dir_char = (direction == Direction::Buy) ? 'B' : 'S';
+    double match_amount = (price / 10000.0) * volume;  // 转换为元
+    
+    // 先更新持仓，再获取总持仓量
+    int64_t total_position = 0;
+    for (auto& strategy : strategies_) {
+        if (strategy->getStrategyId() == strategy_id) {
+            // 如果是成交，更新持仓
+            if (match_type == 'T') {
+                int64_t position_change = (direction == Direction::Buy) ? 
+                    static_cast<int64_t>(volume) : -static_cast<int64_t>(volume);
+                strategy->updateStrategyPosition(symbol_, position_change);
+            }
+            // 获取当前总持仓量
+            total_position = strategy->getPosition(symbol_);
+            break;
+        }
+    }
+    
+    return TradeCallback(order_id, dir_char, volume, price, match_amount, total_position, datetime, match_type);
+}
+
+// 通知策略统一交易回调
+void BacktestEngine::notifyStrategyTradeCallback(const std::string& strategy_id, const TradeCallback& callback) {
+    for (auto& strategy : strategies_) {
+        if (strategy->getStrategyId() == strategy_id) {
+            // 直接调用统一回调接口
+            strategy->onTradeCallback(callback);
+            break;
+        }
+    }
+}
+
+// 创建下单回调对象
+OrderCallback BacktestEngine::createOrderCallback(const std::string& strategy_id, const std::string& order_id,
+                                                Direction direction, Quantity volume, Price price, 
+                                                const std::string& datetime) {
+    // 获取交易所代码（0=上海, 1=深圳）
+    int exchange = (symbol_.find("SH") != std::string::npos) ? 0 : 1;
+    
+    // 获取当前买一卖一价格
+    Price ask1 = orderbook_->bestAsk();
+    Price bid1 = orderbook_->bestBid();
+    
+    // 获取当前总持仓量
+    int64_t total_position = 0;
+    for (auto& strategy : strategies_) {
+        if (strategy->getStrategyId() == strategy_id) {
+            total_position = strategy->getPosition(symbol_);
+            break;
+        }
+    }
+    
+    // 转换方向（1=买入, 2=卖出）
+    int dir = (direction == Direction::Buy) ? 1 : 2;
+    
+    return OrderCallback(datetime, exchange, ask1, bid1, total_position, price, volume, dir, order_id);
+}
+
+// 通知策略下单回调
+void BacktestEngine::notifyStrategyOrderCallback(const std::string& strategy_id, const OrderCallback& callback) {
+    for (auto& strategy : strategies_) {
+        if (strategy->getStrategyId() == strategy_id) {
+            strategy->onOrderCallback(callback);
             break;
         }
     }

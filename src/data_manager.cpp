@@ -26,7 +26,7 @@ DataManager::DataManager(OrderBook* ob, CallAuctionEngine* call_engine,
 
 void DataManager::updateSnapshot(const Event& ev) {
     assert(ev.source == "tick");
-    snap_data.Exchange = ev.is_SZ ? 0: 1;
+    snap_data.Exchange = ev.is_SZ ? 1: 0;
     snap_data.Instrument = ev.sym;  
     snap_data.datetime = ev.datetime;
     snap_data.PreClose = ev.prevclose;
@@ -55,7 +55,7 @@ void DataManager::updateSnapshot(const Event& ev) {
 
 void DataManager::updateOrderDetail(const Event& ev, char orderKind) {
     assert(ev.source == "ord");
-    order_detail.Exchange = ev.is_SZ ? 0 : 1;
+    order_detail.Exchange = ev.is_SZ ? 1 : 0;
     order_detail.Instrument = ev.sym;
     order_detail.ChannelNo = ev.channelno;
     order_detail.Price = ev.price;

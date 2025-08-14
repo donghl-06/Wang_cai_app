@@ -6,7 +6,7 @@
 #include <vector>
 #include <cstdint>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 class Fenwick {
 public:
@@ -27,7 +27,7 @@ private:
     std::vector<int64_t> tree_;
 };
 
-} // namespace wangcai_orderbook_cpp /*
+} // namespace wangcai /*
  * @Author: chenlisen
  * @Date: 2025-08-12 12:27:49
  * @LastEditTime: 2025-08-13 10:09:08
@@ -40,23 +40,23 @@ private:
 #include <string>
 #include <vector>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 基础数据加载函数
-void load_orders_from_csv(const std::string& filename, wangcai_orderbook_cpp::OrderBook& order_book);
-void load_traders_from_csv(const std::string& filename, wangcai_orderbook_cpp::OrderBook& order_book);
-void load_cstick_from_csv(const std::string& filename, wangcai_orderbook_cpp::OrderBook& order_book);
+void load_orders_from_csv(const std::string& filename, wangcai::OrderBook& order_book);
+void load_traders_from_csv(const std::string& filename, wangcai::OrderBook& order_book);
+void load_cstick_from_csv(const std::string& filename, wangcai::OrderBook& order_book);
 
 // 有序事件管理函数
 void insert_event(const Event& event);
 
 void clear_events();
 
-wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename);
-wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename);
+wangcai::Price loadPrevClosePrice(const std::string& filename);
+wangcai::Price loadOpenPrice(const std::string& filename);
 void validateCallAuction(const std::string& stock_code, const std::string& date);
 
-} // namespace wangcai_orderbook_cpp
+} // namespace wangcai
 #pragma once
 
 #include "orderbook.h"
@@ -73,7 +73,7 @@ void validateCallAuction(const std::string& stock_code, const std::string& date)
 #include <map>
 #include <fstream>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 用户策略接口
 class Strategy {
@@ -89,14 +89,39 @@ public:
     //  接受Tick事件，返回要处理的事件列表（下单或撤单）
     virtual std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) = 0;
     
-    // 处理订单成交回报
-    virtual void onOrderFilled(const std::string& order_id, Price price, Quantity volume) = 0;
+    // 新的统一交易回调接口（包含持仓管理）
+    virtual void onTradeCallback(const TradeCallback& callback) = 0;
     
-    // 处理订单取消回报
+    // 原有接口保留（兼容性）
+    virtual void onOrderFilled(const std::string& order_id, Price price, Quantity volume) = 0;
     virtual void onOrderCancelled(const std::string& order_id, const std::string& reason) = 0;
     
     // 获取策略ID
     virtual std::string getStrategyId() const = 0;
+    
+    // 获取当前持仓（由策略基类管理）
+    int64_t getPosition(const std::string& symbol) const {
+        return position_manager_.getPosition(symbol);
+    }
+    
+    // 获取所有持仓
+    const std::map<std::string, int64_t>& getAllPositions() const {
+        return position_manager_.getAllPositions();
+    }
+    
+    // 公有方法：更新持仓（供 BacktestEngine 调用）
+    void updateStrategyPosition(const std::string& symbol, int64_t quantity_change) {
+        position_manager_.updatePosition(symbol, quantity_change);
+    }
+
+protected:
+    // 持仓管理器，由基类提供
+    mutable StrategyPositionManager position_manager_;
+    
+    // 更新持仓的受保护方法，供派生类使用
+    void updatePosition(const std::string& symbol, int64_t quantity_change) {
+        position_manager_.updatePosition(symbol, quantity_change);
+    }
 };
 
 // 回测引擎
@@ -140,6 +165,14 @@ private:
     // 新增：通知策略成交
     void notifyStrategiesOnExecution(const Execution& ex);
     
+    // 新增：创建交易回调对象
+    TradeCallback createTradeCallback(const std::string& strategy_id, const std::string& order_id, 
+                                    Direction direction, Quantity volume, Price price, 
+                                    const std::string& datetime, char match_type);
+    
+    // 新增：通知策略统一交易回调
+    void notifyStrategyTradeCallback(const std::string& strategy_id, const TradeCallback& callback);
+    
     // 成员变量
     std::string symbol_;
     std::string date_;
@@ -173,6 +206,7 @@ private:
     uint64_t next_order_id_;
     uint64_t next_trade_id_;        // 交易ID生成器
     std::map<std::string, uint64_t> user_order_mapping_; // user_order_id -> system_order_id
+    std::map<uint64_t, Direction> user_order_direction_;  // system_order_id -> direction
     
     // 虚拟订单映射 - 用于成交回调时识别虚拟订单
     std::map<uint64_t, std::string> virtual_order_strategy_; // system_order_id -> strategy_id
@@ -190,7 +224,7 @@ private:
     bool recording_enabled_;                  // 是否启用记录
 };
 
-} // namespace wangcai_orderbook_cpp // === include/call_auction_engine.hpp ===
+} // namespace wangcai // === include/call_auction_engine.hpp ===
 /*
  * @brief : 09:15-09:25 集合竞价引擎（实时预测价）
  */
@@ -201,7 +235,7 @@ private:
 #include <unordered_map>
 #include "OrderLoader.h"
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 class CallAuctionEngine {
 public:
@@ -256,14 +290,14 @@ private:
     Price    _real_px{0};
 };
 
-} // namespace wangcai_orderbook_cpp // include/close_auction_engine.hpp
+} // namespace wangcai // include/close_auction_engine.hpp
 #pragma once
 #include "orderbook.h"
 #include "FenwickTree.hpp"
 #include <functional>
 #include <unordered_map>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 集合竞价撮合引擎类，负责集合竞价阶段的订单管理与撮合
 class CloseAuctionEngine {
@@ -359,7 +393,7 @@ private:
     Price    _real_px{0};
 };
 
-} // namespace wangcai_orderbook_cpp// === include/con_auction_engine.hpp ===
+} // namespace wangcai// === include/con_auction_engine.hpp ===
 /*
  * @brief : 09:30 连续竞价引擎
  */
@@ -369,7 +403,7 @@ private:
 #include <unordered_map>
 #include "OrderLoader.h"
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 市场类型枚举
 enum class MarketType {
@@ -401,7 +435,7 @@ private:
     
 };
 
-} // namespace wangcai_orderbook_cpp /*
+} // namespace wangcai /*
  * @Author: chenlisen
  * @Date: 2025-08-13 08:43:25
  * @LastEditTime: 2025-08-14 05:57:00
@@ -416,7 +450,7 @@ private:
 #include "close_auction_engine.hpp"
 
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 class DataManager {
 public:
@@ -443,7 +477,7 @@ private:
 #include <string>
 #include <deque>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 同步跟单策略示例 - 演示严格同步的事件处理
 class SyncFollowStrategy : public Strategy {
@@ -515,23 +549,34 @@ public:
         return events;
     }
 
+    void onTradeCallback(const TradeCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 新交易回调: 订单 " << callback.localid 
+                  << " " << (callback.matchtype == 'T' ? "成交" : "撤单")
+                  << " 方向=" << callback.direction 
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 金额=" << callback.matchamount
+                  << " 持仓变化=" << callback.deltapos 
+                  << " 时间=" << callback.matchtime << std::endl;
+                  
+        // 显示当前所有持仓
+        auto positions = getAllPositions();
+        if (!positions.empty()) {
+            std::cout << "  当前持仓: ";
+            for (const auto& pos : positions) {
+                std::cout << pos.first << "=" << pos.second << " ";
+            }
+            std::cout << std::endl;
+        }
+    }
+
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
-        std::cout << "========== 策略成交回报 ==========" << std::endl;
-        std::cout << "策略ID: " << strategy_id_ << std::endl;
-        std::cout << "订单ID: " << order_id << std::endl;
-        std::cout << "成交价格: " << price / 10000.0 << " 元" << std::endl;
-        std::cout << "成交数量: " << volume << std::endl;
-        std::cout << "累计成交量: " << total_filled_volume_ + volume << std::endl;
-        std::cout << "=================================" << std::endl;
+        // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
         total_filled_volume_ += volume;
     }
 
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
-        std::cout << "========== 策略撤单回报 ==========" << std::endl;
-        std::cout << "策略ID: " << strategy_id_ << std::endl;
-        std::cout << "订单ID: " << order_id << std::endl;
-        std::cout << "撤单原因: " << reason << std::endl;
-        std::cout << "=================================" << std::endl;
+        // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
     }
 
     std::string getStrategyId() const override { return strategy_id_; }
@@ -541,6 +586,20 @@ public:
         std::cout << "总下单数: " << order_count_ << std::endl;
         std::cout << "总成交量: " << total_filled_volume_ << std::endl;
         std::cout << "处理事件数: " << event_count_ << std::endl;
+        
+        // 显示最终持仓汇总
+        auto positions = getAllPositions();
+        std::cout << "\n=== 持仓汇总 ===" << std::endl;
+        if (positions.empty()) {
+            std::cout << "无持仓" << std::endl;
+        } else {
+            int64_t total_position = 0;
+            for (const auto& pos : positions) {
+                std::cout << "合约 " << pos.first << ": " << pos.second << " 股" << std::endl;
+                total_position += pos.second;
+            }
+            std::cout << "总净持仓: " << total_position << " 股" << std::endl;
+        }
     }
 
 private:
@@ -614,21 +673,38 @@ public:
         return events;
     }
     
+    std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) override {
+        // 均值回归策略暂不处理tick事件
+        return {};
+    }
+    
+    void onTradeCallback(const TradeCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 均值回归交易回调: 订单 " << callback.localid 
+                  << " " << (callback.matchtype == 'T' ? "成交" : "撤单")
+                  << " 方向=" << callback.direction 
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 金额=" << callback.matchamount
+                  << " 持仓变化=" << callback.deltapos 
+                  << " 时间=" << callback.matchtime << std::endl;
+                  
+        // 显示当前所有持仓
+        auto positions = getAllPositions();
+        if (!positions.empty()) {
+            std::cout << "  当前持仓: ";
+            for (const auto& pos : positions) {
+                std::cout << pos.first << "=" << pos.second << " ";
+            }
+            std::cout << std::endl;
+        }
+    }
+    
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
-        std::cout << "========== 策略成交回报 ==========" << std::endl;
-        std::cout << "策略ID: " << strategy_id_ << std::endl;
-        std::cout << "订单ID: " << order_id << std::endl;
-        std::cout << "成交价格: " << price / 10000.0 << " 元" << std::endl;
-        std::cout << "成交数量: " << volume << std::endl;
-        std::cout << "=================================" << std::endl;
+        // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
     }
     
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
-        std::cout << "========== 策略撤单回报 ==========" << std::endl;
-        std::cout << "策略ID: " << strategy_id_ << std::endl;
-        std::cout << "订单ID: " << order_id << std::endl;
-        std::cout << "撤单原因: " << reason << std::endl;
-        std::cout << "=================================" << std::endl;
+        // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
     }
     
     std::string getStrategyId() const override {
@@ -707,6 +783,35 @@ public:
         // }
         return {};
     }
+    
+    void onTradeCallback(const TradeCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 测试交易回调: 订单 " << callback.localid 
+                  << " " << (callback.matchtype == 'T' ? "成交" : "撤单")
+                  << " 方向=" << callback.direction 
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 金额=" << callback.matchamount
+                  << " 持仓变化=" << callback.deltapos 
+                  << " 时间=" << callback.matchtime << std::endl;
+                  
+        // 显示当前所有持仓
+        auto positions = getAllPositions();
+        if (!positions.empty()) {
+            std::cout << "  当前持仓: ";
+            for (const auto& pos : positions) {
+                std::cout << pos.first << "=" << pos.second << " ";
+            }
+            std::cout << std::endl;
+        }
+        
+        if (callback.matchtype == 'T') {
+            filled_count_++;
+            total_filled_volume_ += callback.volume;
+        } else {
+            cancelled_count_++;
+        }
+    }
+    
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
         filled_count_++;
         total_filled_volume_ += volume;
@@ -726,15 +831,10 @@ public:
         }
     }
     
+    
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
+        // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
         cancelled_count_++;
-        
-        std::cout << "\n❌========== 测试策略撤单回报 ==========" << std::endl;
-        std::cout << "❌ 策略ID: " << strategy_id_ << std::endl;
-        std::cout << "❌ 订单ID: " << order_id << std::endl;
-        std::cout << "❌ 撤单原因: " << reason << std::endl;
-        std::cout << "❌ 累计撤单次数: " << cancelled_count_ << std::endl;
-        std::cout << "❌========================================" << std::endl;
     }
     
     std::string getStrategyId() const override { return strategy_id_; }
@@ -748,6 +848,21 @@ public:
         std::cout << "📊 总成交量: " << total_filled_volume_ << std::endl;
         std::cout << "📊 处理事件数: " << event_count_ << std::endl;
         std::cout << "📊 测试阶段: " << test_phase_ << "/6" << std::endl;
+        
+        // 显示最终持仓汇总
+        auto positions = getAllPositions();
+        std::cout << "\n💼 === 持仓汇总 ===" << std::endl;
+        if (positions.empty()) {
+            std::cout << "💼 无持仓" << std::endl;
+        } else {
+            int64_t total_position = 0;
+            for (const auto& pos : positions) {
+                std::cout << "💼 合约 " << pos.first << ": " << pos.second << " 股" << std::endl;
+                total_position += pos.second;
+            }
+            std::cout << "💼 总净持仓: " << total_position << " 股" << std::endl;
+        }
+        
         std::cout << "🔍===============================" << std::endl;
     }
 
@@ -930,7 +1045,7 @@ private:
     std::deque<std::string> pending_cancel_orders_;
 };
 
-} // namespace wangcai_orderbook_cpp/*
+} // namespace wangcai/*
  * @Author: chenlisen
  * @Date: 2025-08-13 08:44:09
  * @LastEditTime: 2025-08-13 08:46:43
@@ -946,7 +1061,7 @@ private:
 #include <array>
 #include "types.h"
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 struct Snapshot {
  ///交易所代码
@@ -1095,7 +1210,7 @@ struct TradeDetail {
  * @Author: linzhuoyu
  * @Date  : 2025-07-07 03:11:27
  * @Update: 2025-07-08 14:35
- * @File  : /wangcai_orderbook_cpp/include/order.h
+ * @File  : /wangcai/include/order.h
  * @brief : 撮合引擎订单 / 档位 / 成交 等核心实体
  */
 #pragma once
@@ -1109,7 +1224,7 @@ struct TradeDetail {
 
 #include "types.h"   // Price / Quantity / generate_order_id()
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 struct PriceLevel;     // 前置声明
 
@@ -1225,7 +1340,7 @@ struct Stats {
     Price    last_open_volume{}; // 最新开盘量
 };
 
-} // namespace wangcai_orderbook_cpp/*
+} // namespace wangcai/*
  * @Author: linzhuoyu
  * @Date: 2025-07-07 08:43:04
  * @LastEditTime: 2025-08-14 03:13:23
@@ -1241,7 +1356,7 @@ struct Stats {
 #include <utility>
 #include <map>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 // 事件结构
 struct Event {
     std::string datetime;
@@ -1452,14 +1567,14 @@ private:
     
 };
 
-} // namespace wangcai_orderbook_cpp#pragma once
+} // namespace wangcai#pragma once
 #include <boost/pool/object_pool.hpp>
 #include <memory>
 #include <utility>      // std::forward
 #include <new>          // placement new
 #include "order.h"
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 class OrderPool {
 public:
@@ -1490,7 +1605,7 @@ private:
     boost::object_pool<Order> pool_;
 };
 
-} // namespace wangcai_orderbook_cpp/*
+} // namespace wangcai/*
  * @Author: chenlisen
  * @Date: 2025-07-07 08:43:04
  * @LastEditTime: 2025-08-14 03:29:13
@@ -1504,8 +1619,9 @@ private:
 #include <stdexcept>
 #include <atomic>
 #include <chrono>
+#include <map>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
     using Price = uint64_t;
     using Quantity = uint64_t;
     inline std::atomic<uint64_t> g_order_id_counter{0};
@@ -1633,9 +1749,54 @@ struct Position {
     double unrealized_pnl; // 未实现盈亏
     double realized_pnl;   // 已实现盈亏
 };
+
+// 交易回调信息结构体
+struct TradeCallback {
+    std::string localid;      // 本地订单ID
+    char direction;           // 'B'=买入, 'S'=卖出
+    Quantity volume;          // 成交数量
+    Price price;              // 成交价格（厘为单位）
+    double matchamount;       // 成交金额（元）
+    int64_t deltapos;         // 当前持仓变化量
+    std::string matchtime;    // 成交时间
+    char matchtype;           // 'T'=成交回调, 'D'=撤单回调
+    
+    TradeCallback(const std::string& id, char dir, Quantity vol, Price px, 
+                 double amount, int64_t delta, const std::string& time, char type)
+        : localid(id), direction(dir), volume(vol), price(px), 
+          matchamount(amount), deltapos(delta), matchtime(time), matchtype(type) {}
+};
+
+// 策略持仓管理器
+class StrategyPositionManager {
+public:
+    // 更新持仓：买入为正，卖出为负
+    void updatePosition(const std::string& symbol, int64_t quantity_change) {
+        positions_[symbol] += quantity_change;
+    }
+    
+    // 获取当前持仓
+    int64_t getPosition(const std::string& symbol) const {
+        auto it = positions_.find(symbol);
+        return it != positions_.end() ? it->second : 0;
+    }
+    
+    // 获取所有持仓
+    const std::map<std::string, int64_t>& getAllPositions() const {
+        return positions_;
+    }
+    
+    // 清空持仓
+    void clearPositions() {
+        positions_.clear();
+    }
+    
+private:
+    std::map<std::string, int64_t> positions_;  // symbol -> quantity
+};
     
 
-}// namespace wangcai_orderbook_cpp#include "OrderLoader.h"
+}// namespace wangcai#include "OrderLoader.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -1650,7 +1811,7 @@ struct Position {
 #include <map>
 
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 工具函数：将价格字符串转为int64_t，*10000并四舍五入到100
 inline uint64_t parse_price(const std::string& price_str) {
@@ -1662,7 +1823,7 @@ inline uint64_t parse_price(const std::string& price_str) {
 }
 
 // 加载订单数据
-void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
+void load_orders_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
     std::ifstream file(csv_file);  
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
@@ -1716,13 +1877,13 @@ void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
                 orderid_str,      // order_local_id (使用原始字符串)
                 // 根据委托价格类型和交易所判断OrderType
                 (sym.substr(sym.size() - 2) == "SZ"
-                    ? (ordertype == 1 ? wangcai_orderbook_cpp::OrderType::Market
-                        : (ordertype == 2 ? wangcai_orderbook_cpp::OrderType::Limit
-                            : (ordertype == 3 ? wangcai_orderbook_cpp::OrderType::BestOwn
-                                : wangcai_orderbook_cpp::OrderType::Limit)))
-                    : wangcai_orderbook_cpp::OrderType::Limit), // 沪市全部为限价
+                    ? (ordertype == 1 ? wangcai::OrderType::Market
+                        : (ordertype == 2 ? wangcai::OrderType::Limit
+                            : (ordertype == 3 ? wangcai::OrderType::BestOwn
+                                : wangcai::OrderType::Limit)))
+                    : wangcai::OrderType::Limit), // 沪市全部为限价
                 // 根据方向判断Direction
-                side == 1 ? wangcai_orderbook_cpp::Direction::Buy : wangcai_orderbook_cpp::Direction::Sell,
+                side == 1 ? wangcai::Direction::Buy : wangcai::Direction::Sell,
                 price,           // price
                 size,            // volume
                 bizindex
@@ -1735,7 +1896,7 @@ void load_orders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::Or
 }
 
 // 加载撤单数据
-void load_traders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
+void load_traders_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
     std::ifstream file(csv_file);  // ✅ 正确：用ifstream读取文件
     if (!file.is_open()) {
         std::cerr << "无法打开文件: " << csv_file << std::endl;
@@ -1814,7 +1975,7 @@ void load_traders_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::O
 
 
 // 加载cstick用来获取开盘价
-void load_cstick_from_csv(const std::string& csv_file, wangcai_orderbook_cpp::OrderBook& order_book) {
+void load_cstick_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
     std::ifstream file(csv_file);
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
@@ -1977,7 +2138,7 @@ void clear_events() {
 }
 
 
-wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename) {
+wangcai::Price loadPrevClosePrice(const std::string& filename) {
     std::ifstream file(filename);
 
     if (!file.is_open()) {
@@ -2007,14 +2168,14 @@ wangcai_orderbook_cpp::Price loadPrevClosePrice(const std::string& filename) {
         // 先乘以10000，再四舍五入到100
         double prev_close_multiplied = prev_close_raw * 10000;
         double prev_close_rounded = std::round(prev_close_multiplied / 100.0) * 100.0;
-        wangcai_orderbook_cpp::Price prev_close = static_cast<wangcai_orderbook_cpp::Price>(prev_close_rounded);
+        wangcai::Price prev_close = static_cast<wangcai::Price>(prev_close_rounded);
         return prev_close;
     }
 
     return 0;
 }
 
-wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename) {
+wangcai::Price loadOpenPrice(const std::string& filename) {
     std::ifstream file(filename);
     
     if (!file.is_open()) {
@@ -2046,7 +2207,7 @@ wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename) {
          // 先乘以10000，再四舍五入到100
          double open_multiplied = open_raw * 10000;
          double open_rounded = std::round(open_multiplied / 100.0) * 100.0;
-         wangcai_orderbook_cpp::Price open_price = static_cast<wangcai_orderbook_cpp::Price>(open_rounded);
+         wangcai::Price open_price = static_cast<wangcai::Price>(open_rounded);
 
         //  std::cout << "开盘价(最后一行): " << open_price / 10000.0 << " 元" << std::endl;
          return open_price;
@@ -2061,7 +2222,7 @@ wangcai_orderbook_cpp::Price loadOpenPrice(const std::string& filename) {
 #include <cmath>
 #include <fstream> // Added for file operations
 #include <ranges>
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 static OrderType toOrderType(const Event& ev) {
     // 仅深市有 1/2/3 的区分；沪市全用限价
     if (ev.sym.size() >= 2 && ev.sym.substr(ev.sym.size()-2) == "SZ") {
@@ -2078,7 +2239,7 @@ static OrderType toOrderType(const Event& ev) {
 // 构造函数，初始化回测引擎，设置合约、日期、数据路径等基本参数
 BacktestEngine::BacktestEngine(const std::string& symbol, const std::string& date, const std::string& data_path)
     : symbol_(symbol), date_(date), data_path_(data_path), continuous_mode_(false), 
-      next_order_id_(1000000), next_trade_id_(1000000), recording_enabled_(false)
+      next_order_id_(1), next_trade_id_(1), recording_enabled_(false)
 {
     initialize();
 }
@@ -2133,7 +2294,26 @@ void BacktestEngine::initialize() {
                 // 虚拟成交：只通知对应策略，不记录到CSV
                 for (auto& strategy : strategies_) {
                     if (strategy->getStrategyId() == virtual_strategy_id) {
-                        strategy->onOrderFilled(virtual_order_id, ex.price, ex.volume);
+                        // 调用原有成交接口（兼容性）
+                        // strategy->onOrderFilled(virtual_order_id, ex.price, ex.volume);
+                        
+                        // 确定虚拟订单的方向
+                        Direction virtual_direction;
+                        uint64_t virtual_sys_id = buy_is_virtual ? ex.buy_order_id : ex.sell_order_id;
+                        auto dir_it = user_order_direction_.find(virtual_sys_id);
+                        if (dir_it != user_order_direction_.end()) {
+                            virtual_direction = dir_it->second;
+                        } else {
+                            // 如果找不到记录，根据买卖方ID推断
+                            virtual_direction = buy_is_virtual ? Direction::Buy : Direction::Sell;
+                        }
+                        
+                        // 调用新的统一成交回调接口
+                        auto callback = createTradeCallback(virtual_strategy_id, virtual_order_id,
+                                                          virtual_direction, ex.volume, ex.price,
+                                                          trade_datetime, 'T');
+                        notifyStrategyTradeCallback(virtual_strategy_id, callback);
+                        
                         std::cout << "[虚拟成交] 策略 " << virtual_strategy_id 
                                   << " 订单 " << virtual_order_id 
                                   << " 成交 " << ex.volume << "@" << ex.price / 10000.0 << std::endl;
@@ -2145,10 +2325,12 @@ void BacktestEngine::initialize() {
                 if (buy_is_virtual) {
                     virtual_order_strategy_.erase(ex.buy_order_id);
                     virtual_order_local_id_.erase(ex.buy_order_id);
+                    user_order_direction_.erase(ex.buy_order_id);  // 清理方向映射
                 }
                 if (sell_is_virtual) {
                     virtual_order_strategy_.erase(ex.sell_order_id);
                     virtual_order_local_id_.erase(ex.sell_order_id);
+                    user_order_direction_.erase(ex.sell_order_id);  // 清理方向映射
                 }
                 
                 // 注意：虚拟成交不记录到CSV，不调用recordTrade()
@@ -2208,7 +2390,16 @@ void BacktestEngine::initialize() {
                     // 虚拟订单撤单：只通知对应策略，不记录到CSV
                     for (auto& strategy : strategies_) {
                         if (strategy->getStrategyId() == order_info->account) {
-                            strategy->onOrderCancelled(order_info->order_local_id, reason);
+                            // 调用原有撤单接口（兼容性）
+                            // strategy->onOrderCancelled(order_info->order_local_id, reason);
+                            
+                            // 调用新的统一撤单回调接口
+                            std::string cancel_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
+                            auto callback = createTradeCallback(strategy->getStrategyId(), order_info->order_local_id,
+                                                              order_info->direction, 0, order_info->price,
+                                                              cancel_datetime, 'D');
+                            strategy->onTradeCallback(callback);
+                            
                             std::cout << "[虚拟撤单] 策略 " << order_info->account 
                                       << " 订单 " << order_info->order_local_id 
                                       << " 已撤单，原因: " << reason << std::endl;
@@ -2484,7 +2675,15 @@ bool BacktestEngine::tryFillImmediately(std::shared_ptr<Order> user_order) {
         // 找到对应的策略并通知成交
         for (auto& strategy : strategies_) {
             if (strategy->getStrategyId() == user_order->account) { // account字段存储的是strategy_id
-                strategy->onOrderFilled(user_order->order_local_id, fill_price, fill_qty);
+                // 调用原有成交接口（兼容性）
+                // strategy->onOrderFilled(user_order->order_local_id, fill_price, fill_qty);
+                
+                // 调用新的统一成交回调接口
+                std::string trade_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
+                auto callback = createTradeCallback(strategy->getStrategyId(), user_order->order_local_id,
+                                                  user_order->direction, fill_qty, fill_price,
+                                                  trade_datetime, 'T');
+                notifyStrategyTradeCallback(strategy->getStrategyId(), callback);
                 break;
             }
         }
@@ -2516,6 +2715,7 @@ void BacktestEngine::processUserOrder(const UserOrder& user_order) {
         
         // 记录用户订单号与系统订单号的映射
         user_order_mapping_[user_order.order_id] = order->order_id;
+        user_order_direction_[order->order_id] = user_order.direction;  // 记录订单方向
         
         // 记录虚拟订单映射，用于成交回调时识别
         virtual_order_strategy_[order->order_id] = user_order.strategy_id;
@@ -2807,12 +3007,24 @@ void BacktestEngine::processUserCancel(const UserCancel& user_cancel) {
 
 // 通知策略订单成交
 void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
+    std::string trade_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
+    
     // 检查买方订单是否属于某个策略
     for (const auto& mapping : user_order_mapping_) {
         if (mapping.second == ex.buy_order_id) {
-            // 找到对应的策略并通知
+            // 找到对应的策略
             for (auto& strategy : strategies_) {
-                strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+                if (strategy->getStrategyId() == virtual_order_strategy_[ex.buy_order_id]) {
+                    // 调用原有接口（兼容性）
+                    // strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+                    
+                    // 调用新的统一接口
+                    auto callback = createTradeCallback(strategy->getStrategyId(), mapping.first,
+                                                      Direction::Buy, ex.volume, ex.price, 
+                                                      trade_datetime, 'T');
+                    notifyStrategyTradeCallback(strategy->getStrategyId(), callback);
+                    break;
+                }
             }
             break;
         }
@@ -2821,10 +3033,47 @@ void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
     // 检查卖方订单是否属于某个策略
     for (const auto& mapping : user_order_mapping_) {
         if (mapping.second == ex.sell_order_id) {
-            // 找到对应的策略并通知
+            // 找到对应的策略
             for (auto& strategy : strategies_) {
-                strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+                if (strategy->getStrategyId() == virtual_order_strategy_[ex.sell_order_id]) {
+                    // 调用原有接口（兼容性）
+                    // strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
+                    
+                    // 调用新的统一接口
+                    auto callback = createTradeCallback(strategy->getStrategyId(), mapping.first,
+                                                      Direction::Sell, ex.volume, ex.price, 
+                                                      trade_datetime, 'T');
+                    notifyStrategyTradeCallback(strategy->getStrategyId(), callback);
+                    break;
+                }
             }
+            break;
+        }
+    }
+}
+
+// 创建交易回调对象
+TradeCallback BacktestEngine::createTradeCallback(const std::string& strategy_id, const std::string& order_id, 
+                                                 Direction direction, Quantity volume, Price price, 
+                                                 const std::string& datetime, char match_type) {
+    char dir_char = (direction == Direction::Buy) ? 'B' : 'S';
+    double match_amount = (price / 10000.0) * volume;  // 转换为元
+    
+    // 计算持仓变化量
+    int64_t delta_pos = (direction == Direction::Buy) ? static_cast<int64_t>(volume) : -static_cast<int64_t>(volume);
+    
+    return TradeCallback(order_id, dir_char, volume, price, match_amount, delta_pos, datetime, match_type);
+}
+
+// 通知策略统一交易回调
+void BacktestEngine::notifyStrategyTradeCallback(const std::string& strategy_id, const TradeCallback& callback) {
+    for (auto& strategy : strategies_) {
+        if (strategy->getStrategyId() == strategy_id) {
+            // 更新策略持仓
+            strategy->updateStrategyPosition(symbol_, callback.deltapos);
+            
+            // 调用统一回调接口
+            strategy->onTradeCallback(callback);
             break;
         }
     }
@@ -2832,12 +3081,12 @@ void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
 
 
 
-} // namespace wangcai_orderbook_cpp #include "backtest_engine.hpp"
+} // namespace wangcai #include "backtest_engine.hpp"
 #include "example_strategy.hpp"
 #include <iostream>
 #include <memory>
 
-using namespace wangcai_orderbook_cpp;
+using namespace wangcai;
 
 int main(int argc, char* argv[]) {
     if (argc != 4) {
@@ -2918,7 +3167,7 @@ int main(int argc, char* argv[]) {
 #include <iostream> // Added for debugging output
 #include <fstream>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 构造函数：初始化集合竞价引擎，绑定订单簿、前收盘价、交易所、回调等 
 CallAuctionEngine::CallAuctionEngine(OrderBook& ob, Price pc,
@@ -3380,14 +3629,14 @@ void CallAuctionEngine::print_orderbook_to_csv(const std::string& filename) {
              << tradable << "\n";
     }
 }
-} // namespace wangcai_orderbook_cpp // === src/close_auction_engine.cpp ===
+} // namespace wangcai // === src/close_auction_engine.cpp ===
 #include "../include/close_auction_engine.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream> // Added for debugging output
 #include <fstream>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 构造函数实现
 CloseAuctionEngine::CloseAuctionEngine(OrderBook& ob, Price pc,
@@ -3852,12 +4101,12 @@ void CloseAuctionEngine::bootstrap_from_orderbook() {
     }
     publish(); // 更新一次预测价
 }
-} // namespace wangcai_orderbook_cpp // === src/con_auction_engine.cpp ===
+} // namespace wangcai // === src/con_auction_engine.cpp ===
 #include "../include/con_auction_engine.hpp"
 #include <algorithm>
 #include <iostream>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 
 // 连续竞价订单接收函数
@@ -4260,7 +4509,7 @@ bool ConAuctionEngine::cancel_by_input_id(uint64_t input_id)
     }
 }
 
-} // namespace wangcai_orderbook_cpp /*
+} // namespace wangcai /*
  * @Author: chenlisen
  * @Date: 2025-08-13 08:47:50
  * @LastEditTime: 2025-08-14 05:57:10
@@ -4276,7 +4525,7 @@ bool ConAuctionEngine::cancel_by_input_id(uint64_t input_id)
 #include <algorithm>
 #include <iostream>
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 DataManager::DataManager(OrderBook* ob, CallAuctionEngine* call_engine, 
                         ConAuctionEngine* con_engine, CloseAuctionEngine* close_engine)
@@ -4357,7 +4606,7 @@ OrderDetail DataManager::getOrderDetail() const {
 #include <string>       // std::string
 #include <algorithm>    // std::sort
 
-namespace wangcai_orderbook_cpp {
+namespace wangcai {
 
 // 在文件开头添加静态变量定义
 std::vector<Event> OrderBook::whole_events;
@@ -4502,4 +4751,4 @@ void OrderBook::bucketSub(int idx, bool is_buy, Quantity q)
 Price OrderBook::bestBid() const { return _best_bid == -1 ? 0 : idxToPx(_best_bid); }
 Price OrderBook::bestAsk() const { return _best_ask == -1 ? 0 : idxToPx(_best_ask); }
 
-} // namespace wangcai_orderbook_cpp
+} // namespace wangcai

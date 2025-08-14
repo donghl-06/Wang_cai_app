@@ -76,23 +76,46 @@ public:
         return events;
     }
 
+    void onTradeCallback(const TradeCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 新交易回调: 订单 " << callback.localid 
+                  << " " << (callback.matchtype == 'T' ? "成交" : "撤单")
+                  << " 方向=" << callback.direction 
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 金额=" << callback.matchamount
+                  << " 当前总持仓=" << callback.deltapos 
+                  << " 时间=" << callback.matchtime << std::endl;
+                  
+        // 显示当前所有持仓
+        auto positions = getAllPositions();
+        if (!positions.empty()) {
+            std::cout << "  当前持仓: ";
+            for (const auto& pos : positions) {
+                std::cout << pos.first << "=" << pos.second << " ";
+            }
+            std::cout << std::endl;
+        }
+    }
+
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
-        std::cout << "========== 策略成交回报 ==========" << std::endl;
-        std::cout << "策略ID: " << strategy_id_ << std::endl;
-        std::cout << "订单ID: " << order_id << std::endl;
-        std::cout << "成交价格: " << price / 10000.0 << " 元" << std::endl;
-        std::cout << "成交数量: " << volume << std::endl;
-        std::cout << "累计成交量: " << total_filled_volume_ + volume << std::endl;
-        std::cout << "=================================" << std::endl;
+        // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
         total_filled_volume_ += volume;
     }
 
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
-        std::cout << "========== 策略撤单回报 ==========" << std::endl;
-        std::cout << "策略ID: " << strategy_id_ << std::endl;
-        std::cout << "订单ID: " << order_id << std::endl;
-        std::cout << "撤单原因: " << reason << std::endl;
-        std::cout << "=================================" << std::endl;
+        // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
+    }
+    
+    void onOrderCallback(const OrderCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 下单回调: 订单 " << callback.orderlocalid 
+                  << " 方向=" << (callback.direction == 1 ? "买入" : "卖出")
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 交易所=" << (callback.exchange == 0 ? "上海" : "深圳")
+                  << " 买一=" << (callback.bid1 / 10000.0)
+                  << " 卖一=" << (callback.ask1 / 10000.0)
+                  << " 当前总持仓=" << callback.deltapos 
+                  << " 时间=" << callback.time << std::endl;
     }
 
     std::string getStrategyId() const override { return strategy_id_; }
@@ -102,6 +125,20 @@ public:
         std::cout << "总下单数: " << order_count_ << std::endl;
         std::cout << "总成交量: " << total_filled_volume_ << std::endl;
         std::cout << "处理事件数: " << event_count_ << std::endl;
+        
+        // 显示最终持仓汇总
+        auto positions = getAllPositions();
+        std::cout << "\n=== 持仓汇总 ===" << std::endl;
+        if (positions.empty()) {
+            std::cout << "无持仓" << std::endl;
+        } else {
+            int64_t total_position = 0;
+            for (const auto& pos : positions) {
+                std::cout << "合约 " << pos.first << ": " << pos.second << " 股" << std::endl;
+                total_position += pos.second;
+            }
+            std::cout << "总净持仓: " << total_position << " 股" << std::endl;
+        }
     }
 
 private:
@@ -175,21 +212,50 @@ public:
         return events;
     }
     
+    std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) override {
+        // 均值回归策略暂不处理tick事件
+        return {};
+    }
+    
+    void onTradeCallback(const TradeCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 均值回归交易回调: 订单 " << callback.localid 
+                  << " " << (callback.matchtype == 'T' ? "成交" : "撤单")
+                  << " 方向=" << callback.direction 
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 金额=" << callback.matchamount
+                  << " 当前总持仓=" << callback.deltapos 
+                  << " 时间=" << callback.matchtime << std::endl;
+                  
+        // 显示当前所有持仓
+        auto positions = getAllPositions();
+        if (!positions.empty()) {
+            std::cout << "  当前持仓: ";
+            for (const auto& pos : positions) {
+                std::cout << pos.first << "=" << pos.second << " ";
+            }
+            std::cout << std::endl;
+        }
+    }
+    
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
-        std::cout << "========== 策略成交回报 ==========" << std::endl;
-        std::cout << "策略ID: " << strategy_id_ << std::endl;
-        std::cout << "订单ID: " << order_id << std::endl;
-        std::cout << "成交价格: " << price / 10000.0 << " 元" << std::endl;
-        std::cout << "成交数量: " << volume << std::endl;
-        std::cout << "=================================" << std::endl;
+        // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
     }
     
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
-        std::cout << "========== 策略撤单回报 ==========" << std::endl;
-        std::cout << "策略ID: " << strategy_id_ << std::endl;
-        std::cout << "订单ID: " << order_id << std::endl;
-        std::cout << "撤单原因: " << reason << std::endl;
-        std::cout << "=================================" << std::endl;
+        // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
+    }
+    
+    void onOrderCallback(const OrderCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 均值回归下单回调: 订单 " << callback.orderlocalid 
+                  << " 方向=" << (callback.direction == 1 ? "买入" : "卖出")
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 交易所=" << (callback.exchange == 0 ? "上海" : "深圳")
+                  << " 买一=" << (callback.bid1 / 10000.0)
+                  << " 卖一=" << (callback.ask1 / 10000.0)
+                  << " 当前总持仓=" << callback.deltapos 
+                  << " 时间=" << callback.time << std::endl;
     }
     
     std::string getStrategyId() const override {
@@ -268,6 +334,35 @@ public:
         // }
         return {};
     }
+    
+    void onTradeCallback(const TradeCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 测试交易回调: 订单 " << callback.localid 
+                  << " " << (callback.matchtype == 'T' ? "成交" : "撤单")
+                  << " 方向=" << callback.direction 
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 金额=" << callback.matchamount
+                  << " 当前总持仓=" << callback.deltapos 
+                  << " 时间=" << callback.matchtime << std::endl;
+                  
+        // 显示当前所有持仓
+        auto positions = getAllPositions();
+        if (!positions.empty()) {
+            std::cout << "  当前持仓: ";
+            for (const auto& pos : positions) {
+                std::cout << pos.first << "=" << pos.second << " ";
+            }
+            std::cout << std::endl;
+        }
+        
+        if (callback.matchtype == 'T') {
+            filled_count_++;
+            total_filled_volume_ += callback.volume;
+        } else {
+            cancelled_count_++;
+        }
+    }
+    
     void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
         filled_count_++;
         total_filled_volume_ += volume;
@@ -287,15 +382,22 @@ public:
         }
     }
     
+    
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
+        // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
         cancelled_count_++;
-        
-        std::cout << "\n❌========== 测试策略撤单回报 ==========" << std::endl;
-        std::cout << "❌ 策略ID: " << strategy_id_ << std::endl;
-        std::cout << "❌ 订单ID: " << order_id << std::endl;
-        std::cout << "❌ 撤单原因: " << reason << std::endl;
-        std::cout << "❌ 累计撤单次数: " << cancelled_count_ << std::endl;
-        std::cout << "❌========================================" << std::endl;
+    }
+    
+    void onOrderCallback(const OrderCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 🎯测试下单回调: 订单 " << callback.orderlocalid 
+                  << " 方向=" << (callback.direction == 1 ? "买入" : "卖出")
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 交易所=" << (callback.exchange == 0 ? "上海" : "深圳")
+                  << " 买一=" << (callback.bid1 / 10000.0)
+                  << " 卖一=" << (callback.ask1 / 10000.0)
+                  << " 当前总持仓=" << callback.deltapos 
+                  << " 时间=" << callback.time << std::endl;
     }
     
     std::string getStrategyId() const override { return strategy_id_; }
@@ -309,6 +411,21 @@ public:
         std::cout << "📊 总成交量: " << total_filled_volume_ << std::endl;
         std::cout << "📊 处理事件数: " << event_count_ << std::endl;
         std::cout << "📊 测试阶段: " << test_phase_ << "/6" << std::endl;
+        
+        // 显示最终持仓汇总
+        auto positions = getAllPositions();
+        std::cout << "\n💼 === 持仓汇总 ===" << std::endl;
+        if (positions.empty()) {
+            std::cout << "💼 无持仓" << std::endl;
+        } else {
+            int64_t total_position = 0;
+            for (const auto& pos : positions) {
+                std::cout << "💼 合约 " << pos.first << ": " << pos.second << " 股" << std::endl;
+                total_position += pos.second;
+            }
+            std::cout << "💼 总净持仓: " << total_position << " 股" << std::endl;
+        }
+        
         std::cout << "🔍===============================" << std::endl;
     }
 

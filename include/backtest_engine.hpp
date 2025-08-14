@@ -30,14 +30,42 @@ public:
     //  接受Tick事件，返回要处理的事件列表（下单或撤单）
     virtual std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) = 0;
     
-    // 处理订单成交回报
-    virtual void onOrderFilled(const std::string& order_id, Price price, Quantity volume) = 0;
+    // 新的统一交易回调接口（包含持仓管理）
+    virtual void onTradeCallback(const TradeCallback& callback) = 0;
     
-    // 处理订单取消回报
+    // 下单回调接口
+    virtual void onOrderCallback(const OrderCallback& callback) = 0;
+    
+    // 原有接口保留（兼容性）
+    virtual void onOrderFilled(const std::string& order_id, Price price, Quantity volume) = 0;
     virtual void onOrderCancelled(const std::string& order_id, const std::string& reason) = 0;
     
     // 获取策略ID
     virtual std::string getStrategyId() const = 0;
+    
+    // 获取当前持仓（由策略基类管理）
+    int64_t getPosition(const std::string& symbol) const {
+        return position_manager_.getPosition(symbol);
+    }
+    
+    // 获取所有持仓
+    const std::map<std::string, int64_t>& getAllPositions() const {
+        return position_manager_.getAllPositions();
+    }
+    
+    // 公有方法：更新持仓（供 BacktestEngine 调用）
+    void updateStrategyPosition(const std::string& symbol, int64_t quantity_change) {
+        position_manager_.updatePosition(symbol, quantity_change);
+    }
+
+protected:
+    // 持仓管理器，由基类提供
+    mutable StrategyPositionManager position_manager_;
+    
+    // 更新持仓的受保护方法，供派生类使用
+    void updatePosition(const std::string& symbol, int64_t quantity_change) {
+        position_manager_.updatePosition(symbol, quantity_change);
+    }
 };
 
 // 回测引擎
@@ -81,6 +109,22 @@ private:
     // 新增：通知策略成交
     void notifyStrategiesOnExecution(const Execution& ex);
     
+    // 新增：创建交易回调对象
+    TradeCallback createTradeCallback(const std::string& strategy_id, const std::string& order_id, 
+                                    Direction direction, Quantity volume, Price price, 
+                                    const std::string& datetime, char match_type);
+    
+    // 新增：通知策略统一交易回调
+    void notifyStrategyTradeCallback(const std::string& strategy_id, const TradeCallback& callback);
+    
+    // 新增：创建下单回调对象
+    OrderCallback createOrderCallback(const std::string& strategy_id, const std::string& order_id,
+                                    Direction direction, Quantity volume, Price price, 
+                                    const std::string& datetime);
+    
+    // 新增：通知策略下单回调
+    void notifyStrategyOrderCallback(const std::string& strategy_id, const OrderCallback& callback);
+    
     // 成员变量
     std::string symbol_;
     std::string date_;
@@ -114,6 +158,7 @@ private:
     uint64_t next_order_id_;
     uint64_t next_trade_id_;        // 交易ID生成器
     std::map<std::string, uint64_t> user_order_mapping_; // user_order_id -> system_order_id
+    std::map<uint64_t, Direction> user_order_direction_;  // system_order_id -> direction
     
     // 虚拟订单映射 - 用于成交回调时识别虚拟订单
     std::map<uint64_t, std::string> virtual_order_strategy_; // system_order_id -> strategy_id
