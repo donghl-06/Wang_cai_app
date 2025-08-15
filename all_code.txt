@@ -92,6 +92,9 @@ public:
     // 新的统一交易回调接口（包含持仓管理）
     virtual void onTradeCallback(const TradeCallback& callback) = 0;
     
+    // 下单回调接口
+    virtual void onOrderCallback(const OrderCallback& callback) = 0;
+    
     // 原有接口保留（兼容性）
     virtual void onOrderFilled(const std::string& order_id, Price price, Quantity volume) = 0;
     virtual void onOrderCancelled(const std::string& order_id, const std::string& reason) = 0;
@@ -172,6 +175,14 @@ private:
     
     // 新增：通知策略统一交易回调
     void notifyStrategyTradeCallback(const std::string& strategy_id, const TradeCallback& callback);
+    
+    // 新增：创建下单回调对象
+    OrderCallback createOrderCallback(const std::string& strategy_id, const std::string& order_id,
+                                    Direction direction, Quantity volume, Price price, 
+                                    const std::string& datetime);
+    
+    // 新增：通知策略下单回调
+    void notifyStrategyOrderCallback(const std::string& strategy_id, const OrderCallback& callback);
     
     // 成员变量
     std::string symbol_;
@@ -474,6 +485,338 @@ private:
 } // namespace wangcai#pragma once
 #include "backtest_engine.hpp"
 #include <iostream>
+#include <iomanip>
+#include <deque>
+
+namespace wangcai {
+
+// 全接口演示策略：展示所有回调接口的使用方法
+class DemoStrategy : public Strategy {
+public:
+    DemoStrategy(const std::string& strategy_id = "DEMO_STRATEGY")
+        : strategy_id_(strategy_id), phase_(0), order_counter_(0) {
+        std::cout << "\n▶️ [" << strategy_id_ << "] 全接口演示策略已启动" << std::endl;
+        std::cout << "将依次演示：下单回调 → 成交回调 → 撤单回调 → 持仓管理" << std::endl;
+    }
+
+    // 【接口1】订单事件处理
+    std::vector<UserEvent> onOrderEvent(const Event& event) override {
+        std::vector<UserEvent> events;
+        
+        // 只在连续竞价阶段进行演示
+        if (event.datetime.substr(11, 8) < "09:30:00" || event.datetime.substr(11, 8) > "14:55:00") {
+            return events;
+        }
+        
+        // 根据阶段执行不同的演示
+        switch (phase_) {
+            case 0:
+                events = demoOrderPlacement(event);
+                break;
+            case 1:
+                events = demoPendingOrders(event);
+                break;
+            case 2:
+                events = demoCancellation(event);
+                break;
+            default:
+                // 演示完成，不再下单
+                break;
+        }
+        
+        return events;
+    }
+
+    // 【接口2】成交事件处理
+    std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) override {
+        trade_event_count_++;
+        if (trade_event_count_ <= 5) {  // 只打印前5个
+            std::cout << "🔔 [" << strategy_id_ << "] 收到成交事件 #" << trade_event_count_ << ": "
+                      << "价格=" << (execution.price / 10000.0)
+                      << " 数量=" << execution.volume 
+                      << " 时间=" << datetime << std::endl;
+        }
+        
+        // 在这里可以根据市场成交情况做出策略决策
+        return {};
+    }
+
+    // 【接口3】行情快照处理  
+    int tick_count = 0;
+    std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) override {
+        if (tick_count < 5) {
+            std::cout << "📈 [" << strategy_id_ << "] 收到行情快照: "
+                      << "最新价=" << (snapshot.last_price / 10000.0)
+                      << " 买一=" << (snapshot.bids[0] / 10000.0)
+                      << " 卖一=" << (snapshot.asks[0] / 10000.0)
+                      << " 时间=" << snapshot.datetime << std::endl;
+        }
+        tick_count++;    
+        // 在这里可以根据行情变化做出策略决策
+        return {};
+    }
+
+    // 【接口4】统一交易回调（新接口）
+    void onTradeCallback(const TradeCallback& callback) override {
+        std::cout << "\n🧾 [" << strategy_id_ << "] ==== 统一交易回调 ====" << std::endl;
+        std::cout << "   订单ID: " << callback.localid << std::endl;
+        std::cout << "   回调类型: " << (callback.matchtype == 'T' ? "成交" : "撤单") << std::endl;
+        std::cout << "   方向: " << (callback.direction == 'B' ? "买入" : "卖出") << std::endl;
+        std::cout << "   数量: " << callback.volume << std::endl;
+        std::cout << "   价格: " << std::fixed << std::setprecision(4) << (callback.price / 10000.0) << " 元" << std::endl;
+        if (callback.matchtype == 'T') {
+            std::cout << "   成交金额: " << std::fixed << std::setprecision(2) << callback.matchamount << " 元" << std::endl;
+        }
+        std::cout << "   当前总持仓: " << callback.deltapos << std::endl;
+        std::cout << "   时间: " << callback.matchtime << std::endl;
+        
+        // 显示当前所有持仓
+        auto positions = getAllPositions();
+        if (!positions.empty()) {
+            std::cout << "   持仓明细: ";
+            for (const auto& pos : positions) {
+                std::cout << pos.first << "=" << pos.second << " ";
+            }
+            std::cout << std::endl;
+        }
+        std::cout << "================================" << std::endl;
+        
+        // 统计
+        if (callback.matchtype == 'T') {
+            filled_count_++;
+            total_filled_volume_ += callback.volume;
+        } else {
+            cancelled_count_++;
+        }
+    }
+
+    // 【接口5】下单回调（新接口）
+    void onOrderCallback(const OrderCallback& callback) override {
+        std::cout << "\n📥 [" << strategy_id_ << "] ==== 下单回调 ====" << std::endl;
+        std::cout << "   订单ID: " << callback.orderlocalid << std::endl;
+        std::cout << "   方向: " << (callback.direction == 1 ? "买入" : "卖出") << std::endl;
+        std::cout << "   数量: " << callback.volume << std::endl;
+        std::cout << "   价格: " << std::fixed << std::setprecision(4) << (callback.price / 10000.0) << " 元" << std::endl;
+        std::cout << "   交易所: " << (callback.exchange == 0 ? "上海" : "深圳") << std::endl;
+        std::cout << "   买一: " << std::fixed << std::setprecision(4) << (callback.bid1 / 10000.0) << " 元" << std::endl;
+        std::cout << "   卖一: " << std::fixed << std::setprecision(4) << (callback.ask1 / 10000.0) << " 元" << std::endl;
+        std::cout << "   当前总持仓: " << callback.deltapos << std::endl;
+        std::cout << "   时间: " << callback.time << std::endl;
+        std::cout << "==============================" << std::endl;
+    }
+
+    // 【接口6】成交回调（旧接口，保持兼容）
+    void onOrderFilled(const std::string& order_id, Price price, Quantity volume) override {
+        std::cout << "✅ [" << strategy_id_ << "] 旧接口-成交回调: " << order_id 
+                  << " 价格=" << (price / 10000.0) << " 数量=" << volume << std::endl;
+    }
+
+    // 【接口7】撤单回调（旧接口，保持兼容）
+    void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
+        std::cout << "✖️ [" << strategy_id_ << "] 旧接口-撤单回调: " << order_id 
+                  << " 原因=" << reason << std::endl;
+    }
+
+    std::string getStrategyId() const override { return strategy_id_; }
+
+    void printStatistics() const {
+        std::cout << "\n📊 ============ 演示策略统计报告 ============" << std::endl;
+        std::cout << "策略ID: " << strategy_id_ << std::endl;
+        std::cout << "演示阶段: " << (phase_ >= 3 ? "全部完成" : "进行中") << std::endl;
+        
+        std::cout << "\n=== 接口测试统计 ===" << std::endl;
+        std::cout << "总下单数: " << order_counter_ << " (目标: 10个)" << std::endl;
+        std::cout << "累计成交次数: " << filled_count_ << " (目标: 5个立即成交)" << std::endl;
+        std::cout << "累计成交量: " << total_filled_volume_ << std::endl;
+        std::cout << "累计撤单次数: " << cancelled_count_ << " (目标: 5个撤单)" << std::endl;
+        std::cout << "收到成交或者撤单事件数: " << trade_event_count_ << " (显示前5个)" << std::endl;
+        
+        std::cout << "\n=== 演示阶段完成情况 ===" << std::endl;
+        std::cout << "   阶段0-下单回调: " << (phase_ >= 1 ? "完成(5个订单)" : "进行中") << std::endl;
+        std::cout << "   阶段1-挂单演示: " << (phase_ >= 2 ? "完成(5个挂单)" : (phase_ >= 1 ? "进行中" : "等待")) << std::endl;
+        std::cout << "   阶段2-撤单回调: " << (phase_ >= 3 ? "完成(5个撤单)" : (phase_ >= 2 ? "进行中" : "等待")) << std::endl;
+        
+        // 持仓汇总
+        auto positions = getAllPositions();
+        if (!positions.empty()) {
+            std::cout << "\n=== 持仓汇总 ===" << std::endl;
+            int64_t total_net_position = 0;
+            for (const auto& pos : positions) {
+                std::cout << "   " << pos.first << ": " << pos.second << std::endl;
+                total_net_position += pos.second;
+            }
+            std::cout << "   总净持仓: " << total_net_position << std::endl;
+        } else {
+            std::cout << "\n=== 持仓汇总 ===" << std::endl;
+            std::cout << "   暂无持仓" << std::endl;
+        }
+        
+        std::cout << "\n=== 接口演示总结 ===" << std::endl;
+        std::cout << "   onOrderEvent() - 订单事件处理" << std::endl;
+        std::cout << "   onTradeEvent() - 成交事件处理(显示前5个)" << std::endl;
+        std::cout << "   onTickEvent() - 行情快照处理" << std::endl;
+        std::cout << "   onTradeCallback() - 统一交易回调(新接口)" << std::endl;
+        std::cout << "   onOrderCallback() - 下单回调(新接口)" << std::endl;
+        std::cout << "   onOrderFilled() - 成交回调(旧接口兼容)" << std::endl;
+        std::cout << "   onOrderCancelled() - 撤单回调(旧接口兼容)" << std::endl;
+        std::cout << "========================================" << std::endl;
+    }
+
+private:
+    // 阶段0：演示下单回调和立即成交（5个例子）
+    std::vector<UserEvent> demoOrderPlacement(const Event& event) {
+        static int demo_count = 0;
+        static int event_count = 0;
+        std::vector<UserEvent> events;
+        
+        event_count++;
+        
+        if (demo_count == 0 && event_count == 1) {
+            std::cout << "\n🔁 === 阶段0：演示下单回调和成交回调（5个订单）===" << std::endl;
+        }
+        
+        if (demo_count < 5 && event_count % 3 == 1) {  // 每3个事件下一单
+            demo_count++;
+            
+            // 交替下买单和卖单
+            Direction direction = (demo_count % 2 == 1) ? Direction::Buy : Direction::Sell;
+            std::string direction_str = (direction == Direction::Buy) ? "买" : "卖";
+            std::string order_id = "DEMO_" + direction_str + "_" + std::to_string(demo_count);
+            
+            UserOrder order;
+            order.order_id = order_id;
+            order.symbol = event.sym;
+            order.direction = direction;
+            order.order_type = OrderType::Market;  // 市价单确保成交
+            order.price = (direction == Direction::Buy) ? event.price + 1000 : event.price - 1000;
+            order.volume = 100 + demo_count * 10;  // 数量递增
+            order.strategy_id = strategy_id_;
+            
+            events.emplace_back(order);
+            
+            std::cout << "[" << demo_count << "/5] 提交" << direction_str << "单: " << order_id 
+                      << " 数量=" << order.volume << " (预期立即成交)" << std::endl;
+            
+            if (demo_count == 5) {
+                phase_ = 1; // 进入下一阶段
+                std::cout << "✅ 阶段0完成：已演示5个下单回调和成交回调" << std::endl;
+            }
+        }
+        
+        return events;
+    }
+
+    // 阶段1：演示挂单回调（5个挂单）
+    std::vector<UserEvent> demoPendingOrders(const Event& event) {
+        static int demo_count = 0;
+        static int event_count = 0;
+        std::vector<UserEvent> events;
+        
+        event_count++;
+        
+        if (demo_count == 0 && event_count == 1) {
+            std::cout << "\n🧾 === 阶段1：演示挂单（5个待撤单）===" << std::endl;
+        }
+        
+        if (demo_count < 5 && event_count % 2 == 1) {  // 每2个事件下一单
+            demo_count++;
+            
+            // 交替下买单和卖单，但远离市价不会成交
+            Direction direction = (demo_count % 2 == 1) ? Direction::Buy : Direction::Sell;
+            std::string direction_str = (direction == Direction::Buy) ? "买" : "卖";
+            std::string order_id = "PENDING_" + direction_str + "_" + std::to_string(demo_count);
+            
+            UserOrder order;
+            order.order_id = order_id;
+            order.symbol = event.sym;
+            order.direction = direction;
+            order.order_type = OrderType::Limit;
+            // 故意设置远离市价，不会成交
+            order.price = (direction == Direction::Buy) ? event.price - 1000 : event.price + 1000;
+            order.volume = 200 + demo_count * 20;
+            order.strategy_id = strategy_id_;
+            
+            events.emplace_back(order);
+            pending_orders_.push_back(order_id);  // 记录待撤单
+            
+            std::cout << "[" << demo_count << "/5] 提交限价" << direction_str << "单: " << order_id 
+                      << " 数量=" << order.volume << " (挂单等待)" << std::endl;
+            
+            if (demo_count == 5) {
+                phase_ = 2; // 进入撤单阶段
+                std::cout << "✅ 阶段1完成：已演示5个挂单，准备撤单演示" << std::endl;
+            }
+        }
+        
+        return events;
+    }
+
+    // 阶段2：演示撤单回调（5个撤单）
+    std::vector<UserEvent> demoCancellation(const Event& event) {
+        static int demo_count = 0;
+        static int event_count = 0;
+        std::vector<UserEvent> events;
+        
+        event_count++;
+        
+        if (demo_count == 0 && event_count == 1) {
+            std::cout << "\n✖️ === 阶段2：演示撤单回调（5个撤单）===" << std::endl;
+        }
+        
+        if (demo_count < 5 && !pending_orders_.empty() && event_count % 2 == 1) {
+            demo_count++;
+            
+            // 撤销之前的挂单
+            std::string cancel_id = pending_orders_.front();
+            pending_orders_.pop_front();
+            
+            UserCancel cancel(cancel_id, strategy_id_);
+            events.emplace_back(cancel);
+            
+            std::cout << "[" << demo_count << "/5] 提交撤單: " << cancel_id << " (演示撤单回调)" << std::endl;
+            
+            if (demo_count == 5) {
+                phase_ = 3; // 演示完成
+                std::cout << "✅ 阶段2完成：已演示5个撤单回调" << std::endl;
+                std::cout << "\n🎉 === 所有接口演示完成！===" << std::endl;
+            }
+        }
+        
+        return events;
+    }
+
+    std::string strategy_id_;
+    int phase_;                           // 演示阶段
+    int order_counter_;                   // 订单计数器
+    int filled_count_ = 0;               // 成交次数
+    int cancelled_count_ = 0;            // 撤单次数  
+    int64_t total_filled_volume_ = 0;    // 总成交量
+    int trade_event_count_ = 0;          // 成交事件计数器
+    std::deque<std::string> pending_orders_; // 待撤销订单
+};
+
+/*
+// 以下策略已注释掉，仅保留演示策略
+
+// 同步跟单策略示例 - 演示严格同步的事件处理
+class SyncFollowStrategy : public Strategy {
+    // ... 原有代码注释掉 ...
+};
+
+// 均值回归策略示例 - 演示基于价格偏离的交易逻辑  
+class MeanReversionStrategy : public Strategy {
+    // ... 原有代码注释掉 ...
+};
+
+// 测试回调策略示例 - 专门测试各种回调场景
+class TestCallbackStrategy : public Strategy {
+    // ... 原有代码注释掉 ...
+};
+*/
+
+} // namespace wangcai#pragma once
+#include "backtest_engine.hpp"
+#include <iostream>
 #include <string>
 #include <deque>
 
@@ -556,7 +899,7 @@ public:
                   << " 数量=" << callback.volume 
                   << " 价格=" << (callback.price / 10000.0) 
                   << " 金额=" << callback.matchamount
-                  << " 持仓变化=" << callback.deltapos 
+                  << " 当前总持仓=" << callback.deltapos 
                   << " 时间=" << callback.matchtime << std::endl;
                   
         // 显示当前所有持仓
@@ -577,6 +920,18 @@ public:
 
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
         // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
+    }
+    
+    void onOrderCallback(const OrderCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 下单回调: 订单 " << callback.orderlocalid 
+                  << " 方向=" << (callback.direction == 1 ? "买入" : "卖出")
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 交易所=" << (callback.exchange == 0 ? "上海" : "深圳")
+                  << " 买一=" << (callback.bid1 / 10000.0)
+                  << " 卖一=" << (callback.ask1 / 10000.0)
+                  << " 当前总持仓=" << callback.deltapos 
+                  << " 时间=" << callback.time << std::endl;
     }
 
     std::string getStrategyId() const override { return strategy_id_; }
@@ -685,7 +1040,7 @@ public:
                   << " 数量=" << callback.volume 
                   << " 价格=" << (callback.price / 10000.0) 
                   << " 金额=" << callback.matchamount
-                  << " 持仓变化=" << callback.deltapos 
+                  << " 当前总持仓=" << callback.deltapos 
                   << " 时间=" << callback.matchtime << std::endl;
                   
         // 显示当前所有持仓
@@ -705,6 +1060,18 @@ public:
     
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
         // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
+    }
+    
+    void onOrderCallback(const OrderCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 均值回归下单回调: 订单 " << callback.orderlocalid 
+                  << " 方向=" << (callback.direction == 1 ? "买入" : "卖出")
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 交易所=" << (callback.exchange == 0 ? "上海" : "深圳")
+                  << " 买一=" << (callback.bid1 / 10000.0)
+                  << " 卖一=" << (callback.ask1 / 10000.0)
+                  << " 当前总持仓=" << callback.deltapos 
+                  << " 时间=" << callback.time << std::endl;
     }
     
     std::string getStrategyId() const override {
@@ -791,7 +1158,7 @@ public:
                   << " 数量=" << callback.volume 
                   << " 价格=" << (callback.price / 10000.0) 
                   << " 金额=" << callback.matchamount
-                  << " 持仓变化=" << callback.deltapos 
+                  << " 当前总持仓=" << callback.deltapos 
                   << " 时间=" << callback.matchtime << std::endl;
                   
         // 显示当前所有持仓
@@ -835,6 +1202,18 @@ public:
     void onOrderCancelled(const std::string& order_id, const std::string& reason) override {
         // 这个是兼容的旧接口，新接口 onTradeCallback 已经处理了所有逻辑
         cancelled_count_++;
+    }
+    
+    void onOrderCallback(const OrderCallback& callback) override {
+        std::cout << "[" << strategy_id_ << "] 🎯测试下单回调: 订单 " << callback.orderlocalid 
+                  << " 方向=" << (callback.direction == 1 ? "买入" : "卖出")
+                  << " 数量=" << callback.volume 
+                  << " 价格=" << (callback.price / 10000.0) 
+                  << " 交易所=" << (callback.exchange == 0 ? "上海" : "深圳")
+                  << " 买一=" << (callback.bid1 / 10000.0)
+                  << " 卖一=" << (callback.ask1 / 10000.0)
+                  << " 当前总持仓=" << callback.deltapos 
+                  << " 时间=" << callback.time << std::endl;
     }
     
     std::string getStrategyId() const override { return strategy_id_; }
@@ -1757,7 +2136,7 @@ struct TradeCallback {
     Quantity volume;          // 成交数量
     Price price;              // 成交价格（厘为单位）
     double matchamount;       // 成交金额（元）
-    int64_t deltapos;         // 当前持仓变化量
+    int64_t deltapos;         // 当前总持仓量（正数=多头，负数=空头）
     std::string matchtime;    // 成交时间
     char matchtype;           // 'T'=成交回调, 'D'=撤单回调
     
@@ -1765,6 +2144,24 @@ struct TradeCallback {
                  double amount, int64_t delta, const std::string& time, char type)
         : localid(id), direction(dir), volume(vol), price(px), 
           matchamount(amount), deltapos(delta), matchtime(time), matchtype(type) {}
+};
+
+// 下单回调信息结构体
+struct OrderCallback {
+    std::string time;         // 下单时间
+    int exchange;             // 交易所（0=上海, 1=深圳）
+    Price ask1;               // 卖一价格（厘为单位）
+    Price bid1;               // 买一价格（厘为单位）
+    int64_t deltapos;         // 当前总持仓量（正数=多头，负数=空头）
+    Price price;              // 下单价格（厘为单位）
+    Quantity volume;          // 下单数量
+    int direction;            // 方向（1=买入, 2=卖出）
+    std::string orderlocalid; // 本地订单ID
+    
+    OrderCallback(const std::string& tm, int exch, Price a1, Price b1, 
+                 int64_t delta, Price px, Quantity vol, int dir, const std::string& id)
+        : time(tm), exchange(exch), ask1(a1), bid1(b1), 
+          deltapos(delta), price(px), volume(vol), direction(dir), orderlocalid(id) {}
 };
 
 // 策略持仓管理器
@@ -2291,6 +2688,11 @@ void BacktestEngine::initialize() {
             }
             
             if (buy_is_virtual || sell_is_virtual) {
+                if (buy_is_virtual) {
+                    updatePosition(virtual_strategy_id, symbol_, Direction::Buy, ex.volume, ex.price);
+                } else if (sell_is_virtual) {
+                    updatePosition(virtual_strategy_id, symbol_, Direction::Sell, ex.volume, ex.price);
+                }
                 // 虚拟成交：只通知对应策略，不记录到CSV
                 for (auto& strategy : strategies_) {
                     if (strategy->getStrategyId() == virtual_strategy_id) {
@@ -2337,10 +2739,7 @@ void BacktestEngine::initialize() {
             } else {
                 // 历史订单成交：正常处理并记录到CSV
                 
-                // 1. 检查并通知策略订单成交
-                notifyStrategiesOnExecution(ex);
-                
-                // 2. 推送成交事件给所有策略，收集新事件（暂存到pending队列）
+                // 1. 推送成交事件给所有策略，收集新事件（暂存到pending队列）
                 for (auto& strategy : strategies_) {
                     auto user_events = strategy->onTradeEvent(ex, trade_datetime);
                     for (const auto& event : user_events) {
@@ -2348,7 +2747,7 @@ void BacktestEngine::initialize() {
                     }
                 }
                 
-                // 3. 记录交易信息（如果启用了记录）- 只记录历史订单成交
+                // 2. 记录交易信息（如果启用了记录）- 只记录历史订单成交
                 if (recording_enabled_) {
                     recordTrade(ex, trade_datetime);
                 }
@@ -2406,6 +2805,12 @@ void BacktestEngine::initialize() {
                             break;
                         }
                     }
+                    
+                    // 撤单后清理虚拟订单映射，防止影响后续订单识别
+                    virtual_order_strategy_.erase(order_id);
+                    virtual_order_local_id_.erase(order_id);  
+                    user_order_direction_.erase(order_id);
+                    
                     // 注意：虚拟订单撤单不记录到CSV，不调用recordCancel()
                 }
             }
@@ -2688,6 +3093,11 @@ bool BacktestEngine::tryFillImmediately(std::shared_ptr<Order> user_order) {
             }
         }
         
+        // 立即成交后必须清理虚拟订单映射，防止影响后续订单识别
+        virtual_order_strategy_.erase(user_order->order_id);
+        virtual_order_local_id_.erase(user_order->order_id);
+        user_order_direction_.erase(user_order->order_id);
+        
         std::cout << "[虚拟成交] USER订单 " << user_order->order_local_id 
                   << " 立即成交 " << fill_qty << "@" << fill_price / 10000.0 << std::endl;
         return true;
@@ -2720,6 +3130,12 @@ void BacktestEngine::processUserOrder(const UserOrder& user_order) {
         // 记录虚拟订单映射，用于成交回调时识别
         virtual_order_strategy_[order->order_id] = user_order.strategy_id;
         virtual_order_local_id_[order->order_id] = user_order.order_id;
+        
+        // 创建并发送下单回调
+        auto order_callback = createOrderCallback(user_order.strategy_id, user_order.order_id,
+                                                user_order.direction, user_order.volume, user_order.price,
+                                                continuous_mode_ ? last_brk_datetime_ : current_datetime_);
+        notifyStrategyOrderCallback(user_order.strategy_id, order_callback);
         
         // 先尝试立即成交
         if (!tryFillImmediately(order)) {
@@ -3059,21 +3475,67 @@ TradeCallback BacktestEngine::createTradeCallback(const std::string& strategy_id
     char dir_char = (direction == Direction::Buy) ? 'B' : 'S';
     double match_amount = (price / 10000.0) * volume;  // 转换为元
     
-    // 计算持仓变化量
-    int64_t delta_pos = (direction == Direction::Buy) ? static_cast<int64_t>(volume) : -static_cast<int64_t>(volume);
+    // 先更新持仓，再获取总持仓量
+    int64_t total_position = 0;
+    for (auto& strategy : strategies_) {
+        if (strategy->getStrategyId() == strategy_id) {
+            // 如果是成交，更新持仓
+            if (match_type == 'T') {
+                int64_t position_change = (direction == Direction::Buy) ? 
+                    static_cast<int64_t>(volume) : -static_cast<int64_t>(volume);
+                strategy->updateStrategyPosition(symbol_, position_change);
+            }
+            // 获取当前总持仓量
+            total_position = strategy->getPosition(symbol_);
+            break;
+        }
+    }
     
-    return TradeCallback(order_id, dir_char, volume, price, match_amount, delta_pos, datetime, match_type);
+    return TradeCallback(order_id, dir_char, volume, price, match_amount, total_position, datetime, match_type);
 }
 
 // 通知策略统一交易回调
 void BacktestEngine::notifyStrategyTradeCallback(const std::string& strategy_id, const TradeCallback& callback) {
     for (auto& strategy : strategies_) {
         if (strategy->getStrategyId() == strategy_id) {
-            // 更新策略持仓
-            strategy->updateStrategyPosition(symbol_, callback.deltapos);
-            
-            // 调用统一回调接口
+            // 直接调用统一回调接口
             strategy->onTradeCallback(callback);
+            break;
+        }
+    }
+}
+
+// 创建下单回调对象
+OrderCallback BacktestEngine::createOrderCallback(const std::string& strategy_id, const std::string& order_id,
+                                                Direction direction, Quantity volume, Price price, 
+                                                const std::string& datetime) {
+    // 获取交易所代码（0=上海, 1=深圳）
+    int exchange = (symbol_.find("SH") != std::string::npos) ? 0 : 1;
+    
+    // 获取当前买一卖一价格
+    Price ask1 = orderbook_->bestAsk();
+    Price bid1 = orderbook_->bestBid();
+    
+    // 获取当前总持仓量
+    int64_t total_position = 0;
+    for (auto& strategy : strategies_) {
+        if (strategy->getStrategyId() == strategy_id) {
+            total_position = strategy->getPosition(symbol_);
+            break;
+        }
+    }
+    
+    // 转换方向（1=买入, 2=卖出）
+    int dir = (direction == Direction::Buy) ? 1 : 2;
+    
+    return OrderCallback(datetime, exchange, ask1, bid1, total_position, price, volume, dir, order_id);
+}
+
+// 通知策略下单回调
+void BacktestEngine::notifyStrategyOrderCallback(const std::string& strategy_id, const OrderCallback& callback) {
+    for (auto& strategy : strategies_) {
+        if (strategy->getStrategyId() == strategy_id) {
+            strategy->onOrderCallback(callback);
             break;
         }
     }
@@ -3082,7 +3544,7 @@ void BacktestEngine::notifyStrategyTradeCallback(const std::string& strategy_id,
 
 
 } // namespace wangcai #include "backtest_engine.hpp"
-#include "example_strategy.hpp"
+#include "demo_strategy.hpp"
 #include <iostream>
 #include <memory>
 
@@ -3114,22 +3576,13 @@ int main(int argc, char* argv[]) {
             // }
         });
         
-        // 创建并注册专门的测试策略
-        auto test_strategy = std::make_shared<TestCallbackStrategy>("回调测试策略");
-
-        // 创建并注册同步跟单策略
-        // auto sync_strategy = std::make_shared<SyncFollowStrategy>("同步跟单策略", 1000, 100, 100);
-        // auto mean_strategy = std::make_shared<MeanReversionStrategy>("均值回归策略", 0.01);
-
-        // engine.registerStrategy(sync_strategy);
-        // engine.registerStrategy(mean_strategy);
+        // 创建并注册全接口演示策略
+        auto demo_strategy = std::make_shared<DemoStrategy>("全接口演示策略");
         
-        engine.registerStrategy(test_strategy);
+        engine.registerStrategy(demo_strategy);
         
-        std::cout << "已注册测试策略：" << std::endl;
-        std::cout << "1. " << test_strategy->getStrategyId() << " - 专门测试成交回报和撤单回报" << std::endl;
-        // std::cout << "2. " << sync_strategy->getStrategyId() << " - 同步跟单策略" << std::endl;
-        // std::cout << "3. " << mean_strategy->getStrategyId() << " - 均值回归策略" << std::endl;
+        std::cout << "已注册演示策略：" << std::endl;
+        std::cout << "🎯 " << demo_strategy->getStrategyId() << " - 展示所有回调接口的使用方法" << std::endl;
         
         // 运行回测
         engine.run();
@@ -3148,10 +3601,10 @@ int main(int argc, char* argv[]) {
             std::cout << "末笔成交时间: " << trades.back().datetime << std::endl;
         }
         
-        // 打印测试策略统计信息
-        std::cout << "\n=== 测试策略统计信息 ===" << std::endl;
-        if (auto test_ptr = std::dynamic_pointer_cast<TestCallbackStrategy>(test_strategy)) {
-            test_ptr->printStatistics();
+        // 打印演示策略统计信息
+        std::cout << "\n=== 演示策略统计信息 ===" << std::endl;
+        if (auto demo_ptr = std::dynamic_pointer_cast<DemoStrategy>(demo_strategy)) {
+            demo_ptr->printStatistics();
         }
         
     } catch (const std::exception& e) {
@@ -4512,8 +4965,8 @@ bool ConAuctionEngine::cancel_by_input_id(uint64_t input_id)
 } // namespace wangcai /*
  * @Author: chenlisen
  * @Date: 2025-08-13 08:47:50
- * @LastEditTime: 2025-08-14 05:57:10
- * @FilePath: /wangcai_cpp/src/data_manager.cpp
+ * @LastEditTime: 2025-08-15 06:57:06
+ * @FilePath: /workspace/wangcai_cpp/src/data_manager.cpp
  */
 
 #include "data_manager.h"
@@ -4537,7 +4990,7 @@ DataManager::DataManager(OrderBook* ob, CallAuctionEngine* call_engine,
 
 void DataManager::updateSnapshot(const Event& ev) {
     assert(ev.source == "tick");
-    snap_data.Exchange = ev.is_SZ ? 0: 1;
+    snap_data.Exchange = ev.is_SZ ? 1: 0;
     snap_data.Instrument = ev.sym;  
     snap_data.datetime = ev.datetime;
     snap_data.PreClose = ev.prevclose;
@@ -4566,7 +5019,7 @@ void DataManager::updateSnapshot(const Event& ev) {
 
 void DataManager::updateOrderDetail(const Event& ev, char orderKind) {
     assert(ev.source == "ord");
-    order_detail.Exchange = ev.is_SZ ? 0 : 1;
+    order_detail.Exchange = ev.is_SZ ? 1 : 0;
     order_detail.Instrument = ev.sym;
     order_detail.ChannelNo = ev.channelno;
     order_detail.Price = ev.price;

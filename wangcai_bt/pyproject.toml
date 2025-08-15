@@ -13,7 +13,7 @@ version = "0.1.0"
 description = "Python bindings for WangCai backtest engine"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "陈立森" }]
+authors = [{ name = "aitopia" }]
 license = { text = "MIT" }
 classifiers = [
   "Programming Language :: Python :: 3",
