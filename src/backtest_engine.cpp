@@ -73,6 +73,11 @@ void BacktestEngine::initialize() {
             }
             
             if (buy_is_virtual || sell_is_virtual) {
+                if (buy_is_virtual) {
+                    updatePosition(virtual_strategy_id, symbol_, Direction::Buy, ex.volume, ex.price);
+                } else if (sell_is_virtual) {
+                    updatePosition(virtual_strategy_id, symbol_, Direction::Sell, ex.volume, ex.price);
+                }
                 // 虚拟成交：只通知对应策略，不记录到CSV
                 for (auto& strategy : strategies_) {
                     if (strategy->getStrategyId() == virtual_strategy_id) {

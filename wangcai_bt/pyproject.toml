@@ -1,0 +1,36 @@
+[build-system]
+requires = [
+  "scikit-build-core>=0.9",
+  "pybind11>=2.12",
+  "setuptools>=68",
+  "wheel"
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "wangcai-bt"
+version = "0.1.0"
+description = "Python bindings for WangCai backtest engine"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "陈立森" }]
+license = { text = "MIT" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: C++",
+  "Operating System :: OS Independent"
+]
+
+[tool.scikit-build]
+cmake.source-dir = ".."   # 告诉 scikit-build 用仓库根的 CMake 工程
+wheel.packages = ["src"]  # 你的纯 Python 包路径（Poetry 默认 src 布局）
+
+[tool.scikit-build.cmake.define]
+CMAKE_BUILD_TYPE = "Release"
+
+[tool.poetry.group.dev.dependencies]
+scikit-build-core = "^0.11.5"
+pybind11 = "^3.0.0"
+setuptools = "^80.9.0"
+wheel = "^0.45.1"
+
