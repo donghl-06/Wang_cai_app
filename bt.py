@@ -6,14 +6,12 @@ from datetime import datetime
 from typing import List, Dict, Optional
 import json
 
-# 添加模块路径
-sys.path.insert(0, str(pathlib.Path(__file__).parent / "wangcai_bt" / "src"))
-
 from wangcai_bt import (
     BacktestEngine, Strategy,
     Direction, OrderType,
     Event, UserEvent, Execution, Snapshot,
     make_order_event, make_cancel_event,
+    TradeCallback, OrderCallback
 )
 
 class InterfaceTestStrategy(Strategy):
@@ -63,7 +61,7 @@ class InterfaceTestStrategy(Strategy):
         
         # 测试配置
         self.orders_per_batch = 10     # 每批次下单数量
-        self.orders_to_cancel = 5      # 撤单数量（前5个）
+        self.orders_to_cancel = 5      # 撤单数量
         
         # 订单ID生成器
         self.order_id_counter = 1000
@@ -108,20 +106,20 @@ class InterfaceTestStrategy(Strategy):
         return "00:00:00"
     
     def onOrderEvent(self, event: Event) -> List[UserEvent]:
-        """处理订单推送事件（csord类型）"""
+        """处理订单推送事件（csord）"""
         # 转换价格
         ref_price = self._convert_price(event.price)
         return self._process_event('csord', event.datetime, event.sym, ref_price)
     
     def onTradeEvent(self, execution: Execution, datetime: str) -> List[UserEvent]:
-        """处理成交推送事件（cstra类型）"""
+        """处理成交推送事件（cstra）"""
         # 使用成交价格作为参考
         ref_price = execution.price if execution.price > 1000 else execution.price * 10000
         symbol = "000027.SZ"  # 使用实际合约
         return self._process_event('cstra', datetime, symbol, ref_price)
     
     def onTickEvent(self, snapshot: Snapshot) -> List[UserEvent]:
-        """处理Tick推送事件（cstick类型）"""
+        """处理Tick推送事件（cstick）"""
         # 限制处理频率
         self.event_state['cstick']['event_count'] += 1
         if self.event_state['cstick']['event_count'] % 20 != 1:
@@ -275,85 +273,122 @@ class InterfaceTestStrategy(Strategy):
         print(f"❌ [撤单回调-旧] {order_id}: {reason}")
     
     def onTradeCallback(self, callback) -> None:
-        """统一交易回调（新接口）- 成交和撤单都走这里"""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        
-        # 提取基础信息
-        order_id = getattr(callback, 'localid', 'N/A')
-        match_type = getattr(callback, 'matchtype', '')
-        
-        if match_type == 'T':  # 成交
-            record = {
-                'timestamp': timestamp,
-                'callback_type': 'onTradeCallback_Trade',
-                'order_id': order_id,
-                'direction': getattr(callback, 'direction', ''),
-                'volume': getattr(callback, 'volume', 0),
-                'price': getattr(callback, 'price', 0) / 10000.0,
-                'match_amount': getattr(callback, 'matchamount', 0),
-                'delta_position': getattr(callback, 'deltapos', 0),
-                'match_time': getattr(callback, 'matchtime', ''),
-                'event_type': self._get_event_type(order_id)
-            }
-            self.trade_callbacks.append(record)
+        """交易回调 - 正确处理版本"""
+        try:
+            # 直接访问属性
+            order_id = callback.localid
+            direction = callback.direction  # 现在是字符串
+            volume = callback.volume
+            price = callback.price
+            matchamount = callback.matchamount
+            deltapos = callback.deltapos
+            matchtime = callback.matchtime
+            matchtype = callback.matchtype  # 现在是字符串
             
-            # 更新持仓
-            old_position = self.current_position
-            self.current_position = getattr(callback, 'deltapos', self.current_position)
+            print(f"📊 [交易回调] 订单:{order_id}, 类型:{matchtype}, 方向:{direction}")
             
-            # 记录持仓变化
-            position_record = {
-                'timestamp': timestamp,
-                'order_id': order_id,
-                'action': 'trade',
-                'direction': record['direction'],
-                'volume': record['volume'],
-                'price': record['price'],
-                'old_position': old_position,
-                'new_position': self.current_position,
-                'position_change': self.current_position - old_position
-            }
-            self.position_updates.append(position_record)
-            
-            print(f"📊 [成交回调-新] {order_id}: {record['volume']}@{record['price']:.4f}, "
-                  f"持仓: {old_position} → {self.current_position}")
-            
-        elif match_type == 'D':  # 撤单
-            record = {
-                'timestamp': timestamp,
-                'callback_type': 'onTradeCallback_Cancel',
-                'order_id': order_id,
-                'direction': getattr(callback, 'direction', ''),
-                'volume': getattr(callback, 'volume', 0),
-                'price': getattr(callback, 'price', 0) / 10000.0,
-                'delta_position': getattr(callback, 'deltapos', 0),
-                'match_time': getattr(callback, 'matchtime', ''),
-                'event_type': self._get_event_type(order_id)
-            }
-            self.cancel_callbacks.append(record)
-            print(f"🚫 [撤单回调-新] {order_id}")
-    
+            # 判断是成交还是撤单
+            if matchtype == 'T':
+                # 成交回调
+                record = {
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                    'callback_type': 'onTradeCallback_Trade',
+                    'order_id': order_id,
+                    'direction': direction,
+                    'volume': volume,
+                    'price': price / 10000.0,
+                    'match_amount': matchamount,
+                    'delta_position': deltapos,
+                    'match_time': matchtime,
+                    'event_type': self._get_event_type(order_id)
+                }
+                self.trade_callbacks.append(record)
+                
+                # 更新持仓
+                old_position = self.current_position
+                self.current_position = deltapos
+                
+                # 记录持仓变化
+                position_record = {
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                    'order_id': order_id,
+                    'action': 'trade',
+                    'direction': direction,
+                    'volume': volume,
+                    'price': price / 10000.0,
+                    'old_position': old_position,
+                    'new_position': self.current_position,
+                    'position_change': self.current_position - old_position
+                }
+                self.position_updates.append(position_record)
+                
+                print(f"✅ [成交] {order_id}: {volume}@{price/10000:.4f}, "
+                    f"持仓: {old_position} → {self.current_position}")
+                
+            elif matchtype == 'D':
+                # 撤单回调
+                record = {
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                    'callback_type': 'onTradeCallback_Cancel',
+                    'order_id': order_id,
+                    'direction': direction,
+                    'volume': volume,
+                    'price': price / 10000.0,
+                    'delta_position': deltapos,
+                    'match_time': matchtime,
+                    'event_type': self._get_event_type(order_id)
+                }
+                self.cancel_callbacks.append(record)
+                print(f"❌ [撤单] {order_id}")
+            else:
+                print(f"⚠️ 未知的matchtype: {matchtype}")
+                
+        except Exception as e:
+            print(f"❌ [交易回调] 处理异常: {e}")
+            import traceback
+            traceback.print_exc()
+
     def onOrderCallback(self, callback) -> None:
-        """下单回调（新接口）"""
-        order_id = getattr(callback, 'orderlocalid', 'N/A')
-        record = {
-            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-            'callback_type': 'onOrderCallback',
-            'order_id': order_id,
-            'order_time': getattr(callback, 'time', ''),
-            'exchange': getattr(callback, 'exchange', 0),
-            'direction': getattr(callback, 'direction', 0),
-            'volume': getattr(callback, 'volume', 0),
-            'price': getattr(callback, 'price', 0) / 10000.0,
-            'ask1': getattr(callback, 'ask1', 0) / 10000.0,
-            'bid1': getattr(callback, 'bid1', 0) / 10000.0,
-            'delta_position': getattr(callback, 'deltapos', 0),
-            'event_type': self._get_event_type(order_id)
-        }
-        self.order_callbacks.append(record)
-        
-        direction = "买入" if record['direction'] == 1 else "卖出"
-        print(f"📝 [下单回调] {order_id} {direction}: {record['volume']}@{record['price']:.4f}")
+        """下单回调 - 正确处理版本"""
+        try:
+            # 直接访问属性
+            order_id = callback.orderlocalid
+            order_time = callback.time
+            exchange = callback.exchange
+            ask1 = callback.ask1
+            bid1 = callback.bid1
+            deltapos = callback.deltapos
+            price = callback.price
+            volume = callback.volume
+            direction = callback.direction
+            
+            # 记录
+            record = {
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                'callback_type': 'onOrderCallback',
+                'order_id': order_id,
+                'order_time': order_time,
+                'exchange': exchange,
+                'exchange_name': "上海" if exchange == 0 else "深圳",
+                'direction': direction,
+                'direction_name': "买入" if direction == 1 else "卖出",
+                'volume': volume,
+                'price': price / 10000.0,
+                'ask1': ask1 / 10000.0,
+                'bid1': bid1 / 10000.0,
+                'delta_position': deltapos,
+                'event_type': self._get_event_type(order_id)
+            }
+            self.order_callbacks.append(record)
+            
+            print(f"📝 [下单回调] {order_id} {record['direction_name']}: "
+                f"{volume}@{price/10000:.4f} "
+                f"(买一:{bid1/10000:.4f}, 卖一:{ask1/10000:.4f})")
+            
+        except Exception as e:
+            print(f"❌ [下单回调] 处理异常: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _get_event_type(self, order_id: str) -> str:
         """从订单ID提取事件类型"""
@@ -496,7 +531,7 @@ def main():
     # 配置参数
     symbol = "000027.SZ"
     date = "2022-01-07"
-    data_path = "../logs"
+    data_path = "logs"
     output_dir = f"./interface_test_output/{symbol}_{date}"
     
     # 检查数据文件

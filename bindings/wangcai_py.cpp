@@ -158,8 +158,37 @@ PYBIND11_MODULE(wangcai_cpp, m) {
     .def_readwrite("Iopv", &Snapshot::Iopv);
 
 
-    py::class_<TradeCallback>(m, "TradeCallback");  // 同上
-    py::class_<OrderCallback>(m, "OrderCallback");  // 同上
+   // --- TradeCallback ---
+py::class_<TradeCallback>(m, "TradeCallback")
+    .def(py::init<const std::string&, char, Quantity, Price, double, int64_t,
+                  const std::string&, char>())
+    .def_readwrite("localid", &TradeCallback::localid)
+    .def_property("direction",
+        [](const TradeCallback& t){ return std::string(1, t.direction); },
+        [](TradeCallback& t, const std::string& s){ t.direction = s.empty()? '\0' : s[0]; })
+    .def_readwrite("volume", &TradeCallback::volume)
+    .def_readwrite("price", &TradeCallback::price)
+    .def_readwrite("matchamount", &TradeCallback::matchamount)
+    .def_readwrite("deltapos", &TradeCallback::deltapos)
+    .def_readwrite("matchtime", &TradeCallback::matchtime)
+    .def_property("matchtype",
+        [](const TradeCallback& t){ return std::string(1, t.matchtype); },
+        [](TradeCallback& t, const std::string& s){ t.matchtype = s.empty()? '\0' : s[0]; });
+
+// --- OrderCallback ---
+py::class_<OrderCallback>(m, "OrderCallback")
+    .def(py::init<const std::string&, int, Price, Price, int64_t, Price,
+                  Quantity, int, const std::string&>())
+    .def_readwrite("time", &OrderCallback::time)
+    .def_readwrite("exchange", &OrderCallback::exchange)
+    .def_readwrite("ask1", &OrderCallback::ask1)
+    .def_readwrite("bid1", &OrderCallback::bid1)
+    .def_readwrite("deltapos", &OrderCallback::deltapos)
+    .def_readwrite("price", &OrderCallback::price)
+    .def_readwrite("volume", &OrderCallback::volume)
+    .def_readwrite("direction", &OrderCallback::direction)
+    .def_readwrite("orderlocalid", &OrderCallback::orderlocalid);
+
 
     // Structs
     py::class_<UserOrder>(m, "UserOrder")
