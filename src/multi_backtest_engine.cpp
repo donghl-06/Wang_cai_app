@@ -1,7 +1,7 @@
 /*
  * @Author: chenlisen
  * @Date: 2025-08-18 11:38:11
- * @LastEditTime: 2025-08-19 08:29:06
+ * @LastEditTime: 2025-08-19 09:13:44
  * @FilePath: /wangcai_cpp/src/multi_backtest_engine.cpp
  */
 #include "multi_backtest_engine.h"
@@ -132,10 +132,8 @@ void MultiBacktestEngine::run() {
 
         // Taskflow 并行处理每个引擎的事件
         tf::Taskflow taskflow;
-        for (const auto& kv : engine_events) {
-            std::size_t engine_idx = kv.first;
-
-            auto events_copy = kv.second;
+        for (const auto& [engine_idx, events] : engine_events) {
+            auto events_copy = events;
             taskflow.emplace([this, engine_idx, events_copy]() mutable {
                 auto& eng_ref = *engines_[engine_idx].engine;
                 for (const auto& ev : events_copy) {
@@ -147,9 +145,9 @@ void MultiBacktestEngine::run() {
         executor.run(taskflow).wait();
     }
     // 所有事件处理完成后，调用各引擎的结算
-    for (auto& se : engines_) {
+    std::ranges::for_each(engines_, [&](auto &se) {
         se.engine->finish();
-    }
+    });
 }
 
 std::map<std::string, Position> MultiBacktestEngine::getPositions() const {
