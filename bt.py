@@ -11,7 +11,7 @@ from wangcai_bt import (
     Direction, OrderType,
     Event, UserEvent, Execution, Snapshot,
     make_order_event, make_cancel_event,
-    TradeCallback, OrderCallback
+    TradeCallback, OrderCallback, MultiBacktestEngine
 )
 
 class InterfaceTestStrategy(Strategy):
@@ -248,7 +248,7 @@ class InterfaceTestStrategy(Strategy):
     # ========== 回调函数重载 - 记录所有回调 ==========
     
     def onOrderFilled(self, order_id: str, price: int, volume: int) -> None:
-        """订单成交回调（旧接口）"""
+        """订单成交回调"""
         record = {
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
             'callback_type': 'onOrderFilled',
@@ -273,7 +273,7 @@ class InterfaceTestStrategy(Strategy):
         print(f"❌ [撤单回调-旧] {order_id}: {reason}")
     
     def onTradeCallback(self, callback) -> None:
-        """交易回调 - 正确处理版本"""
+        """交易回调"""
         try:
             # 直接访问属性
             order_id = callback.localid

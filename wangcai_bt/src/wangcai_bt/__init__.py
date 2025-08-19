@@ -1,8 +1,8 @@
 '''
 Author: chenlisen
 Date: 2025-08-15 04:27:56
-LastEditTime: 2025-08-15 06:42:53
-FilePath: /workspace/wangcai_cpp/wangcai_bt/src/wangcai_bt/__init__.py
+LastEditTime: 2025-08-18 12:36:56
+FilePath: /wangcai_cpp/wangcai_bt/src/wangcai_bt/__init__.py
 '''
 from .wangcai_cpp import (
     # 引擎
@@ -28,6 +28,8 @@ from .wangcai_cpp import (
     # 辅助函数
     make_order_event,
     make_cancel_event,
+    # 多合约回测引擎
+    MultiBacktestEngine
 )
 
 # 导出所有
@@ -48,4 +50,5 @@ __all__ = [
     'OrderCallback',
     'make_order_event',
     'make_cancel_event',
+    'MultiBacktestEngine'
 ]

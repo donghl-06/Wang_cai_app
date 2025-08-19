@@ -1,12 +1,13 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/functional.h>
-
+#include "multi_backtest_engine.h"
 #include "backtest_engine.hpp"
 #include "market_info.h"
 #include "types.h"
 #include "orderbook.h"
 #include "order.h"
+
 
 namespace py = pybind11;
 using namespace wangcai;
@@ -289,9 +290,6 @@ py::class_<OrderCallback>(m, "OrderCallback")
             py::arg("strategy"),
             py::keep_alive<1, 2>() // 引擎持有策略，保证生命周期
         )
-        .def("run", &BacktestEngine::run,
-             "Run backtest.",
-             py::call_guard<py::gil_scoped_release>())
         .def("getPositions", &BacktestEngine::getPositions)
         .def("getTotalPnL", &BacktestEngine::getTotalPnL)
         .def("setMarketDataCallback", &set_md_callback, py::arg("callback"),
@@ -325,4 +323,19 @@ py::class_<OrderCallback>(m, "OrderCallback")
               return UserEvent{c};
           },
           py::arg("order_id"), py::arg("strategy_id"));
+    
+    auto mbacktest_cls = py::class_<MultiBacktestEngine>(m, "MultiBacktestEngine");
+    mbacktest_cls
+        .def(py::init<const std::vector<std::string>&, const std::string&, const std::string&>(),
+             py::arg("symbols"), py::arg("date"), py::arg("data_path"))
+        .def("registerStrategy",
+             [](MultiBacktestEngine& eng, std::shared_ptr<Strategy> s) {
+                 eng.registerStrategy(std::move(s));
+             },
+             py::arg("strategy"), py::keep_alive<1, 2>())
+        .def("run", &MultiBacktestEngine::run,
+             "运行多合约同步回测",
+             py::call_guard<py::gil_scoped_release>())
+        .def("getPositions", &MultiBacktestEngine::getPositions)
+        .def("getTotalPnL", &MultiBacktestEngine::getTotalPnL);
 }

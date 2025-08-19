@@ -15,6 +15,7 @@ set(LIB_SOURCES
     src/close_auction_engine.cpp
     src/data_manager.cpp
     src/backtest_engine.cpp
+    src/multi_backtest_engine.cpp
 )
 
 # 基础库
@@ -23,28 +24,17 @@ target_include_directories(wangcai_orderbook_cpp PUBLIC include ${Boost_INCLUDE_
 
 set_target_properties(wangcai_orderbook_cpp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# # 主程序可执行文件
-# add_executable(main_program src/main.cpp)
-# target_link_libraries(main_program PRIVATE wangcai_orderbook_cpp)
+set(TASKFLOW_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/taskflow)
 
-# # 撮合主程序
-# add_executable(matching_main src/matching_main.cpp)
-# target_link_libraries(matching_main PRIVATE wangcai_orderbook_cpp)
+if(EXISTS ${TASKFLOW_DIR}/taskflow/taskflow.hpp)
+    message(STATUS "Found Taskflow: ${TASKFLOW_DIR}")
+    target_include_directories(wangcai_orderbook_cpp PRIVATE ${TASKFLOW_DIR})
+else()
+    message(FATAL_ERROR "Taskflow not found at ${TASKFLOW_DIR}. Please ensure it's cloned to 3rd_party/taskflow")
+endif()
 
-# # 集合竞价验证程序
-# add_executable(call_auction_validation src/call_auction_validation.cpp)
-# target_link_libraries(call_auction_validation PRIVATE wangcai_orderbook_cpp)
-
-# # 简单测试程序
-# add_executable(simple_test src/simple_test.cpp)
-# target_link_libraries(simple_test PRIVATE wangcai_orderbook_cpp)
-
-# 回测程序（包含回测引擎）
-add_executable(backtest_main 
-    src/backtest_main.cpp
-)
-target_link_libraries(backtest_main PRIVATE wangcai_orderbook_cpp)
-target_include_directories(backtest_main PRIVATE include ${Boost_INCLUDE_DIRS})
+# Remove the need for TASKFLOW_INCLUDE_DIR cache variable
+unset(TASKFLOW_INCLUDE_DIR CACHE)
 
 # =========================
 # Python bindings
@@ -64,6 +54,7 @@ if (DEFINED SKBUILD OR BUILD_PYTHON)
   target_include_directories(wangcai_cpp PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include
       ${Boost_INCLUDE_DIRS}
+      ${TASKFLOW_DIR}
   )
   target_compile_features(wangcai_cpp PRIVATE cxx_std_20)
 

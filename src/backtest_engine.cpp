@@ -233,23 +233,6 @@ void BacktestEngine::initialize() {
     }
     
     load_cstick_from_csv(cstick_file, *orderbook_);
-    // std::vector<Event> tmp;
-    // auto record_it = OrderBook::whole_events.begin();
-    // auto tick_it = OrderBook::tick_events.begin();
-
-    // while (record_it != OrderBook::whole_events.end() and tick_it != OrderBook::tick_events.end()) {
-    //     if (tick_it->datetime < record_it->datetime) {
-    //         tmp.push_back(*tick_it);
-    //         tick_it ++;
-    //     } else {
-    //         tmp.push_back(*record_it);
-    //         record_it ++;
-    //     }
-    // }
-    // tmp.insert(tmp.end(), record_it, OrderBook::whole_events.end());
-    // tmp.insert(tmp.end(), tick_it, OrderBook::tick_events.end());
-    // OrderBook::whole_events = std::move(tmp);
-
     size_t total_events = OrderBook::whole_events.size() + OrderBook::tick_events.size();
     std::cout << "加载了 " << total_events << " 个历史事件" << std::endl;
 }
@@ -259,185 +242,6 @@ void BacktestEngine::registerStrategy(std::shared_ptr<Strategy> strategy) {
     strategies_.push_back(strategy);
     // 为每个策略初始化持仓映射
     positions_[strategy->getStrategyId()] = std::map<std::string, Position>();
-}
-
-// 回测主循环，实现简单的同步事件处理
-void BacktestEngine::run() {
-    std::cout << "开始同步交互式回测 " << symbol_ << " " << date_ << std::endl;
-    
-    static constexpr const char* Call_Open_Time = "09:25:00";
-    static constexpr const char* Call_Close_Time = "14:57:00";
-    
-    auto order_it = OrderBook::whole_events.begin();
-    auto tick_it = OrderBook::tick_events.begin();
-    
-    while (order_it != OrderBook::whole_events.end() || 
-           tick_it != OrderBook::tick_events.end()) {
-        
-        const Event* ev = nullptr;
-        
-        if (order_it == OrderBook::whole_events.end()) {
-            ev = &(*tick_it);
-            ++tick_it;
-        } else if (tick_it == OrderBook::tick_events.end()) {
-            ev = &(*order_it);
-            ++order_it;
-        } else {
-            if (tick_it->datetime < order_it->datetime) {
-                ev = &(*tick_it);
-                ++tick_it;
-            } else {
-                ev = &(*order_it);
-                ++order_it;
-            }
-        }
-        
-        current_datetime_ = ev->datetime;
-        
-        // Step 1: 推送订单事件给策略
-        std::vector<UserEvent> strategy_events;
-        
-        // 收集所有策略的事件响应
-        for (auto& strategy : strategies_) {
-            auto user_events = strategy->onOrderEvent(*ev);
-            for (const auto& event : user_events) {
-                strategy_events.push_back(event);
-            }
-        }
-        
-        // Step 2: 处理当前历史事件
-        if (!continuous_mode_) {
-            // 集合竞价阶段
-            std::string tm_cur = ev->datetime.substr(11, 8);
-            
-            if (ev->source == "ord") {
-                Direction dir = (ev->side == 1 ? Direction::Buy : Direction::Sell);
-                auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(), 
-                                                    ev->sym, std::to_string(ev->orderid),
-                                                    toOrderType(*ev), dir, ev->price, ev->size, ev->bizindex);
-                call_engine_->accept(ord);
-                data_manager_->updateOrderDetail(*ev, 'A');
-            } else if (ev->source == "tra") {
-                uint64_t oid_raw = ev->bidorderid ? ev->bidorderid : ev->askorderid;
-                call_engine_->cancel_by_input_id(oid_raw);
-            } else {
-                // tick事件
-                data_manager_->updateSnapshot(*ev);
-                auto snapshot = data_manager_->getSnapshot();
-                for (auto& strategy : strategies_) {
-                    auto user_events = strategy->onTickEvent(snapshot);
-                    for (const auto& event : user_events) {
-                        pending_trade_events_.push_back(event);
-                    }
-                }
-            }
-            
-            // 检查是否结束集合竞价
-            if (tm_cur >= Call_Open_Time) {
-                std::string auction_time = ev->datetime.substr(0, 11) + "09:25:00.000";
-                current_datetime_ = auction_time;
-                
-                call_engine_->settle();
-                continuous_mode_ = true;
-                std::cout << "[09:25] 集合竞价完成，开盘价=" << call_engine_->getPredictPrice() / 10000.0 
-                          << " 真实开盘价=" << actual_open_ / 10000.0
-                          << " 开盘成交量=" << call_engine_->getPredictVolume() << std::endl;
-                std::cout << "连续竞价开始" << std::endl;
-                
-                current_datetime_ = ev->datetime;
-            }
-        } else {
-            // 连续竞价阶段的处理逻辑（类似修改）
-            std::string tm_cur = ev->datetime.substr(11,8);
-            if (!closing_mode_ && tm_cur >= Call_Close_Time) {
-                closing_mode_ = true;
-                close_engine_->bootstrap_from_orderbook();
-                std::cout << "[" << tm_cur << "] 进入收盘集合竞价阶段" << std::endl;
-            }
-
-            if (!closing_mode_) {
-                // 普通连续竞价处理
-                if (ev->source == "ord") {
-                    Direction dir = (ev->side == 1 ? Direction::Buy : Direction::Sell);
-                    auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
-                                                        ev->sym, std::to_string(ev->orderid),
-                                                        toOrderType(*ev), dir, ev->price, ev->size, ev->bizindex);
-                    con_engine_->accept(ord);
-                    data_manager_->updateOrderDetail(*ev, 'A');
-                    last_brk_datetime_ = ev->datetime;
-                } else if (ev->source == "tra") {
-                    uint64_t oid_raw = ev->bidorderid ? ev->bidorderid : ev->askorderid;
-                    con_engine_->cancel_by_input_id(oid_raw);
-                } else {
-                    // tick事件
-                    data_manager_->updateSnapshot(*ev);
-                    auto snapshot = data_manager_->getSnapshot();
-                    for (auto& strategy : strategies_) {
-                        auto user_events = strategy->onTickEvent(snapshot);
-                        for (const auto& event : user_events) {
-                            pending_trade_events_.push_back(event);
-                        }
-                    }
-                }
-            } else {
-                // 收盘集合竞价期间的处理（类似修改）
-                if (ev->source == "ord") {
-                    Direction dir = (ev->side == 1 ? Direction::Buy : Direction::Sell);
-                    auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
-                                                        ev->sym, std::to_string(ev->orderid),
-                                                        toOrderType(*ev), dir, ev->price, ev->size, ev->bizindex);
-                    close_engine_->accept(ord);
-                    data_manager_->updateOrderDetail(*ev, 'A');
-                } else if (ev->source == "tra") {
-                    uint64_t oid_raw = ev->bidorderid ? ev->bidorderid : ev->askorderid;
-                    close_engine_->cancel_by_input_id(oid_raw);
-                } else {
-                    // tick事件
-                    data_manager_->updateSnapshot(*ev);
-                    auto snapshot = data_manager_->getSnapshot();
-                    for (auto& strategy : strategies_) {
-                        auto user_events = strategy->onTickEvent(snapshot);
-                        for (const auto& event : user_events) {
-                            pending_trade_events_.push_back(event);
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Step 3: 处理策略事件
-        for (const auto& user_event : strategy_events) {
-            if (continuous_mode_) {
-                processUserEvent(user_event);
-            }
-        }
-        
-        // Step 4: 处理成交事件产生的策略事件
-        for (const auto& user_event : pending_trade_events_) {
-            if (continuous_mode_) {
-                processUserEvent(user_event);
-            }
-        }
-        pending_trade_events_.clear();
-        strategy_events.clear();
-    }
-    // 收盘集合竞价结算
-    if (closing_mode_) {
-        close_engine_->settle();
-        std::cout << "[收盘集合竞价] 成交价=" << close_engine_->getPredictPrice() / 10000.0
-                  << " 成交量=" << close_engine_->getPredictVolume() << std::endl;
-    }
-
-    std::cout << "同步交互式回测完成" << std::endl;
-    
-    // 输出交易记录
-    if (recording_enabled_) {
-        writeTradeRecords();
-        std::cout << "交易记录已输出到: " << trade_output_file_ << std::endl;
-        std::cout << "总交易笔数: " << trade_records_.size() << std::endl;
-    }
-    
-    printResults();
 }
 
 // 尝试立即成交USER订单
@@ -802,10 +606,6 @@ void BacktestEngine::processUserCancel(const UserCancel& user_cancel) {
     }
 }
 
-
-
-
-
 // 通知策略订单成交
 void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
     std::string trade_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
@@ -926,6 +726,165 @@ void BacktestEngine::notifyStrategyOrderCallback(const std::string& strategy_id,
     }
 }
 
+
+
+/*
+ * processEvent
+ * 允许外部按时间顺序逐个推送事件给引擎，实现多合约的统一驱动。
+ * 调用该方法会根据事件类型和当前回测阶段(集合竞价/连续竞价/收盘集合竞价)
+ * 执行相应的撮合、快照更新和策略回调。
+ */
+void BacktestEngine::processEvent(const Event& ev) {
+    static constexpr const char* Call_Open_Time = "09:25:00";
+    static constexpr const char* Call_Close_Time = "14:57:00";
+
+    // 更新当前时间
+    current_datetime_ = ev.datetime;
+
+    // 收集策略产生的用户事件
+    std::vector<UserEvent> strategy_events;
+    for (auto& strategy : strategies_) {
+        auto user_events = strategy->onOrderEvent(ev);
+        for (const auto& ue : user_events) {
+            strategy_events.push_back(ue);
+        }
+    }
+
+    // 根据是否进入连续竞价阶段分别处理
+    if (!continuous_mode_) {
+        // 集合竞价阶段
+        std::string tm_cur = ev.datetime.substr(11, 8);
+        if (ev.source == "ord") {
+            // 历史委托推送
+            Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
+            auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
+                                               ev.sym, std::to_string(ev.orderid),
+                                               toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+            call_engine_->accept(ord);
+            data_manager_->updateOrderDetail(ev, 'A');
+        } else if (ev.source == "tra") {
+            // 历史撤单推送
+            uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
+            call_engine_->cancel_by_input_id(oid_raw);
+        } else {
+            // tick 推送
+            data_manager_->updateSnapshot(ev);
+            auto snapshot = data_manager_->getSnapshot();
+            for (auto& strategy : strategies_) {
+                auto user_events = strategy->onTickEvent(snapshot);
+                for (const auto& ue : user_events) {
+                    pending_trade_events_.push_back(ue);
+                }
+            }
+        }
+
+        // 判断是否结束集合竞价阶段
+        if (tm_cur >= Call_Open_Time) {
+            // 使用 09:25:00.000 统一时间戳
+            std::string auction_time = ev.datetime.substr(0, 11) + "09:25:00.000";
+            current_datetime_ = auction_time;
+            call_engine_->settle();
+            continuous_mode_ = true;
+            std::cout << "[09:25] 集合竞价完成，开盘价=" << call_engine_->getPredictPrice() / 10000.0
+                      << " 真实开盘价=" << actual_open_ / 10000.0
+                      << " 开盘成交量=" << call_engine_->getPredictVolume() << std::endl;
+            std::cout << "连续竞价开始" << std::endl;
+            // 恢复当前时间为事件时间
+            current_datetime_ = ev.datetime;
+        }
+    } else {
+        // 连续竞价阶段
+        std::string tm_cur = ev.datetime.substr(11, 8);
+        if (!closing_mode_ && tm_cur >= Call_Close_Time) {
+            closing_mode_ = true;
+            close_engine_->bootstrap_from_orderbook();
+            std::cout << "[" << tm_cur << "] 进入收盘集合竞价阶段" << std::endl;
+        }
+
+        if (!closing_mode_) {
+            // 普通连续竞价
+            if (ev.source == "ord") {
+                Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
+                auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
+                                                   ev.sym, std::to_string(ev.orderid),
+                                                   toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+                con_engine_->accept(ord);
+                data_manager_->updateOrderDetail(ev, 'A');
+                last_brk_datetime_ = ev.datetime;
+            } else if (ev.source == "tra") {
+                uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
+                con_engine_->cancel_by_input_id(oid_raw);
+            } else {
+                data_manager_->updateSnapshot(ev);
+                auto snapshot = data_manager_->getSnapshot();
+                for (auto& strategy : strategies_) {
+                    auto user_events = strategy->onTickEvent(snapshot);
+                    for (const auto& ue : user_events) {
+                        pending_trade_events_.push_back(ue);
+                    }
+                }
+            }
+        } else {
+            // 收盘集合竞价阶段
+            if (ev.source == "ord") {
+                Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
+                auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
+                                                   ev.sym, std::to_string(ev.orderid),
+                                                   toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+                close_engine_->accept(ord);
+                data_manager_->updateOrderDetail(ev, 'A');
+            } else if (ev.source == "tra") {
+                uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
+                close_engine_->cancel_by_input_id(oid_raw);
+            } else {
+                data_manager_->updateSnapshot(ev);
+                auto snapshot = data_manager_->getSnapshot();
+                for (auto& strategy : strategies_) {
+                    auto user_events = strategy->onTickEvent(snapshot);
+                    for (const auto& ue : user_events) {
+                        pending_trade_events_.push_back(ue);
+                    }
+                }
+            }
+        }
+    }
+
+    // 处理策略下发的用户事件（下单/撤单）
+    for (const auto& ue : strategy_events) {
+        if (continuous_mode_) {
+            processUserEvent(ue);
+        }
+    }
+
+    // 处理成交事件产生的用户事件
+    for (const auto& ue : pending_trade_events_) {
+        if (continuous_mode_) {
+            processUserEvent(ue);
+        }
+    }
+    pending_trade_events_.clear();
+}
+
+/*
+ * finish
+ * 在调用 processEvent() 完成所有事件后，调用此方法执行收盘结算并输出结果。
+ */
+void BacktestEngine::finish() {
+    // 如果已进入收盘集合竞价阶段，则结算
+    if (closing_mode_) {
+        close_engine_->settle();
+        std::cout << "[收盘集合竞价] 成交价=" << close_engine_->getPredictPrice() / 10000.0
+                  << " 成交量=" << close_engine_->getPredictVolume() << std::endl;
+    }
+    std::cout << "同步交互式回测完成" << std::endl;
+    // 输出交易记录
+    if (recording_enabled_) {
+        writeTradeRecords();
+        std::cout << "交易记录已输出到: " << trade_output_file_ << std::endl;
+        std::cout << "总交易笔数: " << trade_records_.size() << std::endl;
+    }
+    printResults();
+}
 
 
 } // namespace wangcai 

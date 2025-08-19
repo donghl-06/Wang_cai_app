@@ -1,3 +1,9 @@
+'''
+Author: chenlisen
+Date: 2025-08-15 08:50:38
+LastEditTime: 2025-08-18 11:13:07
+FilePath: /workspace/wangcai_cpp/log_generator.py
+'''
 
 import aqdatac
 import pandas as pd
@@ -8,11 +14,11 @@ if __name__ == "__main__":
     # 定义要处理的股票代码和日期
     # "002466.SZ", "2023-12-11"
     # 股票号: 000709.SZ 集合竞价成交价格：0, 成交量：0, 日期：2022-01-05
-    stocks_dates = [("002179.SZ", "2023-08-29")]
+    stocks_dates = [("002179.SZ", "2024-12-19"), ("002466.SZ", "2024-12-19"), ("000063.SZ", "2024-12-19")]
 
     # 从环境变量中获取用户名和密码
-    username = os.getenv('MY_USER_NAME')
-    password = os.getenv('MY_PASSWORD')
+    username = 'fuzheyuan'
+    password = 'fuzheyuan'
     start_time_login = datetime.now()
     aqdatac.login(username, password)
     end_time_login = datetime.now()

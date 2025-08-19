@@ -76,9 +76,6 @@ public:
     // 注册策略
     void registerStrategy(std::shared_ptr<Strategy> strategy);
     
-    // 运行回测
-    void run();
-    
     // 获取回测结果
     std::map<std::string, Position> getPositions() const;
     double getTotalPnL() const;
@@ -90,6 +87,10 @@ public:
     void enableTradeRecording(const std::string& output_file);  // 启用交易记录
     void writeTradeRecords() const;                             // 输出交易记录到CSV
     const std::vector<TradeRecord>& getTradeRecords() const;    // 获取所有交易记录
+    
+
+    void processEvent(const Event& ev);
+    void finish();
     
 private:
     void initialize();
