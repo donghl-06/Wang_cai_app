@@ -1,59 +1,161 @@
 '''
 Author: chenlisen
 Date: 2025-08-18 12:40:34
-LastEditTime: 2025-08-18 12:50:44
+LastEditTime: 2025-08-19 08:50:58
 FilePath: /wangcai_cpp/run.py
 '''
+import os
+from datetime import datetime
+from typing import Dict, Any, List
 
-import wangcai_bt
-from wangcai_bt import MultiBacktestEngine, Strategy, Direction, OrderType
+import wangcai_bt as wc
 
-
-class PrintStrategy(Strategy):
-    """打印所有收到的订单、成交和行情事件"""
-    def __init__(self):
+class SimpleStrategy(wc.Strategy):
+    """简单的均价回归策略示例"""
+    def __init__(self, strategy_id: str):
         super().__init__()
-
+        self.strategy_id = strategy_id
+        self.order_count = 0
+        self.position = 0
+        self.last_price = 0
+        self.ma_prices = []  # 存储最近的价格用于计算均价
+        self.ma_period = 20  # 均价周期
+        self.id_prefix = int(strategy_id.split("_")[-1]) * 1000000
+    
+    def generate_order_id(self):
+        self.order_count += 1
+        return f"{self.strategy_id}_{self.order_count}"
+    
     def getStrategyId(self) -> str:
-        """返回策略 ID"""
-        return "print"
+        return self.strategy_id
 
-    def onOrderEvent(self, event):
+    def onOrderEvent(self, event) -> List:
         """处理逐笔委托"""
-        print(f"{event.datetime} | {event.sym} | ord | price={event.price} size={event.size} "
-              f"side={event.side} ordertype={event.ordertype}")
-        return []  # 不生成额外指令
+        return []
 
-    def onTradeEvent(self, execution, datetime):
+    def onTradeEvent(self, execution, datetime: str) -> List:
         """处理逐笔成交"""
-        print(f"{datetime} | trade | price={execution.price} volume={execution.volume} "
-              f"buy_order_id={execution.buy_order_id} sell_order_id={execution.sell_order_id}")
+        print(f"[{self.strategy_id}] 成交事件: "
+            f"价格={execution.price/10000:.2f}, "
+            f"数量={execution.volume}, "
+            f"时间={datetime}")
         return []
 
-    def onTickEvent(self, snapshot):
-        """处理行情快照事件"""
-        print(f"{snapshot.datetime} | {snapshot.Instrument} | tick | last_price={snapshot.last_price}")
-        return []
+    def onTickEvent(self, snapshot) -> List:
+        """处理行情快照"""
+        user_events = []
+        
+        # 更新最新价格
+        if snapshot.last_price > 0:
+            self.last_price = snapshot.last_price
+            
+            # 维护价格列表
+            self.ma_prices.append(self.last_price)
+            if len(self.ma_prices) > self.ma_period:
+                self.ma_prices.pop(0)
+            
+            # 计算均价
+            if len(self.ma_prices) >= self.ma_period:
+                ma_price = sum(self.ma_prices) / len(self.ma_prices)
+              
+                if self.last_price < ma_price * 0.98 and self.position <= 0:
+                    # 价格低于均价2%，买入
+                    self.order_count += 1
+                    order_id = self.generate_order_id()
+                    
+                    # 创建买单
+                    order_event = wc.make_order_event(
+                        order_id=order_id,
+                        symbol=snapshot.Instrument,
+                        direction=wc.Direction.Buy,
+                        order_type=wc.OrderType.Limit,
+                        price=snapshot.asks[0] if len(snapshot.asks) > 0 else self.last_price,
+                        volume=100,
+                        strategy_id=self.strategy_id
+                    )
+                    user_events.append(order_event)
+                    self.position += 100
+                    print(f"[{self.strategy_id}] 发出买单: {order_id}")
+                    
+                elif self.last_price > ma_price * 1.02 and self.position > 0:
+                    # 价格高于均价2%，卖出
+                    self.order_count += 1
+                    order_id = self.generate_order_id()
+                    
+                    # 创建卖单
+                    order_event = wc.make_order_event(
+                        order_id=order_id,
+                        symbol=snapshot.Instrument,
+                        direction=wc.Direction.Sell,
+                        order_type=wc.OrderType.Limit,
+                        price=snapshot.bids[0] if len(snapshot.bids) > 0 else self.last_price,
+                        volume=100,
+                        strategy_id=self.strategy_id
+                    )
+                    user_events.append(order_event)
+                    self.position -= 100
+                    print(f"[{self.strategy_id}] 发出卖单: {order_id}")
+        
+        return user_events
 
+    def onOrderFilled(self, order_id: str, price: int, volume: int):
+        """订单成交通知"""
+        print(f"[{self.strategy_id}] 订单成交: {order_id}, "
+            f"价格={price/10000:.2f}, 数量={volume}")
 
-def main() -> None:
-    symbols = ["002179.SZ", "002466.SZ"] 
+    def onOrderCancelled(self, order_id: str, reason: str):
+        """订单撤销通知"""
+        print(f"[{self.strategy_id}] 订单撤销: {order_id}, 原因={reason}")
+
+    def onTradeCallback(self, callback):
+        """统一交易回调"""
+        print(f"[{self.strategy_id}] 交易回调: "
+            f"订单={callback.localid}, "
+            f"方向={callback.direction}, "
+            f"数量={callback.volume}, "
+            f"价格={callback.price/10000:.2f}, "
+            f"持仓={callback.deltapos}")
+
+    def onOrderCallback(self, callback):
+        """统一订单回调"""
+        print(f"[{self.strategy_id}] 订单回调: "
+            f"订单={callback.orderlocalid}, "
+            f"方向={callback.direction}, "
+            f"数量={callback.volume}, "
+            f"价格={callback.price/10000:.2f}")
+
+            
+if __name__ == "__main__":
+    print("=" * 60)
+    print("运行多合约回测")
+    print("=" * 60)
+    # 设置回测参数
+    symbols = ["000402.SZ", "000488.SZ"] 
     date = "2024-12-19" 
-    data_path = "logs/"
+    data_path = "logs"
 
-    # 创建多股票回测引擎
-    engine = MultiBacktestEngine(symbols, date, data_path)
-    # 注册策略
-    strategy = PrintStrategy()
-    engine.registerStrategy(strategy)
+    # 创建回测引擎
+    engine = wc.MultiBacktestEngine(symbols, date, data_path)
+
+    # 创建并注册多个策略
+    strategy1 = SimpleStrategy("STRATEGY_001")
+    # strategy2 = SimpleStrategy("STRATEGY_002")
+
+    engine.registerStrategy(strategy1)
+    # engine.registerStrategy(strategy2)
     # 运行回测
+    print("\n开始运行回测...")
     engine.run()
-    # 打印持仓和盈亏
+
+    # 获取回测结果
     positions = engine.getPositions()
     total_pnl = engine.getTotalPnL()
-    print("最终持仓：", positions)
-    print("总盈亏：", total_pnl)
 
-
-if __name__ == "__main__":
-    main()
+    print(f"\n回测完成!")
+    print(f"总未实现盈亏: {total_pnl:.2f}")
+    print("\n各策略持仓详情:")
+    for key, pos in positions.items():
+        if pos.quantity != 0:
+            print(f"  {key}: 数量={pos.quantity}, "
+                f"成本={pos.avg_cost:.4f}, "
+                f"已实现盈亏={pos.realized_pnl:.2f}")

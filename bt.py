@@ -529,8 +529,8 @@ def run_interface_test(symbol: str, date: str, data_path: str, output_dir: str) 
 def main():
     """主函数"""
     # 配置参数
-    symbol = "000027.SZ"
-    date = "2022-01-07"
+    symbol = "002466.SZ"
+    date = "2024-12-19" 
     data_path = "logs"
     output_dir = f"./interface_test_output/{symbol}_{date}"
     

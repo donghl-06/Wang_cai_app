@@ -52,7 +52,7 @@ void BacktestEngine::initialize() {
     // 3. 初始化订单簿，注册成交回调
     orderbook_ = std::make_unique<OrderBook>(upper_limit_, lower_limit_, false,
         [this](const Execution& ex) {
-            std::string trade_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
+            std::string trade_datetime = current_datetime_;
             
             // 更新最新成交价（供后续集合竞价使用）
             orderbook_->setLastTradePrice(ex.price);
@@ -81,8 +81,6 @@ void BacktestEngine::initialize() {
                 // 虚拟成交：只通知对应策略，不记录到CSV
                 for (auto& strategy : strategies_) {
                     if (strategy->getStrategyId() == virtual_strategy_id) {
-                        // 调用原有成交接口（兼容性）
-                        // strategy->onOrderFilled(virtual_order_id, ex.price, ex.volume);
                         
                         // 确定虚拟订单的方向
                         Direction virtual_direction;
@@ -273,7 +271,7 @@ bool BacktestEngine::tryFillImmediately(std::shared_ptr<Order> user_order) {
                 // strategy->onOrderFilled(user_order->order_local_id, fill_price, fill_qty);
                 
                 // 调用新的统一成交回调接口
-                std::string trade_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
+                std::string trade_datetime = current_datetime_;
                 auto callback = createTradeCallback(strategy->getStrategyId(), user_order->order_local_id,
                                                   user_order->direction, fill_qty, fill_price,
                                                   trade_datetime, 'T');
@@ -608,7 +606,7 @@ void BacktestEngine::processUserCancel(const UserCancel& user_cancel) {
 
 // 通知策略订单成交
 void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
-    std::string trade_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
+    std::string trade_datetime = current_datetime_;
     
     // 检查买方订单是否属于某个策略
     for (const auto& mapping : user_order_mapping_) {
@@ -637,8 +635,6 @@ void BacktestEngine::notifyStrategiesOnExecution(const Execution& ex) {
             // 找到对应的策略
             for (auto& strategy : strategies_) {
                 if (strategy->getStrategyId() == virtual_order_strategy_[ex.sell_order_id]) {
-                    // 调用原有接口（兼容性）
-                    // strategy->onOrderFilled(mapping.first, ex.price, ex.volume);
                     
                     // 调用新的统一接口
                     auto callback = createTradeCallback(strategy->getStrategyId(), mapping.first,
@@ -883,7 +879,7 @@ void BacktestEngine::finish() {
         std::cout << "交易记录已输出到: " << trade_output_file_ << std::endl;
         std::cout << "总交易笔数: " << trade_records_.size() << std::endl;
     }
-    printResults();
+    // printResults();
 }
 
 

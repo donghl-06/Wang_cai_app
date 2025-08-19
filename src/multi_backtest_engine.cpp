@@ -1,7 +1,7 @@
 /*
  * @Author: chenlisen
  * @Date: 2025-08-18 11:38:11
- * @LastEditTime: 2025-08-18 13:47:59
+ * @LastEditTime: 2025-08-19 08:29:06
  * @FilePath: /wangcai_cpp/src/multi_backtest_engine.cpp
  */
 #include "multi_backtest_engine.h"
@@ -23,7 +23,7 @@ MultiBacktestEngine::MultiBacktestEngine(const std::vector<std::string>& symbols
         std::string trade_output_file = data_path + "/backtest_trades_" + sym + "_" + date + ".csv";
         se.engine->enableTradeRecording(trade_output_file);
 
-        // 双指针扫描所有事件 并合并
+        // 双指针扫描所有事件 归并事件
         std::vector<Event> merged;
         merged.reserve(OrderBook::whole_events.size() + OrderBook::tick_events.size());
         auto it_ord = OrderBook::whole_events.begin();
@@ -88,21 +88,25 @@ void MultiBacktestEngine::run() {
 
         9:30:02
         处理B
+        AC跳过
 
         9:30:03
         处理A
         处理B
+        C跳过
 
         9:30:04
         处理C
+        AB跳过
 
         9:30:05
         处理B
+        AC跳过
 
         9:30:06
         处理A
         处理C
-
+        B跳过
      */
     while (!pq.empty()) {
         // 取出当前最小时间戳
@@ -112,12 +116,12 @@ void MultiBacktestEngine::run() {
         // 映射每个引擎索引到其在该时间戳的所有事件
         std::map<std::size_t, std::vector<Event>> engine_events;
         
-        // 收集所有时间相同的事件，并准备下一个事件
+        // 收集所有时间相同的事件
         while (!pq.empty() and pq.top().datetime == current_time) {
             auto item = pq.top();
             pq.pop();
             engine_events[item.engineIndex].push_back(item.event);
-            // 从对应引擎获取下一事件并放入堆
+            // 取下一事件并放入堆
             auto& se = engines_[item.engineIndex];
             if (se.idx < se.events.size()) {
                 QueueEvent next_item{se.events[se.idx].datetime, item.engineIndex, se.events[se.idx]};
