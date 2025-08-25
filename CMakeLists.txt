@@ -91,6 +91,7 @@ add_library(wangcai_orderbook_cpp STATIC ${LIB_SOURCES})
 target_include_directories(wangcai_orderbook_cpp PUBLIC include ${Boost_INCLUDE_DIRS})
 
 set_target_properties(wangcai_orderbook_cpp PROPERTIES POSITION_INDEPENDENT_CODE ON)
+message(STATUS "SRC DIR = ${CMAKE_CURRENT_SOURCE_DIR}")
 
 set(TASKFLOW_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/taskflow)
 
