@@ -1,7 +1,7 @@
 /*
  * @Author: chenlisen
  * @Date: 2025-07-07 08:43:04
- * @LastEditTime: 2025-08-14 03:29:13
+ * @LastEditTime: 2025-08-21 02:20:53
  * @FilePath: /wangcai_cpp/include/types.h
  */
 
@@ -110,7 +110,6 @@ struct UserOrder {
     std::string strategy_id; // 用于区分不同策略
 };
 
-
 // 用户撤单结构
 struct UserCancel {
     std::string order_id;     // 要撤销的订单ID
@@ -181,6 +180,11 @@ struct OrderCallback {
 // 策略持仓管理器
 class StrategyPositionManager {
 public:
+
+    void setInitPosition(const std::string& symbol, int64_t quantity) {
+        positions_[symbol] = quantity;
+    }
+
     // 更新持仓：买入为正，卖出为负
     void updatePosition(const std::string& symbol, int64_t quantity_change) {
         positions_[symbol] += quantity_change;

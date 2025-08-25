@@ -29,9 +29,10 @@ BacktestEngine::BacktestEngine(const std::string& symbol, const std::string& dat
 // 初始化函数，完成回测环境的所有准备工作
 void BacktestEngine::initialize() {
     // 1. 读取前收盘价和真实开盘价
+    InfoLoader loader;
     std::string cstick_file = data_path_ + "/cstick_" + symbol_ + "_" + date_ + ".csv";
-    prev_close_ = loadPrevClosePrice(cstick_file);
-    actual_open_ = loadOpenPrice(cstick_file);
+    prev_close_ = loader.loadPrevClosePrice(cstick_file);
+    actual_open_ = loader.loadOpenPrice(cstick_file);
     if (symbol_.find("SZ") != std::string::npos) {
         Event::is_SZ = true;
     }
@@ -81,7 +82,6 @@ void BacktestEngine::initialize() {
                 // 虚拟成交：只通知对应策略，不记录到CSV
                 for (auto& strategy : strategies_) {
                     if (strategy->getStrategyId() == virtual_strategy_id) {
-                        
                         // 确定虚拟订单的方向
                         Direction virtual_direction;
                         uint64_t virtual_sys_id = buy_is_virtual ? ex.buy_order_id : ex.sell_order_id;
@@ -165,7 +165,7 @@ void BacktestEngine::initialize() {
                     // 历史订单撤单：只记录撤单到CSV，不通知策略
                     if (recording_enabled_) {
                         uint64_t original_id = orderbook_->getOriginalOrderId(order_id);
-                        recordCancelWithOrderInfo(original_id, continuous_mode_ ? last_brk_datetime_ : current_datetime_, order_info);
+                        recordCancelWithOrderInfo(original_id, current_datetime_, order_info);
                     }
                     // 注意：历史订单撤单不通知策略，因为策略不应该关心历史订单的撤单
                 } else {
@@ -176,7 +176,7 @@ void BacktestEngine::initialize() {
                             // strategy->onOrderCancelled(order_info->order_local_id, reason);
                             
                             // 调用新的统一撤单回调接口
-                            std::string cancel_datetime = continuous_mode_ ? last_brk_datetime_ : current_datetime_;
+                            std::string cancel_datetime = current_datetime_;
                             auto callback = createTradeCallback(strategy->getStrategyId(), order_info->order_local_id,
                                                               order_info->direction, 0, order_info->price,
                                                               cancel_datetime, 'D');
@@ -193,8 +193,6 @@ void BacktestEngine::initialize() {
                     virtual_order_strategy_.erase(order_id);
                     virtual_order_local_id_.erase(order_id);  
                     user_order_direction_.erase(order_id);
-                    
-                    // 注意：虚拟订单撤单不记录到CSV，不调用recordCancel()
                 }
             }
         });
@@ -202,7 +200,7 @@ void BacktestEngine::initialize() {
     // 6. 初始化收盘集合竞价撮合引擎（逻辑基本同开盘集合竞价）
     close_engine_ = std::make_unique<CloseAuctionEngine>(*orderbook_, prev_close_,
                                                         orderbook_->getExchange(),
-                                                        nullptr, // 价格回调
+                                                        nullptr, 
                                                         [this](uint64_t order_id, bool success, const std::string& reason,
                                                                std::shared_ptr<Order> order_info) {
                                                             if (success && recording_enabled_ && order_info) {
@@ -213,24 +211,26 @@ void BacktestEngine::initialize() {
 
 
     data_manager_ = std::make_unique<DataManager>(orderbook_.get(), call_engine_.get(), con_engine_.get(), close_engine_.get());
+
     // 7. 加载历史订单和成交数据，合并为事件流
     OrderBook::clearEvents(); // 清空事件
     OrderBook::clearTicks(); // 清空tick事件
     std::string ord_file = data_path_ + "/csord_" + symbol_ + "_" + date_ + ".csv";
     std::string tra_file = data_path_ + "/cstra_" + symbol_ + "_" + date_ + ".csv";
-    load_orders_from_csv(ord_file, *orderbook_);
-    load_traders_from_csv(tra_file, *orderbook_);
+    
     if (Event::is_SZ) {
-        std::sort(OrderBook::whole_events.begin(), OrderBook::whole_events.end(), [&](auto a, auto b) {
+        loader.load_sz_info(ord_file, tra_file, *orderbook_);
+        std::sort(std::execution::par_unseq, OrderBook::whole_events.begin(), OrderBook::whole_events.end(), [&](auto a, auto b) {
             return a.orderid < b.orderid; // SZ
         });
     } else {
-        std::sort(OrderBook::whole_events.begin(), OrderBook::whole_events.end(), [&](auto a, auto b) {
+        loader.load_sh_info(ord_file, tra_file, *orderbook_);
+        std::sort(std::execution::par_unseq, OrderBook::whole_events.begin(), OrderBook::whole_events.end(), [&](auto a, auto b) {
             return a.bizindex < b.bizindex; // SH
         });
     }
     
-    load_cstick_from_csv(cstick_file, *orderbook_);
+    loader.load_cstick_from_csv(cstick_file, *orderbook_);
     size_t total_events = OrderBook::whole_events.size() + OrderBook::tick_events.size();
     std::cout << "加载了 " << total_events << " 个历史事件" << std::endl;
 }
@@ -321,7 +321,7 @@ void BacktestEngine::processUserOrder(const UserOrder& user_order) {
         // 创建并发送下单回调
         auto order_callback = createOrderCallback(user_order.strategy_id, user_order.order_id,
                                                 user_order.direction, user_order.volume, user_order.price,
-                                                continuous_mode_ ? last_brk_datetime_ : current_datetime_);
+                                                current_datetime_);
         notifyStrategyOrderCallback(user_order.strategy_id, order_callback);
         
         // 先尝试立即成交
@@ -403,7 +403,7 @@ double BacktestEngine::getTotalPnL() const {
             total_pnl += pos.second.realized_pnl;
             // 加上未实现盈亏（以当前买一价估算）
             if (pos.second.quantity != 0) {
-                double current_price = orderbook_->bestBid() / 10000.0; // 简化处理
+                double current_price = orderbook_->bestBid() / 10000.0; 
                 total_pnl += (current_price - pos.second.avg_cost) * pos.second.quantity;
             }
         }
@@ -733,10 +733,13 @@ void BacktestEngine::notifyStrategyOrderCallback(const std::string& strategy_id,
 void BacktestEngine::processEvent(const Event& ev) {
     static constexpr const char* Call_Open_Time = "09:25:00";
     static constexpr const char* Call_Close_Time = "14:57:00";
+    static constexpr const char* End_Time = "15:00:00";
 
     // 更新当前时间
     current_datetime_ = ev.datetime;
-
+    if (current_datetime_.substr(11, 8) > "15:00:00") {
+        return;
+    }
     // 收集策略产生的用户事件
     std::vector<UserEvent> strategy_events;
     for (auto& strategy : strategies_) {
@@ -822,6 +825,9 @@ void BacktestEngine::processEvent(const Event& ev) {
             }
         } else {
             // 收盘集合竞价阶段
+            if (tm_cur > End_Time) {
+                return;
+            }
             if (ev.source == "ord") {
                 Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
                 auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),

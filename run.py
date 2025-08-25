@@ -1,7 +1,7 @@
 '''
 Author: chenlisen
 Date: 2025-08-18 12:40:34
-LastEditTime: 2025-08-19 08:50:58
+LastEditTime: 2025-08-25 01:48:25
 FilePath: /wangcai_cpp/run.py
 '''
 import os
@@ -98,17 +98,13 @@ class SimpleStrategy(wc.Strategy):
         
         return user_events
 
-    def onOrderFilled(self, order_id: str, price: int, volume: int):
-        """订单成交通知"""
-        print(f"[{self.strategy_id}] 订单成交: {order_id}, "
-            f"价格={price/10000:.2f}, 数量={volume}")
 
     def onOrderCancelled(self, order_id: str, reason: str):
         """订单撤销通知"""
         print(f"[{self.strategy_id}] 订单撤销: {order_id}, 原因={reason}")
 
     def onTradeCallback(self, callback):
-        """统一交易回调"""
+        """交易回调"""
         print(f"[{self.strategy_id}] 交易回调: "
             f"订单={callback.localid}, "
             f"方向={callback.direction}, "
@@ -117,7 +113,7 @@ class SimpleStrategy(wc.Strategy):
             f"持仓={callback.deltapos}")
 
     def onOrderCallback(self, callback):
-        """统一订单回调"""
+        """订单回调"""
         print(f"[{self.strategy_id}] 订单回调: "
             f"订单={callback.orderlocalid}, "
             f"方向={callback.direction}, "
@@ -126,12 +122,9 @@ class SimpleStrategy(wc.Strategy):
 
             
 if __name__ == "__main__":
-    print("=" * 60)
-    print("运行多合约回测")
-    print("=" * 60)
     # 设置回测参数
-    symbols = ["000402.SZ", "000488.SZ"] 
-    date = "2024-12-19" 
+    symbols = ["600227.SH", "600281.SH"] 
+    date = "2023-12-22" 
     data_path = "logs"
 
     # 创建回测引擎
@@ -143,6 +136,7 @@ if __name__ == "__main__":
 
     engine.registerStrategy(strategy1)
     # engine.registerStrategy(strategy2)
+
     # 运行回测
     print("\n开始运行回测...")
     engine.run()

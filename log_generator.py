@@ -1,7 +1,7 @@
 '''
 Author: chenlisen
 Date: 2025-08-15 08:50:38
-LastEditTime: 2025-08-19 07:58:17
+LastEditTime: 2025-08-24 13:40:34
 FilePath: /wangcai_cpp/log_generator.py
 '''
 
@@ -14,7 +14,7 @@ if __name__ == "__main__":
     # 定义要处理的股票代码和日期
     # "002466.SZ", "2023-12-11"
     # 股票号: 000709.SZ 集合竞价成交价格：0, 成交量：0, 日期：2022-01-05
-    stocks_dates = [("000402.SZ", "2024-12-19"), ("000488.SZ", "2024-12-19")]
+    stocks_dates = [("000063.SZ", "2023-12-22")]
 
     # 从环境变量中获取用户名和密码
     username = 'fuzheyuan'

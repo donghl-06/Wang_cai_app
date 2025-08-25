@@ -24,9 +24,236 @@ inline uint64_t parse_price(const std::string& price_str) {
     return static_cast<int64_t>(price_rounded);
 }
 
-// 加载订单数据
-void load_orders_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
-    std::ifstream file(csv_file);  
+inline bool isContinuousTime(std::string_view datetime_str) {
+    return datetime_str.length() >= 19 && 
+            datetime_str.substr(11, 8) >= "09:30:00";
+}
+
+void InfoLoader::load_sh_info(const std::string& order_filename, std::string trade_filename, wangcai::OrderBook& order_book) {
+    call_auction_orders_.clear(), continuous_orders_.clear(), continuous_trades_.clear();
+    call_auction_orders_.reserve(1000000), continuous_orders_.reserve(1000000), continuous_trades_.reserve(1000000);
+
+    std::ifstream file(order_filename);
+    if (!file.is_open()) {
+        throw std::runtime_error("无法打开订单文件: " + order_filename);
+    }
+
+    std::string line;
+    std::getline(file, line); // 跳过标题行
+
+
+    while (std::getline(file, line)) {
+        try {
+            std::istringstream ss(line);
+            std::string datetime, sym, ordertype_str, channelno_str, seqno_str, bizindex_str, price_str, size_str, side_str, orderid_str;
+
+            std::getline(ss, datetime, ','); 
+            std::getline(ss, sym, ',');
+            std::getline(ss, price_str, ',');
+            std::getline(ss, size_str, ',');
+            std::getline(ss, side_str, ',');
+            std::getline(ss, ordertype_str, ',');
+            std::getline(ss, orderid_str, ',');
+            std::getline(ss, channelno_str, ',');
+            std::getline(ss, seqno_str, ',');
+            std::getline(ss, bizindex_str, ',');
+
+            // 解析数据
+            int64_t price = parse_price(price_str);
+            int64_t size = size_str.empty() ? 0 : std::stod(size_str);
+            int64_t side = side_str.empty() ? 0 : std::stoi(side_str);
+            int64_t ordertype = ordertype_str.empty() ? 0 : std::stoi(ordertype_str);
+            int64_t orderid = orderid_str.empty() ? 0 : std::stoi(orderid_str);
+            int64_t channelno = channelno_str.empty() ? 0 : std::stoi(channelno_str);
+            int64_t seqno = (seqno_str == "-9223372036854775808") ? 0 : std::stoi(seqno_str);
+            int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoll(bizindex_str);
+            
+            bool is_sz_mkt = (sym.size() >= 2 &&
+                              sym.substr(sym.size() - 2) == "SZ" &&
+                              ordertype != 2 && ordertype != 0);              // 非限价视为市价
+
+            if (is_sz_mkt) {
+                order_book.first_trade_px_[orderid] = 0;    // 只缓存，先不插事件
+            }
+
+            // 创建并插入订单事件
+            Event order_event(datetime, sym, price, size, side, ordertype, orderid, channelno, 
+                            seqno, bizindex, -1, -1, -1, "", "", 
+                            -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1, "ord");
+            // OrderBook::insertEvent(order_event);
+            if (isContinuousTime(order_event.datetime)) {
+                continuous_orders_.emplace_back(std::move(order_event));
+            } else {
+                call_auction_orders_.emplace_back(std::move(order_event));
+            }
+
+        } catch (const std::exception& e) {
+            std::cerr << "处理订单时发生错误: " << e.what() << std::endl;
+            // 输出是哪笔订单的错误
+            std::cerr << "错误订单信息: " << line << std::endl;
+            std::cerr << "错误详情: " << e.what() << std::endl;
+            std::throw_with_nested(std::runtime_error("加载订单数据时发生错误"));
+        }
+    }
+    
+
+    load_traders_from_csv(trade_filename, order_book);
+    auto sortByBizIndex = [](const Event& a, const Event& b) {
+        return a.bizindex < b.bizindex;
+    };
+    std::sort(std::execution::par_unseq, continuous_orders_.begin(), continuous_orders_.end(), sortByBizIndex);
+    std::sort(std::execution::par_unseq, continuous_trades_.begin(), continuous_trades_.end(), sortByBizIndex);
+
+    std::vector<RecoverEvents> recovered_events;
+    recovered_events.reserve(continuous_orders_.size() + continuous_trades_.size() * 2);
+    auto merge = [&]() -> void{
+        size_t order_idx = 0, trade_idx = 0;
+
+        while (order_idx < continuous_orders_.size() && 
+               trade_idx < continuous_trades_.size()) {
+
+            if (continuous_orders_[order_idx].bizindex <= 
+                continuous_trades_[trade_idx].bizindex) {
+
+                const auto& order = continuous_orders_[order_idx];
+                recovered_events.emplace_back(order.bizindex, order.orderid, 
+                                  order.size, false, &order);
+                ++order_idx;
+            } else {
+                const auto& trade = continuous_trades_[trade_idx];
+
+                if (trade.bidorderid != 0) {
+                    recovered_events.emplace_back(trade.bizindex, trade.bidorderid, 
+                                      trade.size, true);
+                }
+                if (trade.askorderid != 0 && trade.askorderid != trade.bidorderid) {
+                    recovered_events.emplace_back(trade.bizindex, trade.askorderid, 
+                                      trade.size, true);
+                }
+                ++trade_idx;
+            }
+        }
+
+        // 处理剩余的订单
+        while (order_idx < continuous_orders_.size()) {
+            const auto& order = continuous_orders_[order_idx];
+            recovered_events.emplace_back(order.bizindex, order.orderid, 
+                              order.size, false, &order);
+            ++order_idx;
+        }
+
+        // 处理剩余的成交
+        while (trade_idx < continuous_trades_.size()) {
+            const auto& trade = continuous_trades_[trade_idx];
+
+            if (trade.bidorderid != 0) {
+                recovered_events.emplace_back(trade.bizindex, trade.bidorderid, 
+                                  trade.size, true);
+            }
+            if (trade.askorderid != 0 && trade.askorderid != trade.bidorderid) {
+                recovered_events.emplace_back(trade.bizindex, trade.askorderid, 
+                                  trade.size, true);
+            }
+            ++trade_idx;
+        }
+    };
+
+    merge();
+
+    std::vector<Event> tmp;
+    tmp.reserve(continuous_orders_.size());
+
+    std::unordered_map<int64_t, int64_t> cumulative_trade_size;
+    cumulative_trade_size.reserve(recovered_events.size());
+
+    std::unordered_set<int64_t> processed_orders;
+    processed_orders.reserve(continuous_orders_.size());
+
+    for (const auto& event : recovered_events) {
+        if (event.is_trade) {
+            cumulative_trade_size[event.orderid] += event.size;
+        } else if (processed_orders.insert(event.orderid).second) {
+            int64_t traded_before = cumulative_trade_size[event.orderid];
+
+            Event recovered = *event.order_ptr;
+            recovered.size += traded_before;
+            tmp.emplace_back(std::move(recovered));
+        }
+    }
+
+    std::unordered_set<int64_t> existing_order_ids;
+    existing_order_ids.reserve(call_auction_orders_.size() + continuous_orders_.size());
+
+    for (const auto& order : call_auction_orders_) {
+        existing_order_ids.insert(order.orderid);
+    }
+    for (const auto& order : continuous_orders_) {
+        existing_order_ids.insert(order.orderid);
+    }
+
+    auto processMissingOrder = [](int64_t orderid, const Event& trade,
+                           const std::unordered_set<int64_t>& existing_ids,
+                           std::unordered_map<int64_t, MissingOrderInfo>& missing_orders,
+                           bool is_bid) -> void {
+        
+        if (orderid == 0 || existing_ids.count(orderid)) {
+            return;   
+        }
+
+        auto& info = missing_orders[orderid];
+        info.total_size += trade.size;
+
+        if (info.first_trade == nullptr || trade.bizindex < info.first_trade->bizindex) {
+            info.first_trade = &trade;
+        }
+
+        if (is_bid) {
+            info.bid_max_price = std::max(info.bid_max_price, trade.price);
+        } else {
+            info.ask_min_price = std::min(info.ask_min_price, trade.price);
+        }
+    };
+    // 收集缺失订单信息
+    std::unordered_map<int64_t, MissingOrderInfo> missing_orders;
+
+    for (const auto& trade : continuous_trades_) {
+        processMissingOrder(trade.bidorderid, trade, existing_order_ids, 
+                            missing_orders, true);
+        processMissingOrder(trade.askorderid, trade, existing_order_ids, 
+                            missing_orders, false);
+    }
+
+    // 生成缺失订单
+    for (const auto& [orderid, info] : missing_orders) {
+        if (info.first_trade == nullptr) {
+            continue;
+        }
+
+        bool is_bid = (orderid == info.first_trade->bidorderid);
+
+        tmp.emplace_back(Event(
+            info.first_trade->datetime,
+            info.first_trade->sym,
+            is_bid ? info.bid_max_price : info.ask_min_price,
+            info.total_size,
+            is_bid ? 1 : -1,
+            0,  // ordertype
+            orderid,
+            0,  // channelno
+            0,  // seqno
+            info.first_trade->bizindex,
+            -1, -1, -1, "", "",           // bidorderid, askorderid, tradeid, exectype, tradebsflag
+            -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1,
+            "ord"                         // source
+        ));
+    }
+
+    tmp.insert(tmp.end(),std::make_move_iterator(call_auction_orders_.begin()),std::make_move_iterator(call_auction_orders_.end()));
+    OrderBook::whole_events.insert(OrderBook::whole_events.end(), tmp.begin(), tmp.end());
+}
+
+void InfoLoader::load_sz_info(const std::string& order_filename, std::string trade_filename, wangcai::OrderBook& order_book) {
+    std::ifstream file(order_filename);  
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
 
@@ -54,7 +281,7 @@ void load_orders_from_csv(const std::string& csv_file, wangcai::OrderBook& order
             int64_t orderid = orderid_str.empty() ? 0 : std::stoi(orderid_str);
             int64_t channelno = channelno_str.empty() ? 0 : std::stoi(channelno_str);
             int64_t seqno = (seqno_str == "-9223372036854775808") ? 0 : std::stoi(seqno_str);
-            int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoi(bizindex_str);
+            int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoll(bizindex_str);
             
             bool is_sz_mkt = (sym.size() >= 2 &&
                               sym.substr(sym.size() - 2) == "SZ" &&
@@ -93,12 +320,19 @@ void load_orders_from_csv(const std::string& csv_file, wangcai::OrderBook& order
 
         } catch (const std::exception& e) {
             std::cerr << "处理订单时发生错误: " << e.what() << std::endl;
+            // 输出是哪笔订单的错误
+            std::cerr << "错误订单信息: " << line << std::endl;
+            std::cerr << "错误详情: " << e.what() << std::endl;
+            std::throw_with_nested(std::runtime_error("加载订单数据时发生错误"));
         }
     }
+
+    load_traders_from_csv(trade_filename, order_book);
 }
 
+
 // 加载撤单数据
-void load_traders_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
+void InfoLoader::load_traders_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
     std::ifstream file(csv_file);  // ✅ 正确：用ifstream读取文件
     if (!file.is_open()) {
         std::cerr << "无法打开文件: " << csv_file << std::endl;
@@ -135,7 +369,7 @@ void load_traders_from_csv(const std::string& csv_file, wangcai::OrderBook& orde
             int64_t askorderid = askorderid_str.empty() ? 0 : std::stoi(askorderid_str);
             int64_t tradeid = tradeid_str.empty() ? 0 : std::stoi(tradeid_str);
             int64_t channelno = channelno_str.empty() ? 0 : std::stoi(channelno_str);
-            int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoi(bizindex_str);
+            int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoll(bizindex_str);
             
             // 记录最优成交价（买方记录最高价，卖方记录最低价）
             if (bidorderid != 0) {
@@ -156,17 +390,14 @@ void load_traders_from_csv(const std::string& csv_file, wangcai::OrderBook& orde
                 }
             }
 
-
-            // 创建并插入撤单事件
-           if (exectype == "2") {
-                // std::cout << "[创建撤单事件] 时间=" << datetime 
-                //           << " bidorderid=" << bidorderid 
-                //           << " askorderid=" << askorderid << std::endl;
-              
-                Event cancel_event(datetime, sym, price, size, -1, -1, tradeid, channelno, -1, bizindex, 
+            Event trade_event(datetime, sym, price, size, -1, -1, tradeid, channelno, -1, bizindex, 
                             bidorderid, askorderid, tradeid, exectype, tradebsflag, 
                             -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1,"tra");
-                OrderBook::insertEvent(cancel_event);
+            // 创建并插入撤单事件
+           if (exectype == "2") {   
+                OrderBook::insertEvent(trade_event);
+            } else if (exectype != "2" and isContinuousTime(datetime)) {
+                continuous_trades_.emplace_back(std::move(trade_event));
             }
         } catch (const std::exception& e) {
             std::cerr << "处理撤单时发生错误: " << e.what() << std::endl;
@@ -177,7 +408,7 @@ void load_traders_from_csv(const std::string& csv_file, wangcai::OrderBook& orde
 
 
 // 加载cstick用来获取开盘价
-void load_cstick_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
+void InfoLoader::load_cstick_from_csv(const std::string& csv_file, wangcai::OrderBook& order_book) {
     std::ifstream file(csv_file);
     std::string line;
     std::getline(file, line); // 跳过CSV文件的标题行
@@ -335,12 +566,12 @@ void load_cstick_from_csv(const std::string& csv_file, wangcai::OrderBook& order
 }
 
 // 清空事件列表
-void clear_events() {
+void InfoLoader::clear_events() {
     OrderBook::clearEvents();
 }
 
 
-wangcai::Price loadPrevClosePrice(const std::string& filename) {
+wangcai::Price InfoLoader::loadPrevClosePrice(const std::string& filename) {
     std::ifstream file(filename);
 
     if (!file.is_open()) {
@@ -377,7 +608,7 @@ wangcai::Price loadPrevClosePrice(const std::string& filename) {
     return 0;
 }
 
-wangcai::Price loadOpenPrice(const std::string& filename) {
+wangcai::Price InfoLoader::loadOpenPrice(const std::string& filename) {
     std::ifstream file(filename);
     
     if (!file.is_open()) {
@@ -417,4 +648,6 @@ wangcai::Price loadOpenPrice(const std::string& filename) {
     
     return 0;
 }
+
+
 };

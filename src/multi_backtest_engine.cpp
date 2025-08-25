@@ -1,8 +1,8 @@
 /*
  * @Author: chenlisen
  * @Date: 2025-08-18 11:38:11
- * @LastEditTime: 2025-08-19 09:13:44
- * @FilePath: /wangcai_cpp/src/multi_backtest_engine.cpp
+ * @LastEditTime: 2025-08-21 10:41:54
+ * @FilePath: /workspace/wangcai_cpp/src/multi_backtest_engine.cpp
  */
 #include "multi_backtest_engine.h"
 
@@ -112,7 +112,9 @@ void MultiBacktestEngine::run() {
         // 取出当前最小时间戳
         const auto top_item = pq.top();
         std::string current_time = top_item.datetime;
-
+        if (current_time.substr(11, 8) > "15:00:00") {
+            break;
+        }
         // 映射每个引擎索引到其在该时间戳的所有事件
         std::map<std::size_t, std::vector<Event>> engine_events;
         
@@ -144,7 +146,6 @@ void MultiBacktestEngine::run() {
         // 执行当前时间戳的所有任务并阻塞等待完成
         executor.run(taskflow).wait();
     }
-    // 所有事件处理完成后，调用各引擎的结算
     std::ranges::for_each(engines_, [&](auto &se) {
         se.engine->finish();
     });

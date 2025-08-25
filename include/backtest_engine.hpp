@@ -47,6 +47,10 @@ public:
     int64_t getPosition(const std::string& symbol) const {
         return position_manager_.getPosition(symbol);
     }
+
+    void setPosition(const std::string& symbol, int64_t quantity) {
+        position_manager_.setInitPosition(symbol, quantity);
+    }
     
     // 获取所有持仓
     const std::map<std::string, int64_t>& getAllPositions() const {
