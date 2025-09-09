@@ -1,5 +1,5 @@
 '''
-Author: chenlisen
+Author: linzhuoyu
 Date: 2025-08-18 12:40:34
 LastEditTime: 2025-08-25 01:48:25
 FilePath: /wangcai_cpp/run.py
@@ -8,9 +8,9 @@ import os
 from datetime import datetime
 from typing import Dict, Any, List
 
-import wangcai_bt as wc
+import wangcai_bt as wang
 
-class SimpleStrategy(wc.Strategy):
+class SimpleStrategy(wang.Strategy):
     """简单的均价回归策略示例"""
     def __init__(self, strategy_id: str):
         super().__init__()
@@ -64,11 +64,11 @@ class SimpleStrategy(wc.Strategy):
                     order_id = self.generate_order_id()
                     
                     # 创建买单
-                    order_event = wc.make_order_event(
+                    order_event = wang.make_order_event(
                         order_id=order_id,
                         symbol=snapshot.Instrument,
-                        direction=wc.Direction.Buy,
-                        order_type=wc.OrderType.Limit,
+                        direction=wang.Direction.Buy,
+                        order_type=wang.OrderType.Limit,
                         price=snapshot.asks[0] if len(snapshot.asks) > 0 else self.last_price,
                         volume=100,
                         strategy_id=self.strategy_id
@@ -83,11 +83,11 @@ class SimpleStrategy(wc.Strategy):
                     order_id = self.generate_order_id()
                     
                     # 创建卖单
-                    order_event = wc.make_order_event(
+                    order_event = wang.make_order_event(
                         order_id=order_id,
                         symbol=snapshot.Instrument,
-                        direction=wc.Direction.Sell,
-                        order_type=wc.OrderType.Limit,
+                        direction=wang.Direction.Sell,
+                        order_type=wang.OrderType.Limit,
                         price=snapshot.bids[0] if len(snapshot.bids) > 0 else self.last_price,
                         volume=100,
                         strategy_id=self.strategy_id
@@ -128,7 +128,7 @@ if __name__ == "__main__":
     data_path = "logs"
 
     # 创建回测引擎
-    engine = wc.MultiBacktestEngine(symbols, date, data_path)
+    engine = wang.MultiBacktestEngine(symbols, date, data_path)
 
     # 创建并注册多个策略
     strategy1 = SimpleStrategy("STRATEGY_001")
