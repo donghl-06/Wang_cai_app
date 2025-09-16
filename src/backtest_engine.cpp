@@ -123,8 +123,23 @@ void BacktestEngine::initialize() {
                 // 历史订单成交：正常处理并记录到CSV
                 
                 // 1. 推送成交事件给所有策略，收集新事件（暂存到pending队列）
+                // 将Execution转换为TradeDetail
+                TradeDetail trade;
+                trade.Exchange = symbol_.find(".SZ") != std::string::npos ? 1 : 0;
+                trade.Instrument = symbol_;
+                trade.ChannelNo = 0; // 虚拟成交，使用默认值
+                trade.TradeIndex = ex.execution_id;
+                trade.Time = 0; // 从trade_datetime提取，暂时使用默认值
+                trade.Price = ex.price;
+                trade.Volume = ex.volume;
+                trade.ExecType = '1'; // 成交
+                trade.BuyNo = ex.buy_order_id;
+                trade.SellNo = ex.sell_order_id;
+                trade.TradeBSFlag = 'N'; // 未知
+                trade.BizIndex = 0; // 使用默认值
+                
                 for (auto& strategy : strategies_) {
-                    auto user_events = strategy->onTradeEvent(ex, trade_datetime);
+                    auto user_events = strategy->onTradeEvent(trade);
                     for (const auto& event : user_events) {
                         pending_trade_events_.push_back(event);
                     }
@@ -742,12 +757,53 @@ void BacktestEngine::processEvent(const Event& ev) {
     }
     // 收集策略产生的用户事件
     std::vector<UserEvent> strategy_events;
-    for (auto& strategy : strategies_) {
-        auto user_events = strategy->onOrderEvent(ev);
-        for (const auto& ue : user_events) {
-            strategy_events.push_back(ue);
+    
+    // 根据事件类型调用不同的策略回调
+    if (ev.source == "ord") {
+        // 委托事件：将Event转换为OrderDetail
+        OrderDetail order;
+        order.Exchange = ev.exchange != -1 ? ev.exchange : (ev.sym.find(".SZ") != std::string::npos ? 1 : 0);
+        order.Instrument = ev.sym;
+        order.Time = ev.time_raw != -1 ? ev.time_raw : 0;
+        order.ChannelNo = ev.channelno;
+        order.OrderNo = ev.orderid;
+        order.Price = ev.price;
+        order.Volume = ev.size;
+        order.Side = ev.side == 1 ? "1" : "2"; // 1=买, 2=卖  
+        order.OrderKind = ev.order_kind != '\0' ? ev.order_kind : (ev.ordertype == 1 ? '1' : '2');
+        order.SeqNo = ev.seqno;
+        order.BizIndex = ev.bizindex;
+        
+        for (auto& strategy : strategies_) {
+            auto user_events = strategy->onOrderEvent(order);
+            for (const auto& ue : user_events) {
+                strategy_events.push_back(ue);
+            }
+        }
+    } else if (ev.source == "tra") {
+        // 成交事件：将Event转换为TradeDetail
+        TradeDetail trade;
+        trade.Exchange = ev.exchange != -1 ? ev.exchange : (ev.sym.find(".SZ") != std::string::npos ? 1 : 0);
+        trade.Instrument = ev.sym;
+        trade.ChannelNo = ev.channelno;
+        trade.TradeIndex = ev.trade_index != -1 ? ev.trade_index : ev.tradeid;
+        trade.Time = ev.time_raw != -1 ? ev.time_raw : 0;
+        trade.Price = ev.price;
+        trade.Volume = ev.size;
+        trade.ExecType = ev.exectype.empty() ? '1' : ev.exectype[0]; // '1'=成交, '2'=撤销
+        trade.BuyNo = ev.bidorderid;
+        trade.SellNo = ev.askorderid;
+        trade.TradeBSFlag = ev.tradebsflag.empty() ? 'N' : ev.tradebsflag[0];
+        trade.BizIndex = ev.bizindex;
+        
+        for (auto& strategy : strategies_) {
+            auto user_events = strategy->onTradeEvent(trade);
+            for (const auto& ue : user_events) {
+                strategy_events.push_back(ue);
+            }
         }
     }
+    // 注意：onTickEvent的调用保持不变，在后面的分支中处理
 
     // 根据是否进入连续竞价阶段分别处理
     if (!continuous_mode_) {

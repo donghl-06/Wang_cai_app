@@ -6,10 +6,14 @@ from datetime import datetime
 from typing import List, Dict, Optional
 import json
 
-from wangcai_bt import (
+# 添加本地编译的模块路径
+sys.path.insert(0, './build')
+
+from wangcai_cpp import (
     BacktestEngine, Strategy,
     Direction, OrderType,
     Event, UserEvent, Execution, Snapshot,
+    OrderDetail, TradeDetail,  # 新增：原始市场数据结构
     make_order_event, make_cancel_event,
     TradeCallback, OrderCallback, MultiBacktestEngine
 )
@@ -50,11 +54,16 @@ class InterfaceTestStrategy(Strategy):
             }
         }
         
-        # 4个核心记录文件
+        # 4个核心回调记录文件
         self.order_callbacks = []      # 下单回调记录
         self.cancel_callbacks = []     # 撤单回调记录
         self.trade_callbacks = []      # 成交回调记录
         self.position_updates = []     # 持仓更新记录
+        
+        # 3个原始行情数据记录文件
+        self.tick_events = []          # Tick事件记录 (onTickEvent)
+        self.order_events = []         # 订单事件记录 (onOrderEvent)  
+        self.execution_events = []     # 成交事件记录 (onTradeEvent)
         
         # 当前持仓
         self.current_position = 0
@@ -105,22 +114,174 @@ class InterfaceTestStrategy(Strategy):
             return datetime_str[11:19]
         return "00:00:00"
     
-    def onOrderEvent(self, event: Event) -> List[UserEvent]:
-        """处理订单推送事件（csord）"""
-        # 转换价格
-        ref_price = self._convert_price(event.price)
-        return self._process_event('csord', event.datetime, event.sym, ref_price)
+    def onOrderEvent(self, order) -> List[UserEvent]:
+        """处理订单推送事件（csord）- 接收原始OrderDetail结构"""
+        # 记录原始订单事件数据
+        try:
+            order_event_record = {
+                'event_type': 'csord',
+                'exchange': order.Exchange,
+                'instrument': order.Instrument,
+                'time': order.Time,
+                'channel_no': order.ChannelNo,
+                'order_no': order.OrderNo,
+                'price': order.Price / 10000.0,  # 原始值*10000，转换为元
+                'volume': order.Volume,
+                'side': order.Side,
+                'order_kind': order.OrderKind,
+                'seq_no': order.SeqNo,
+                'biz_index': order.BizIndex
+            }
+            self.order_events.append(order_event_record)
+        except Exception as e:
+            print(f"⚠️ [订单事件记录] 异常: {e}")
+        
+        # 为策略处理构造datetime字符串和symbol
+        datetime_str = f"2024-12-19 {order.Time//10000000:02d}:{(order.Time//100000)%100:02d}:{(order.Time//1000)%100:02d}.{order.Time%1000:03d}"
+        symbol = order.Instrument
+        ref_price = self._convert_price(order.Price)
+        return self._process_event('csord', datetime_str, symbol, ref_price)
     
-    def onTradeEvent(self, execution: Execution, datetime: str) -> List[UserEvent]:
-        """处理成交推送事件（cstra）"""
-        # 使用成交价格作为参考
-        ref_price = execution.price if execution.price > 1000 else execution.price * 10000
-        symbol = "000027.SZ"  # 使用实际合约
-        return self._process_event('cstra', datetime, symbol, ref_price)
+    def onTradeEvent(self, trade) -> List[UserEvent]:
+        """处理成交推送事件（cstra）- 接收原始TradeDetail结构"""
+        # 记录原始成交事件数据
+        try:
+            trade_record = {
+                'event_type': 'cstra',
+                'exchange': trade.Exchange,
+                'instrument': trade.Instrument,
+                'channel_no': trade.ChannelNo,
+                'trade_index': trade.TradeIndex,
+                'time': trade.Time,
+                'price': trade.Price / 10000.0,  # 原始值*10000，转换为元
+                'volume': trade.Volume,
+                'exec_type': trade.ExecType,
+                'buy_no': trade.BuyNo,
+                'sell_no': trade.SellNo,
+                'trade_bs_flag': trade.TradeBSFlag,
+                'biz_index': trade.BizIndex
+            }
+            self.execution_events.append(trade_record)
+        except Exception as e:
+            print(f"⚠️ [成交事件记录] 异常: {e}")
+        
+        # 为策略处理构造datetime字符串
+        datetime_str = f"2024-12-19 {trade.Time//10000000:02d}:{(trade.Time//100000)%100:02d}:{(trade.Time//1000)%100:02d}.{trade.Time%1000:03d}"
+        symbol = trade.Instrument
+        ref_price = self._convert_price(trade.Price)
+        return self._process_event('cstra', datetime_str, symbol, ref_price)
     
     def onTickEvent(self, snapshot: Snapshot) -> List[UserEvent]:
         """处理Tick推送事件（cstick）"""
-        # 限制处理频率
+        # 记录原始Tick事件数据（每次都记录，不受处理频率限制）
+        # 完整记录所有37个字段，顺序与market_info.h中的Snapshot结构定义一致
+        try:
+            tick_record = {
+                'event_type': 'cstick',
+                # === 基础信息字段 ===
+                'exchange': snapshot.Exchange,              # 交易所代码
+                'instrument': snapshot.Instrument,          # 合约代码
+                'trading_day': snapshot.TradingDay,         # 交易日
+                'action_day': snapshot.ActionDay,           # 自然日
+                'time': snapshot.Time,                      # 时间
+                'datetime': snapshot.datetime,              # 日期时间字符串
+                'status': snapshot.Status,                  # 状态
+                
+                # === 价格信息字段 (原始值*10000，转换为元) ===
+                'pre_close': snapshot.PreClose / 10000.0,          # 前收盘价
+                'open': snapshot.Open / 10000.0,                   # 开盘价
+                'high': snapshot.High / 10000.0,                   # 最高价
+                'low': snapshot.Low / 10000.0,                     # 最低价
+                'last_price': snapshot.last_price / 10000.0,       # 最新价
+                
+                # === 完整的10档买方行情 ===
+                'bid1': snapshot.bids[0] / 10000.0 if len(snapshot.bids) > 0 and snapshot.bids[0] > 0 else 0,
+                'bid2': snapshot.bids[1] / 10000.0 if len(snapshot.bids) > 1 and snapshot.bids[1] > 0 else 0,
+                'bid3': snapshot.bids[2] / 10000.0 if len(snapshot.bids) > 2 and snapshot.bids[2] > 0 else 0,
+                'bid4': snapshot.bids[3] / 10000.0 if len(snapshot.bids) > 3 and snapshot.bids[3] > 0 else 0,
+                'bid5': snapshot.bids[4] / 10000.0 if len(snapshot.bids) > 4 and snapshot.bids[4] > 0 else 0,
+                'bid6': snapshot.bids[5] / 10000.0 if len(snapshot.bids) > 5 and snapshot.bids[5] > 0 else 0,
+                'bid7': snapshot.bids[6] / 10000.0 if len(snapshot.bids) > 6 and snapshot.bids[6] > 0 else 0,
+                'bid8': snapshot.bids[7] / 10000.0 if len(snapshot.bids) > 7 and snapshot.bids[7] > 0 else 0,
+                'bid9': snapshot.bids[8] / 10000.0 if len(snapshot.bids) > 8 and snapshot.bids[8] > 0 else 0,
+                'bid10': snapshot.bids[9] / 10000.0 if len(snapshot.bids) > 9 and snapshot.bids[9] > 0 else 0,
+                
+                # === 完整的10档买方数量 ===
+                'bid1_size': snapshot.bid_sizes[0] if len(snapshot.bid_sizes) > 0 else 0,
+                'bid2_size': snapshot.bid_sizes[1] if len(snapshot.bid_sizes) > 1 else 0,
+                'bid3_size': snapshot.bid_sizes[2] if len(snapshot.bid_sizes) > 2 else 0,
+                'bid4_size': snapshot.bid_sizes[3] if len(snapshot.bid_sizes) > 3 else 0,
+                'bid5_size': snapshot.bid_sizes[4] if len(snapshot.bid_sizes) > 4 else 0,
+                'bid6_size': snapshot.bid_sizes[5] if len(snapshot.bid_sizes) > 5 else 0,
+                'bid7_size': snapshot.bid_sizes[6] if len(snapshot.bid_sizes) > 6 else 0,
+                'bid8_size': snapshot.bid_sizes[7] if len(snapshot.bid_sizes) > 7 else 0,
+                'bid9_size': snapshot.bid_sizes[8] if len(snapshot.bid_sizes) > 8 else 0,
+                'bid10_size': snapshot.bid_sizes[9] if len(snapshot.bid_sizes) > 9 else 0,
+                
+                # === 完整的10档卖方行情 ===
+                'ask1': snapshot.asks[0] / 10000.0 if len(snapshot.asks) > 0 and snapshot.asks[0] > 0 else 0,
+                'ask2': snapshot.asks[1] / 10000.0 if len(snapshot.asks) > 1 and snapshot.asks[1] > 0 else 0,
+                'ask3': snapshot.asks[2] / 10000.0 if len(snapshot.asks) > 2 and snapshot.asks[2] > 0 else 0,
+                'ask4': snapshot.asks[3] / 10000.0 if len(snapshot.asks) > 3 and snapshot.asks[3] > 0 else 0,
+                'ask5': snapshot.asks[4] / 10000.0 if len(snapshot.asks) > 4 and snapshot.asks[4] > 0 else 0,
+                'ask6': snapshot.asks[5] / 10000.0 if len(snapshot.asks) > 5 and snapshot.asks[5] > 0 else 0,
+                'ask7': snapshot.asks[6] / 10000.0 if len(snapshot.asks) > 6 and snapshot.asks[6] > 0 else 0,
+                'ask8': snapshot.asks[7] / 10000.0 if len(snapshot.asks) > 7 and snapshot.asks[7] > 0 else 0,
+                'ask9': snapshot.asks[8] / 10000.0 if len(snapshot.asks) > 8 and snapshot.asks[8] > 0 else 0,
+                'ask10': snapshot.asks[9] / 10000.0 if len(snapshot.asks) > 9 and snapshot.asks[9] > 0 else 0,
+                
+                # === 完整的10档卖方数量 ===
+                'ask1_size': snapshot.ask_sizes[0] if len(snapshot.ask_sizes) > 0 else 0,
+                'ask2_size': snapshot.ask_sizes[1] if len(snapshot.ask_sizes) > 1 else 0,
+                'ask3_size': snapshot.ask_sizes[2] if len(snapshot.ask_sizes) > 2 else 0,
+                'ask4_size': snapshot.ask_sizes[3] if len(snapshot.ask_sizes) > 3 else 0,
+                'ask5_size': snapshot.ask_sizes[4] if len(snapshot.ask_sizes) > 4 else 0,
+                'ask6_size': snapshot.ask_sizes[5] if len(snapshot.ask_sizes) > 5 else 0,
+                'ask7_size': snapshot.ask_sizes[6] if len(snapshot.ask_sizes) > 6 else 0,
+                'ask8_size': snapshot.ask_sizes[7] if len(snapshot.ask_sizes) > 7 else 0,
+                'ask9_size': snapshot.ask_sizes[8] if len(snapshot.ask_sizes) > 8 else 0,
+                'ask10_size': snapshot.ask_sizes[9] if len(snapshot.ask_sizes) > 9 else 0,
+                
+                # === 交易统计字段 ===
+                'num_trades': snapshot.NumTrades,                  # 成交笔数
+                'volume': snapshot.Volume,                         # 成交总量
+                'turnover': snapshot.Turnover,                     # 成交总金额
+                
+                # === 价格限制字段 ===
+                'upper_limit': snapshot.UpperLimit / 10000.0,      # 涨停价
+                'lower_limit': snapshot.LowerLimit / 10000.0,      # 跌停价
+                
+                # === 期货持仓字段 ===
+                'open_interest': snapshot.OpenInterest,            # 今持仓量
+                'pre_open_interest': snapshot.PreOpenInterest,     # 昨持仓量
+                'delta': snapshot.Delta / 10000.0,                 # 今虚实度
+                'pre_delta': snapshot.PreDelta / 10000.0,          # 昨虚实度
+                
+                # === 收盘和结算价格 ===
+                'close': snapshot.Close / 10000.0,                 # 今收盘价
+                'settle_price': snapshot.SettlePrice / 10000.0,    # 今结算价
+                'pre_settle_price': snapshot.PreSettlePrice / 10000.0, # 昨结算价
+                
+                # === 集合竞价字段 ===
+                'auction_price': snapshot.AuctionPrice / 10000.0,  # 波段性中断参考价
+                'auction_qty': snapshot.AuctionQty,                # 波段性中断集合竞价虚拟匹配量
+                
+                # === 其他字段 ===
+                'iopv': snapshot.Iopv / 10000.0,                   # IOPV
+                'total_ask_vol': snapshot.TotalAskVol,             # 委托卖出总量
+                'total_bid_vol': snapshot.TotalBidVol,             # 委托买入总量
+                'weighted_avg_bid_price': snapshot.WeightedAvgBidPrice / 10000.0,  # 加权平均委买价格
+                'weighted_avg_ask_price': snapshot.WeightedAvgAskPrice / 10000.0,  # 加权平均委卖价格
+                
+                # === ETF字段 ===
+                'etf_create_vol': snapshot.ETFCreateVol,           # ETF申购总量
+                'etf_redeem_vol': snapshot.ETFRedeemVol            # ETF赎回总量
+            }
+            self.tick_events.append(tick_record)
+        except Exception as e:
+            print(f"⚠️ [Tick事件记录] 异常: {e}")
+        
+        # 限制策略处理频率
         self.event_state['cstick']['event_count'] += 1
         if self.event_state['cstick']['event_count'] % 20 != 1:
             return []
@@ -401,9 +562,10 @@ class InterfaceTestStrategy(Strategy):
         return 'unknown'
     
     def save_records(self, output_dir: str):
-        """保存4个核心记录文件"""
+        """保存7个记录文件：4个回调记录 + 3个行情数据记录"""
         os.makedirs(output_dir, exist_ok=True)
         
+        # === 4个回调记录文件 ===
         # 1. 下单回调记录
         if self.order_callbacks:
             file_path = os.path.join(output_dir, "order_callbacks.csv")
@@ -427,6 +589,25 @@ class InterfaceTestStrategy(Strategy):
             file_path = os.path.join(output_dir, "position_updates.csv")
             pd.DataFrame(self.position_updates).to_csv(file_path, index=False, encoding='utf-8')
             print(f"✅ 持仓更新记录: {file_path} ({len(self.position_updates)} 条)")
+        
+        # === 3个原始行情数据文件 ===
+        # 5. Tick事件记录
+        if self.tick_events:
+            file_path = os.path.join(output_dir, "tick_events.csv")
+            pd.DataFrame(self.tick_events).to_csv(file_path, index=False, encoding='utf-8')
+            print(f"✅ Tick事件记录: {file_path} ({len(self.tick_events)} 条)")
+        
+        # 6. 订单事件记录  
+        if self.order_events:
+            file_path = os.path.join(output_dir, "order_events.csv")
+            pd.DataFrame(self.order_events).to_csv(file_path, index=False, encoding='utf-8')
+            print(f"✅ 订单事件记录: {file_path} ({len(self.order_events)} 条)")
+        
+        # 7. 成交事件记录
+        if self.execution_events:
+            file_path = os.path.join(output_dir, "trade_events.csv")
+            pd.DataFrame(self.execution_events).to_csv(file_path, index=False, encoding='utf-8')
+            print(f"✅ 成交事件记录: {file_path} ({len(self.execution_events)} 条)")
     
     def print_test_report(self):
         """打印接口测试报告"""
@@ -494,7 +675,7 @@ def run_interface_test(symbol: str, date: str, data_path: str, output_dir: str) 
         print(f"输出路径: {output_dir}")
         
         # 创建回测引擎
-        engine = BacktestEngine(symbol=symbol, date=date, data_path=data_path)
+        engine = engine = MultiBacktestEngine([symbol], date, data_path)
         
         # 创建接口测试策略
         strategy = InterfaceTestStrategy("INTERFACE_TEST")
@@ -529,7 +710,7 @@ def run_interface_test(symbol: str, date: str, data_path: str, output_dir: str) 
 def main():
     """主函数"""
     # 配置参数
-    symbol = "002466.SZ"
+    symbol = "000488.SZ"
     date = "2024-12-19" 
     data_path = "logs"
     output_dir = f"./interface_test_output/{symbol}_{date}"
@@ -563,11 +744,16 @@ def main():
     
     if success:
         print(f"\n🎉 接口验证测试成功完成！")
-        print(f"\n📁 输出的4个核心文件：")
+        print(f"\n📁 输出的7个文件：")
+        print(f"   【回调记录】")
         print(f"   1️⃣ {output_dir}/order_callbacks.csv   - 下单回调记录")
-        print(f"   2️⃣ {output_dir}/cancel_callbacks.csv  - 撤单回调记录")
+        print(f"   2️⃣ {output_dir}/cancel_callbacks.csv  - 撤单回调记录") 
         print(f"   3️⃣ {output_dir}/trade_callbacks.csv   - 成交回调记录")
         print(f"   4️⃣ {output_dir}/position_updates.csv  - 持仓信息更新")
+        print(f"   【原始市场数据】")
+        print(f"   5️⃣ {output_dir}/tick_events.csv       - Tick事件记录 (对应Snapshot)")
+        print(f"   6️⃣ {output_dir}/order_events.csv      - 订单事件记录 (对应OrderDetail)")
+        print(f"   7️⃣ {output_dir}/trade_events.csv      - 成交事件记录 (对应TradeDetail)")
         return 0
     else:
         print("❌ 接口验证测试失败")

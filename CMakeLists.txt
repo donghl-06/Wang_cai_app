@@ -108,7 +108,7 @@ unset(TASKFLOW_INCLUDE_DIR CACHE)
 # =========================
 # Python bindings
 # =========================
-option(BUILD_PYTHON "Build Python bindings" OFF)
+option(BUILD_PYTHON "Build Python bindings" ON)
 
 if (DEFINED SKBUILD OR BUILD_PYTHON)
   set(PYBIND11_FINDPYTHON ON)

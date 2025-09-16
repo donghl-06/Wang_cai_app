@@ -18,11 +18,11 @@ public:
     using Strategy::Strategy;
 
     // 事件回调：若 Python 未实现，则返回空列表，避免崩溃
-    std::vector<UserEvent> onOrderEvent(const Event& event) override {
+    std::vector<UserEvent> onOrderEvent(const OrderDetail& order) override {
         py::gil_scoped_acquire gil;
         if (py::function f = py::get_override(this, "onOrderEvent")) {
             try {
-                py::object ret = f(event);
+                py::object ret = f(order);
                 return ret.cast<std::vector<UserEvent>>();
             } catch (const py::error_already_set& e) {
                 py::print("[Strategy.onOrderEvent] exception:", e.what());
@@ -31,11 +31,11 @@ public:
         return {};
     }
 
-    std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) override {
+    std::vector<UserEvent> onTradeEvent(const TradeDetail& trade) override {
         py::gil_scoped_acquire gil;
         if (py::function f = py::get_override(this, "onTradeEvent")) {
             try {
-                py::object ret = f(execution, datetime);
+                py::object ret = f(trade);
                 return ret.cast<std::vector<UserEvent>>();
             } catch (const py::error_already_set& e) {
                 py::print("[Strategy.onTradeEvent] exception:", e.what());
@@ -135,28 +135,82 @@ PYBIND11_MODULE(wangcai_cpp, m) {
     m.attr("PriceIsInt") = py::bool_(true);
     m.attr("QuantityIsInt") = py::bool_(true);
 
-    // --------- Minimal type registrations to allow argument conversion ---------
-    py::class_<Snapshot>(m, "Snapshot")          
-    .def_readwrite("Instrument", &Snapshot::Instrument)
-    .def_readwrite("datetime", &Snapshot::datetime)
-    .def_readwrite("PreClose", &Snapshot::PreClose)
-    .def_readwrite("Open", &Snapshot::Open)
-    .def_readwrite("High", &Snapshot::High)
-    .def_readwrite("Low", &Snapshot::Low)
-    .def_readwrite("Close", &Snapshot::Close)
-    .def_readwrite("last_price", &Snapshot::last_price)
-    .def_readwrite("Volume", &Snapshot::Volume)
-    .def_readwrite("Turnover", &Snapshot::Turnover)
-    .def_readwrite("bids", &Snapshot::bids)
-    .def_readwrite("asks", &Snapshot::asks)
-    .def_readwrite("bid_sizes", &Snapshot::bid_sizes)
-    .def_readwrite("ask_sizes", &Snapshot::ask_sizes)
-    .def_readwrite("NumTrades", &Snapshot::NumTrades)
-    .def_readwrite("UpperLimit", &Snapshot::UpperLimit)
-    .def_readwrite("LowerLimit", &Snapshot::LowerLimit)
-    .def_readwrite("TotalAskVol", &Snapshot::TotalAskVol)
-    .def_readwrite("TotalBidVol", &Snapshot::TotalBidVol)
-    .def_readwrite("Iopv", &Snapshot::Iopv);
+    // --------- 完整的原始市场数据结构 ---------
+    
+    // OrderDetail - 逐笔委托行情 (csord数据)
+    py::class_<OrderDetail>(m, "OrderDetail")
+        .def_readwrite("Exchange", &OrderDetail::Exchange)
+        .def_readwrite("Instrument", &OrderDetail::Instrument)
+        .def_readwrite("Time", &OrderDetail::Time)
+        .def_readwrite("ChannelNo", &OrderDetail::ChannelNo)
+        .def_readwrite("OrderNo", &OrderDetail::OrderNo)
+        .def_readwrite("Price", &OrderDetail::Price)
+        .def_readwrite("Volume", &OrderDetail::Volume)
+        .def_readwrite("Side", &OrderDetail::Side)
+        .def_property("OrderKind",
+            [](const OrderDetail& o){ return std::string(1, o.OrderKind); },
+            [](OrderDetail& o, const std::string& s){ o.OrderKind = s.empty()? '\0' : s[0]; })
+        .def_readwrite("SeqNo", &OrderDetail::SeqNo)
+        .def_readwrite("BizIndex", &OrderDetail::BizIndex);
+    
+    // TradeDetail - 逐笔成交行情 (cstra数据)
+    py::class_<TradeDetail>(m, "TradeDetail")
+        .def_readwrite("Exchange", &TradeDetail::Exchange)
+        .def_readwrite("Instrument", &TradeDetail::Instrument)
+        .def_readwrite("ChannelNo", &TradeDetail::ChannelNo)
+        .def_readwrite("TradeIndex", &TradeDetail::TradeIndex)
+        .def_readwrite("Time", &TradeDetail::Time)
+        .def_readwrite("Price", &TradeDetail::Price)
+        .def_readwrite("Volume", &TradeDetail::Volume)
+        .def_property("ExecType",
+            [](const TradeDetail& t){ return std::string(1, t.ExecType); },
+            [](TradeDetail& t, const std::string& s){ t.ExecType = s.empty()? '\0' : s[0]; })
+        .def_readwrite("BuyNo", &TradeDetail::BuyNo)
+        .def_readwrite("SellNo", &TradeDetail::SellNo)
+        .def_property("TradeBSFlag",
+            [](const TradeDetail& t){ return std::string(1, t.TradeBSFlag); },
+            [](TradeDetail& t, const std::string& s){ t.TradeBSFlag = s.empty()? '\0' : s[0]; })
+        .def_readwrite("BizIndex", &TradeDetail::BizIndex);
+    
+    // Snapshot - 行情快照 (cstick数据) - 完整字段
+    py::class_<Snapshot>(m, "Snapshot")
+        .def_readwrite("Exchange", &Snapshot::Exchange)
+        .def_readwrite("Instrument", &Snapshot::Instrument)
+        .def_readwrite("TradingDay", &Snapshot::TradingDay)
+        .def_readwrite("ActionDay", &Snapshot::ActionDay)
+        .def_readwrite("Time", &Snapshot::Time)
+        .def_readwrite("datetime", &Snapshot::datetime)
+        .def_readwrite("Status", &Snapshot::Status)
+        .def_readwrite("PreClose", &Snapshot::PreClose)
+        .def_readwrite("Open", &Snapshot::Open)
+        .def_readwrite("High", &Snapshot::High)
+        .def_readwrite("Low", &Snapshot::Low)
+        .def_readwrite("Close", &Snapshot::Close)
+        .def_readwrite("last_price", &Snapshot::last_price)
+        .def_readwrite("Volume", &Snapshot::Volume)
+        .def_readwrite("Turnover", &Snapshot::Turnover)
+        .def_readwrite("bids", &Snapshot::bids)
+        .def_readwrite("asks", &Snapshot::asks)
+        .def_readwrite("bid_sizes", &Snapshot::bid_sizes)
+        .def_readwrite("ask_sizes", &Snapshot::ask_sizes)
+        .def_readwrite("NumTrades", &Snapshot::NumTrades)
+        .def_readwrite("UpperLimit", &Snapshot::UpperLimit)
+        .def_readwrite("LowerLimit", &Snapshot::LowerLimit)
+        .def_readwrite("TotalAskVol", &Snapshot::TotalAskVol)
+        .def_readwrite("TotalBidVol", &Snapshot::TotalBidVol)
+        .def_readwrite("OpenInterest", &Snapshot::OpenInterest)
+        .def_readwrite("PreOpenInterest", &Snapshot::PreOpenInterest)
+        .def_readwrite("Delta", &Snapshot::Delta)
+        .def_readwrite("PreDelta", &Snapshot::PreDelta)
+        .def_readwrite("SettlePrice", &Snapshot::SettlePrice)
+        .def_readwrite("PreSettlePrice", &Snapshot::PreSettlePrice)
+        .def_readwrite("AuctionPrice", &Snapshot::AuctionPrice)
+        .def_readwrite("AuctionQty", &Snapshot::AuctionQty)
+        .def_readwrite("Iopv", &Snapshot::Iopv)
+        .def_readwrite("WeightedAvgBidPrice", &Snapshot::WeightedAvgBidPrice)
+        .def_readwrite("WeightedAvgAskPrice", &Snapshot::WeightedAvgAskPrice)
+        .def_readwrite("ETFCreateVol", &Snapshot::ETFCreateVol)
+        .def_readwrite("ETFRedeemVol", &Snapshot::ETFRedeemVol);
 
 
    // --- TradeCallback ---
@@ -257,14 +311,29 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def_property_readonly("price", [](const Execution& e){ return e.price; })
         .def_property_readonly("volume", [](const Execution& e){ return e.volume; });
 
-    // Event (minimal fields needed for onOrderEvent)
+    // Event (包含原始市场数据字段)
     py::class_<Event>(m, "Event")
         .def_property_readonly("datetime", [](const Event& e){ return e.datetime; })
         .def_property_readonly("sym", [](const Event& e){ return e.sym; })
         .def_property_readonly("price", [](const Event& e){ return e.price; })
         .def_property_readonly("size", [](const Event& e){ return e.size; })
         .def_property_readonly("side", [](const Event& e){ return e.side; })
-        .def_property_readonly("ordertype", [](const Event& e){ return e.ordertype; });
+        .def_property_readonly("ordertype", [](const Event& e){ return e.ordertype; })
+        .def_property_readonly("orderid", [](const Event& e){ return e.orderid; })
+        .def_property_readonly("channelno", [](const Event& e){ return e.channelno; })
+        .def_property_readonly("seqno", [](const Event& e){ return e.seqno; })
+        .def_property_readonly("bizindex", [](const Event& e){ return e.bizindex; })
+        .def_property_readonly("exectype", [](const Event& e){ return e.exectype; })
+        .def_property_readonly("tradebsflag", [](const Event& e){ return e.tradebsflag; })
+        // === 新增：原始市场数据字段 ===
+        .def_property_readonly("exchange", [](const Event& e){ return e.exchange; })
+        .def_property_readonly("trading_day", [](const Event& e){ return e.trading_day; })
+        .def_property_readonly("action_day", [](const Event& e){ return e.action_day; })
+        .def_property_readonly("status", [](const Event& e){ return e.status; })
+        .def_property_readonly("order_kind", [](const Event& e){ return std::string(1, e.order_kind); })
+        .def_property_readonly("trade_index", [](const Event& e){ return e.trade_index; })
+        .def_property_readonly("time_raw", [](const Event& e){ return e.time_raw; })
+        .def_property_readonly("source", [](const Event& e){ return e.source; });
 
     // Strategy (abstract)
     py::class_<Strategy, PyStrategy, std::shared_ptr<Strategy>>(m, "Strategy")

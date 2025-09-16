@@ -6,6 +6,7 @@
 #include "close_auction_engine.hpp"
 #include "data_manager.h"
 #include "OrderLoader.h"
+#include "market_info.h"
 #include <queue>
 #include <functional>
 #include <memory>
@@ -16,16 +17,21 @@
 
 namespace wangcai {
 
+// 前向声明和类型别名
+using OrderDetail = wangcai::OrderDetail;
+using TradeDetail = wangcai::TradeDetail; 
+using Snapshot = wangcai::Snapshot;
+
 // 用户策略接口
 class Strategy {
 public:
     virtual ~Strategy() = default;
     
-    // 接收订单事件，返回要处理的事件列表（下单或撤单）
-    virtual std::vector<UserEvent> onOrderEvent(const Event& event) = 0;
+    // 接收订单事件，返回要处理的事件列表（下单或撤单）  
+    virtual std::vector<UserEvent> onOrderEvent(const OrderDetail& order) = 0;
     
     // 接收成交事件，返回要处理的事件列表（下单或撤单）
-    virtual std::vector<UserEvent> onTradeEvent(const Execution& execution, const std::string& datetime) = 0;
+    virtual std::vector<UserEvent> onTradeEvent(const TradeDetail& trade) = 0;
 
     //  接受Tick事件，返回要处理的事件列表（下单或撤单）
     virtual std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) = 0;

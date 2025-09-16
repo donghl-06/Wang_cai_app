@@ -52,7 +52,16 @@ struct Event {
     int64_t totalasize;
     int64_t iopv;
     // tick end
-    std::string source; // "ord" 或 "tra" 或 “tick"
+    std::string source; // "ord" 或 "tra" 或 "tick"
+    
+    // === 新增：原始市场数据字段（撮合不会产生的） ===
+    int exchange;           // 交易所代码 (0=上海, 1=深圳)
+    int trading_day;        // 交易日 (格式：YYYYMMDD)  
+    int action_day;         // 自然日 (格式：YYYYMMDD)
+    std::string status;     // 状态字符串
+    char order_kind;        // 委托类别 ('1'市价/'2'限价/'U'本方最优)
+    int64_t trade_index;    // 成交索引 (TradeDetail中的TradeIndex)
+    int time_raw;           // 原始时间字段 (市场数据中的Time字段)
 
     static bool is_SZ;
     // uint64_t sort_key; // 排序键：SZ用orderid，SH用bizindex
@@ -67,7 +76,10 @@ struct Event {
           const std::array<std::uint64_t, 10>& asks, const std::array<Quantity, 10>& ask_sizes,
           int64_t avgb, int64_t avga, int64_t total_b, int64_t total_a, int64_t iopv,
           // tick data end
-          const std::string& src) 
+          const std::string& src,
+          // === 新增：原始市场数据字段 ===
+          int exch = -1, int tday = -1, int aday = -1, const std::string& stat = "",
+          char okind = '\0', int64_t tidx = -1, int traw = -1) 
         : datetime(dt), sym(symbol), price(p), size(sz), side(sd), ordertype(ot), orderid(oid),
           channelno(ch), seqno(seq), bizindex(biz), bidorderid(bid), askorderid(ask), tradeid(tid),
           exectype(et), tradebsflag(tbf),
@@ -75,8 +87,8 @@ struct Event {
           volume(vol), turnover(trn), tradecount(trcnt),
           bids_(bids), bid_sizes_(bid_sizes), asks_(asks), ask_sizes_(ask_sizes),
           avgbid(avgb), avgask(avga), totalbsize(total_b), totalasize(total_a), iopv(iopv),
-        
-          source(src) {}
+          source(src), exchange(exch), trading_day(tday), action_day(aday), status(stat),
+          order_kind(okind), trade_index(tidx), time_raw(traw) {}
 };
 
 

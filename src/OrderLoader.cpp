@@ -291,10 +291,38 @@ void InfoLoader::load_sz_info(const std::string& order_filename, std::string tra
                 order_book.first_trade_px_[orderid] = 0;    // 只缓存，先不插事件
             }
 
-            // 创建并插入订单事件
+            // 解析时间字段用于填充time_raw
+            int time_raw = 0;
+            if (datetime.length() >= 19) {
+                // 从 "YYYY-MM-DD HH:MM:SS.sss" 格式提取HHMMSSsss
+                std::string time_part = datetime.substr(11, 8); // HH:MM:SS
+                std::string ms_part = datetime.length() > 20 ? datetime.substr(20, 3) : "000"; // .sss
+                // 移除冒号并拼接：HHMMSSsss
+                time_part.erase(std::remove(time_part.begin(), time_part.end(), ':'), time_part.end());
+                time_raw = std::stoi(time_part + ms_part);
+            }
+            
+            // 提取trading_day (从datetime中提取YYYYMMDD)
+            int trading_day = 0;
+            if (datetime.length() >= 10) {
+                std::string date_part = datetime.substr(0, 10); // YYYY-MM-DD
+                date_part.erase(std::remove(date_part.begin(), date_part.end(), '-'), date_part.end());
+                trading_day = std::stoi(date_part);
+            }
+            
+            // 创建并插入订单事件，填充新增的原始市场数据字段
             Event order_event(datetime, sym, price, size, side, ordertype, orderid, channelno, 
                             seqno, bizindex, -1, -1, -1, "", "", 
-                            -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1, "ord");
+                            -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1, "ord",
+                            // === 新增的原始市场数据字段 ===
+                            1,                              // exchange (SZ深交所=1)
+                            trading_day,                    // trading_day  
+                            trading_day,                    // action_day (暂时与trading_day相同)
+                            "",                             // status (委托数据中通常没有状态字段)
+                            static_cast<char>('0' + ordertype), // order_kind ('1'市价/'2'限价/'3'本方最优等)
+                            -1,                             // trade_index (订单数据中无此字段)
+                            time_raw                        // time_raw (HHMMSSsss格式)
+            );
             OrderBook::insertEvent(order_event);
 
             // 创建订单对象用于引擎处理
