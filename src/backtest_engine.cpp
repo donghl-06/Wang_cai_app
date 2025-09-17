@@ -4,6 +4,8 @@
 #include <cmath>
 #include <fstream> // Added for file operations
 #include <ranges>
+#include <thread>  // 用于 sleep_for
+#include <chrono>  // 用于 microseconds
 namespace wangcai {
 static OrderType toOrderType(const Event& ev) {
     // 仅深市有 1/2/3 的区分；沪市全用限价
@@ -926,8 +928,12 @@ void BacktestEngine::processEvent(const Event& ev) {
 /*
  * finish
  * 在调用 processEvent() 完成所有事件后，调用此方法执行收盘结算并输出结果。
+ * 会先等待所有策略完成处理，确保没有遗漏的事件。
  */
 void BacktestEngine::finish() {
+    // 等待所有策略完成处理
+    waitForStrategiesCompletion();
+    
     // 如果已进入收盘集合竞价阶段，则结算
     if (closing_mode_) {
         close_engine_->settle();
@@ -942,6 +948,73 @@ void BacktestEngine::finish() {
         std::cout << "总交易笔数: " << trade_records_.size() << std::endl;
     }
     // printResults();
+}
+
+// 检查所有策略是否已完成处理
+bool BacktestEngine::areAllStrategiesComplete() const {
+    // 检查所有策略是否完成处理
+    for (const auto& strategy : strategies_) {
+        if (!strategy->isProcessingComplete()) {
+            return false;
+        }
+    }
+    
+    // 检查是否还有待处理的事件
+    if (!pending_trade_events_.empty()) {
+        return false;
+    }
+    
+    return true;
+}
+
+// 等待所有策略完成处理
+void BacktestEngine::waitForStrategiesCompletion() {
+    const int max_wait_iterations = 1000; // 最大等待轮次
+    int wait_count = 0;
+    
+    std::cout << "等待策略完成处理中..." << std::endl;
+    
+    while (!areAllStrategiesComplete() && wait_count < max_wait_iterations) {
+        wait_count++;
+        
+        // 输出等待状态信息
+        if (wait_count % 100 == 0) {
+            std::cout << "等待第 " << wait_count << " 轮: ";
+            
+            // 显示未完成的策略
+            for (const auto& strategy : strategies_) {
+                if (!strategy->isProcessingComplete()) {
+                    std::cout << strategy->getStrategyId() << " ";
+                }
+            }
+            
+            // 显示待处理事件数量
+            if (!pending_trade_events_.empty()) {
+                std::cout << "(待处理事件: " << pending_trade_events_.size() << ") ";
+            }
+            
+            std::cout << std::endl;
+        }
+        
+        // 短暂休眠，给策略时间完成处理（如果是异步策略）
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    
+    if (wait_count >= max_wait_iterations) {
+        std::cout << "⚠️  等待超时！部分策略可能未完成处理:" << std::endl;
+        
+        for (const auto& strategy : strategies_) {
+            if (!strategy->isProcessingComplete()) {
+                std::cout << "   - " << strategy->getStrategyId() << " 未完成" << std::endl;
+            }
+        }
+        
+        if (!pending_trade_events_.empty()) {
+            std::cout << "   - 剩余待处理事件: " << pending_trade_events_.size() << " 个" << std::endl;
+        }
+    } else {
+        std::cout << "✅ 所有策略处理完成 (等待轮次: " << wait_count << ")" << std::endl;
+    }
 }
 
 

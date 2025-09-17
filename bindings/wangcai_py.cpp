@@ -16,11 +16,29 @@ using namespace wangcai;
 class PyStrategy : public Strategy {
 public:
     using Strategy::Strategy;
+    
+private:
+    // 自动跟踪处理中的事件数量
+    mutable std::atomic<int> processing_count_{0};
+    
+    // RAII辅助类：自动管理处理计数器
+    class ProcessingGuard {
+        std::atomic<int>& counter_;
+    public:
+        ProcessingGuard(std::atomic<int>& counter) : counter_(counter) {
+            counter_.fetch_add(1);
+        }
+        ~ProcessingGuard() {
+            counter_.fetch_sub(1);
+        }
+    };
 
-    // 事件回调：若 Python 未实现，则返回空列表，避免崩溃
+public:
+    // 事件回调：自动跟踪处理状态
     std::vector<UserEvent> onOrderEvent(const OrderDetail& order) override {
         py::gil_scoped_acquire gil;
         if (py::function f = py::get_override(this, "onOrderEvent")) {
+            ProcessingGuard guard(processing_count_);  // 自动管理计数器
             try {
                 py::object ret = f(order);
                 return ret.cast<std::vector<UserEvent>>();
@@ -34,6 +52,7 @@ public:
     std::vector<UserEvent> onTradeEvent(const TradeDetail& trade) override {
         py::gil_scoped_acquire gil;
         if (py::function f = py::get_override(this, "onTradeEvent")) {
+            ProcessingGuard guard(processing_count_);  // 自动管理计数器
             try {
                 py::object ret = f(trade);
                 return ret.cast<std::vector<UserEvent>>();
@@ -47,6 +66,7 @@ public:
     std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) override {
         py::gil_scoped_acquire gil;
         if (py::function f = py::get_override(this, "onTickEvent")) {
+            ProcessingGuard guard(processing_count_);  // 自动管理计数器
             try {
                 py::object ret = f(snapshot);
                 return ret.cast<std::vector<UserEvent>>();
@@ -98,6 +118,22 @@ public:
             try { f(callback); }
             catch (const py::error_already_set& e) { py::print("[Strategy.onOrderCallback] exception:", e.what()); }
         }
+    }
+
+    // 自动检测处理完成状态
+    bool isProcessingComplete() const override {
+        // 如果Python重写了此方法，调用Python版本
+        py::gil_scoped_acquire gil;
+        if (py::function f = py::get_override(this, "isProcessingComplete")) {
+            try { 
+                return f().cast<bool>(); 
+            }
+            catch (const py::error_already_set& e) { 
+                py::print("[Strategy.isProcessingComplete] exception:", e.what()); 
+            }
+        }
+        // 否则使用自动计数器检查
+        return processing_count_.load() == 0;
     }
 };
 
@@ -345,7 +381,8 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("onOrderCancelled", &Strategy::onOrderCancelled)
         .def("getStrategyId", &Strategy::getStrategyId)
         .def("onTradeCallback", &Strategy::onTradeCallback)
-        .def("onOrderCallback", &Strategy::onOrderCallback);
+        .def("onOrderCallback", &Strategy::onOrderCallback)
+        .def("isProcessingComplete", &Strategy::isProcessingComplete);
 
     // BacktestEngine
     py::class_<BacktestEngine>(m, "BacktestEngine")

@@ -14,6 +14,7 @@
 #include <vector>
 #include <map>
 #include <fstream>
+#include <atomic>  // 用于 atomic<bool>
 
 namespace wangcai {
 
@@ -49,6 +50,9 @@ public:
     // 获取策略ID
     virtual std::string getStrategyId() const = 0;
     
+    // 检查策略是否已完成所有处理（基于atomic状态变量）
+    virtual bool isProcessingComplete() const { return processing_complete_.load(); }
+    
     // 获取当前持仓（由策略基类管理）
     int64_t getPosition(const std::string& symbol) const {
         return position_manager_.getPosition(symbol);
@@ -67,10 +71,22 @@ public:
     void updateStrategyPosition(const std::string& symbol, int64_t quantity_change) {
         position_manager_.updatePosition(symbol, quantity_change);
     }
+    
+    // 异步处理状态管理（公有方法，供Python策略调用）
+    void markProcessingStarted() {
+        processing_complete_.store(false);
+    }
+    
+    void markProcessingComplete() {
+        processing_complete_.store(true);
+    }
 
 protected:
     // 持仓管理器，由基类提供
     mutable StrategyPositionManager position_manager_;
+    
+    // 异步处理状态管理（用于异步策略）
+    mutable std::atomic<bool> processing_complete_{true}; // 默认同步策略已完成
     
     // 更新持仓的受保护方法，供派生类使用
     void updatePosition(const std::string& symbol, int64_t quantity_change) {
@@ -135,6 +151,12 @@ private:
     
     // 新增：通知策略下单回调
     void notifyStrategyOrderCallback(const std::string& strategy_id, const OrderCallback& callback);
+    
+    // 检查所有策略是否已完成处理
+    bool areAllStrategiesComplete() const;
+    
+    // 等待所有策略完成处理
+    void waitForStrategiesCompletion();
     
     // 成员变量
     std::string symbol_;
