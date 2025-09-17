@@ -399,6 +399,15 @@ void InfoLoader::load_traders_from_csv(const std::string& csv_file, wangcai::Ord
             int64_t channelno = channelno_str.empty() ? 0 : std::stoi(channelno_str);
             int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoll(bizindex_str);
             
+            // 计算 time_raw (HHMMSSsss)
+            int time_raw = 0;
+            if (datetime.length() >= 19) {
+                std::string time_part = datetime.substr(11, 8); // HH:MM:SS
+                std::string ms_part   = datetime.length() > 20 ? datetime.substr(20, 3) : "000";
+                time_part.erase(std::remove(time_part.begin(), time_part.end(), ':'), time_part.end());
+                time_raw = std::stoi(time_part + ms_part);
+            }
+
             // 记录最优成交价（买方记录最高价，卖方记录最低价）
             if (bidorderid != 0) {
                 auto it = order_book.first_trade_px_.find(bidorderid);
@@ -420,7 +429,14 @@ void InfoLoader::load_traders_from_csv(const std::string& csv_file, wangcai::Ord
 
             Event trade_event(datetime, sym, price, size, -1, -1, tradeid, channelno, -1, bizindex, 
                             bidorderid, askorderid, tradeid, exectype, tradebsflag, 
-                            -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1,"tra");
+                            -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1,"tra",
+                            -1,              // exchange 未知
+                            0,               // trading_day 暂设0
+                            0,               // action_day
+                            "",             // status
+                            '\0',            // order_kind
+                            tradeid,         // trade_index
+                            time_raw);       // time_raw
             // 创建并插入撤单事件
            if (exectype == "2") {   
                 OrderBook::insertEvent(trade_event);
@@ -582,9 +598,20 @@ void InfoLoader::load_cstick_from_csv(const std::string& csv_file, wangcai::Orde
             int64_t totalasize = totalasize_str.empty() ? 0 : std::stoul(totalasize_str);
             int64_t iopv = iopv_str.empty() ? 0 : std::stod(iopv_str);
 
+            // ================= 计算 time_raw (HHMMSSsss) =================
+            int time_raw = 0;
+            if (datetime.length() >= 19) {
+                // 从 "YYYY-MM-DD HH:MM:SS.sss" 中提取 HHMMSSsss
+                std::string time_part = datetime.substr(11, 8);                     // HH:MM:SS
+                std::string ms_part   = datetime.length() > 20 ? datetime.substr(20, 3) : "000"; // 毫秒
+                time_part.erase(std::remove(time_part.begin(), time_part.end(), ':'), time_part.end()); // 移除冒号
+                time_raw = std::stoi(time_part + ms_part);                                           // 拼接并转为int
+            }
+
             Event tick_event(datetime, sym, -1, -1, -1, -1, -1, -1, -1, -1, 
                             -1, -1, -1, "", "", 
-                            prevclose, open, high, low, close, volume, turnover, tradecount, bids, bid_sizes, asks, ask_sizes, avgbid, avgask, totalbsize, totalasize, iopv, "tick");
+                            prevclose, open, high, low, close, volume, turnover, tradecount, bids, bid_sizes, asks, ask_sizes, avgbid, avgask, totalbsize, totalasize, iopv, "tick" 
+                            , -1, -1, -1, "", '\0', -1, time_raw);
                             
             OrderBook::insertTick(tick_event);
         } catch (const std::exception& e) {

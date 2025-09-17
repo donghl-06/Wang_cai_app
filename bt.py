@@ -119,18 +119,17 @@ class InterfaceTestStrategy(Strategy):
         # 记录原始订单事件数据
         try:
             order_event_record = {
-                'event_type': 'csord',
-                'exchange': order.Exchange,
-                'instrument': order.Instrument,
-                'time': order.Time,
-                'channel_no': order.ChannelNo,
-                'order_no': order.OrderNo,
-                'price': order.Price / 10000.0,  # 原始值*10000，转换为元
-                'volume': order.Volume,
-                'side': order.Side,
-                'order_kind': order.OrderKind,
-                'seq_no': order.SeqNo,
-                'biz_index': order.BizIndex
+                'Exchange': order.Exchange,
+                'Instrument': order.Instrument,
+                'Time': order.Time,
+                'ChannelNo': order.ChannelNo,
+                'OrderNo': order.OrderNo,
+                'Price': order.Price,           # 保留厘单位
+                'Volume': order.Volume,
+                'Side': order.Side,
+                'OrderKind': order.OrderKind,
+                'SeqNo': order.SeqNo,
+                'BizIndex': order.BizIndex
             }
             self.order_events.append(order_event_record)
         except Exception as e:
@@ -147,19 +146,18 @@ class InterfaceTestStrategy(Strategy):
         # 记录原始成交事件数据
         try:
             trade_record = {
-                'event_type': 'cstra',
-                'exchange': trade.Exchange,
-                'instrument': trade.Instrument,
-                'channel_no': trade.ChannelNo,
-                'trade_index': trade.TradeIndex,
-                'time': trade.Time,
-                'price': trade.Price / 10000.0,  # 原始值*10000，转换为元
-                'volume': trade.Volume,
-                'exec_type': trade.ExecType,
-                'buy_no': trade.BuyNo,
-                'sell_no': trade.SellNo,
-                'trade_bs_flag': trade.TradeBSFlag,
-                'biz_index': trade.BizIndex
+                'Exchange': trade.Exchange,
+                'Instrument': trade.Instrument,
+                'Time': trade.Time,
+                'ChannelNo': trade.ChannelNo,
+                'TradeIndex': trade.TradeIndex,
+                'Price': trade.Price,
+                'Volume': trade.Volume,
+                'ExecType': trade.ExecType,
+                'BuyNo': trade.BuyNo,
+                'SellNo': trade.SellNo,
+                'TradeBSFlag': trade.TradeBSFlag,
+                'BizIndex': trade.BizIndex
             }
             self.execution_events.append(trade_record)
         except Exception as e:
@@ -177,105 +175,35 @@ class InterfaceTestStrategy(Strategy):
         # 完整记录所有37个字段，顺序与market_info.h中的Snapshot结构定义一致
         try:
             tick_record = {
-                'event_type': 'cstick',
-                # === 基础信息字段 ===
-                'exchange': snapshot.Exchange,              # 交易所代码
-                'instrument': snapshot.Instrument,          # 合约代码
-                'trading_day': snapshot.TradingDay,         # 交易日
-                'action_day': snapshot.ActionDay,           # 自然日
-                'time': snapshot.Time,                      # 时间
-                'datetime': snapshot.datetime,              # 日期时间字符串
-                'status': snapshot.Status,                  # 状态
-                
-                # === 价格信息字段 (原始值*10000，转换为元) ===
-                'pre_close': snapshot.PreClose / 10000.0,          # 前收盘价
-                'open': snapshot.Open / 10000.0,                   # 开盘价
-                'high': snapshot.High / 10000.0,                   # 最高价
-                'low': snapshot.Low / 10000.0,                     # 最低价
-                'last_price': snapshot.last_price / 10000.0,       # 最新价
-                
-                # === 完整的10档买方行情 ===
-                'bid1': snapshot.bids[0] / 10000.0 if len(snapshot.bids) > 0 and snapshot.bids[0] > 0 else 0,
-                'bid2': snapshot.bids[1] / 10000.0 if len(snapshot.bids) > 1 and snapshot.bids[1] > 0 else 0,
-                'bid3': snapshot.bids[2] / 10000.0 if len(snapshot.bids) > 2 and snapshot.bids[2] > 0 else 0,
-                'bid4': snapshot.bids[3] / 10000.0 if len(snapshot.bids) > 3 and snapshot.bids[3] > 0 else 0,
-                'bid5': snapshot.bids[4] / 10000.0 if len(snapshot.bids) > 4 and snapshot.bids[4] > 0 else 0,
-                'bid6': snapshot.bids[5] / 10000.0 if len(snapshot.bids) > 5 and snapshot.bids[5] > 0 else 0,
-                'bid7': snapshot.bids[6] / 10000.0 if len(snapshot.bids) > 6 and snapshot.bids[6] > 0 else 0,
-                'bid8': snapshot.bids[7] / 10000.0 if len(snapshot.bids) > 7 and snapshot.bids[7] > 0 else 0,
-                'bid9': snapshot.bids[8] / 10000.0 if len(snapshot.bids) > 8 and snapshot.bids[8] > 0 else 0,
-                'bid10': snapshot.bids[9] / 10000.0 if len(snapshot.bids) > 9 and snapshot.bids[9] > 0 else 0,
-                
-                # === 完整的10档买方数量 ===
-                'bid1_size': snapshot.bid_sizes[0] if len(snapshot.bid_sizes) > 0 else 0,
-                'bid2_size': snapshot.bid_sizes[1] if len(snapshot.bid_sizes) > 1 else 0,
-                'bid3_size': snapshot.bid_sizes[2] if len(snapshot.bid_sizes) > 2 else 0,
-                'bid4_size': snapshot.bid_sizes[3] if len(snapshot.bid_sizes) > 3 else 0,
-                'bid5_size': snapshot.bid_sizes[4] if len(snapshot.bid_sizes) > 4 else 0,
-                'bid6_size': snapshot.bid_sizes[5] if len(snapshot.bid_sizes) > 5 else 0,
-                'bid7_size': snapshot.bid_sizes[6] if len(snapshot.bid_sizes) > 6 else 0,
-                'bid8_size': snapshot.bid_sizes[7] if len(snapshot.bid_sizes) > 7 else 0,
-                'bid9_size': snapshot.bid_sizes[8] if len(snapshot.bid_sizes) > 8 else 0,
-                'bid10_size': snapshot.bid_sizes[9] if len(snapshot.bid_sizes) > 9 else 0,
-                
-                # === 完整的10档卖方行情 ===
-                'ask1': snapshot.asks[0] / 10000.0 if len(snapshot.asks) > 0 and snapshot.asks[0] > 0 else 0,
-                'ask2': snapshot.asks[1] / 10000.0 if len(snapshot.asks) > 1 and snapshot.asks[1] > 0 else 0,
-                'ask3': snapshot.asks[2] / 10000.0 if len(snapshot.asks) > 2 and snapshot.asks[2] > 0 else 0,
-                'ask4': snapshot.asks[3] / 10000.0 if len(snapshot.asks) > 3 and snapshot.asks[3] > 0 else 0,
-                'ask5': snapshot.asks[4] / 10000.0 if len(snapshot.asks) > 4 and snapshot.asks[4] > 0 else 0,
-                'ask6': snapshot.asks[5] / 10000.0 if len(snapshot.asks) > 5 and snapshot.asks[5] > 0 else 0,
-                'ask7': snapshot.asks[6] / 10000.0 if len(snapshot.asks) > 6 and snapshot.asks[6] > 0 else 0,
-                'ask8': snapshot.asks[7] / 10000.0 if len(snapshot.asks) > 7 and snapshot.asks[7] > 0 else 0,
-                'ask9': snapshot.asks[8] / 10000.0 if len(snapshot.asks) > 8 and snapshot.asks[8] > 0 else 0,
-                'ask10': snapshot.asks[9] / 10000.0 if len(snapshot.asks) > 9 and snapshot.asks[9] > 0 else 0,
-                
-                # === 完整的10档卖方数量 ===
-                'ask1_size': snapshot.ask_sizes[0] if len(snapshot.ask_sizes) > 0 else 0,
-                'ask2_size': snapshot.ask_sizes[1] if len(snapshot.ask_sizes) > 1 else 0,
-                'ask3_size': snapshot.ask_sizes[2] if len(snapshot.ask_sizes) > 2 else 0,
-                'ask4_size': snapshot.ask_sizes[3] if len(snapshot.ask_sizes) > 3 else 0,
-                'ask5_size': snapshot.ask_sizes[4] if len(snapshot.ask_sizes) > 4 else 0,
-                'ask6_size': snapshot.ask_sizes[5] if len(snapshot.ask_sizes) > 5 else 0,
-                'ask7_size': snapshot.ask_sizes[6] if len(snapshot.ask_sizes) > 6 else 0,
-                'ask8_size': snapshot.ask_sizes[7] if len(snapshot.ask_sizes) > 7 else 0,
-                'ask9_size': snapshot.ask_sizes[8] if len(snapshot.ask_sizes) > 8 else 0,
-                'ask10_size': snapshot.ask_sizes[9] if len(snapshot.ask_sizes) > 9 else 0,
-                
-                # === 交易统计字段 ===
-                'num_trades': snapshot.NumTrades,                  # 成交笔数
-                'volume': snapshot.Volume,                         # 成交总量
-                'turnover': snapshot.Turnover,                     # 成交总金额
-                
-                # === 价格限制字段 ===
-                'upper_limit': snapshot.UpperLimit / 10000.0,      # 涨停价
-                'lower_limit': snapshot.LowerLimit / 10000.0,      # 跌停价
-                
-                # === 期货持仓字段 ===
-                'open_interest': snapshot.OpenInterest,            # 今持仓量
-                'pre_open_interest': snapshot.PreOpenInterest,     # 昨持仓量
-                'delta': snapshot.Delta / 10000.0,                 # 今虚实度
-                'pre_delta': snapshot.PreDelta / 10000.0,          # 昨虚实度
-                
-                # === 收盘和结算价格 ===
-                'close': snapshot.Close / 10000.0,                 # 今收盘价
-                'settle_price': snapshot.SettlePrice / 10000.0,    # 今结算价
-                'pre_settle_price': snapshot.PreSettlePrice / 10000.0, # 昨结算价
-                
-                # === 集合竞价字段 ===
-                'auction_price': snapshot.AuctionPrice / 10000.0,  # 波段性中断参考价
-                'auction_qty': snapshot.AuctionQty,                # 波段性中断集合竞价虚拟匹配量
-                
-                # === 其他字段 ===
-                'iopv': snapshot.Iopv / 10000.0,                   # IOPV
-                'total_ask_vol': snapshot.TotalAskVol,             # 委托卖出总量
-                'total_bid_vol': snapshot.TotalBidVol,             # 委托买入总量
-                'weighted_avg_bid_price': snapshot.WeightedAvgBidPrice / 10000.0,  # 加权平均委买价格
-                'weighted_avg_ask_price': snapshot.WeightedAvgAskPrice / 10000.0,  # 加权平均委卖价格
-                
-                # === ETF字段 ===
-                'etf_create_vol': snapshot.ETFCreateVol,           # ETF申购总量
-                'etf_redeem_vol': snapshot.ETFRedeemVol            # ETF赎回总量
+                'Exchange': snapshot.Exchange,
+                'Instrument': snapshot.Instrument,
+                'TradingDay': snapshot.TradingDay,
+                'Time': snapshot.Time,
+                'Status': snapshot.Status if snapshot.Status else '0',
+                'PreClose': snapshot.PreClose,
+                'Open': snapshot.Open,
+                'High': snapshot.High,
+                'Low': snapshot.Low,
+                'Last': snapshot.last_price,
+                'AskPrice': list(snapshot.asks),
+                'AskVolume': list(snapshot.ask_sizes),
+                'BidPrice': list(snapshot.bids),
+                'BidVolume': list(snapshot.bid_sizes),
+                'NumTrades': snapshot.NumTrades,
+                'Volume': snapshot.Volume,
+                'Turnover': snapshot.Turnover,
+                'UpperLimit': snapshot.UpperLimit,
+                'LowerLimit': snapshot.LowerLimit,
+                'OpenInterest': snapshot.OpenInterest,
+                'PreOpenInterest': snapshot.PreOpenInterest,
+                'Delta': snapshot.Delta,
+                'PreDelta': snapshot.PreDelta,
+                'Close': snapshot.Close,
+                'SettlePrice': snapshot.SettlePrice,
+                'PreSettlePrice': snapshot.PreSettlePrice,
+                'AuctionPrice': snapshot.AuctionPrice,
+                'AuctionQty': snapshot.AuctionQty,
+                'Iopv': snapshot.Iopv
             }
             self.tick_events.append(tick_record)
         except Exception as e:

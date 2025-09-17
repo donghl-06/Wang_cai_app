@@ -129,9 +129,19 @@ void BacktestEngine::initialize() {
                 TradeDetail trade;
                 trade.Exchange = symbol_.find(".SZ") != std::string::npos ? 1 : 0;
                 trade.Instrument = symbol_;
-                trade.ChannelNo = 0; // 虚拟成交，使用默认值
+                // 使用原订单通道号；若无法确定，取3作为默认
+                trade.ChannelNo = 3;
                 trade.TradeIndex = ex.execution_id;
-                trade.Time = 0; // 从trade_datetime提取，暂时使用默认值
+
+                // === 从 trade_datetime 解析 HHMMSSsss ===
+                int time_raw = 0;
+                if (trade_datetime.length() >= 19) {
+                    std::string time_part = trade_datetime.substr(11, 8); // HH:MM:SS
+                    std::string ms_part = trade_datetime.length() > 20 ? trade_datetime.substr(20, 3) : "000";
+                    time_part.erase(std::remove(time_part.begin(), time_part.end(), ':'), time_part.end());
+                    time_raw = std::stoi(time_part + ms_part);
+                }
+                trade.Time = time_raw;
                 trade.Price = ex.price;
                 trade.Volume = ex.volume;
                 trade.ExecType = '1'; // 成交
