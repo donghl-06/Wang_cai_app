@@ -9,7 +9,7 @@
 #include "backtest_engine.hpp"
 #include "orderbook.h"
 #include <vector>
-#include <memory>
+#include <memory> 
 #include <string>
 #include <map>
 #include <queue>
@@ -19,6 +19,15 @@
 #include <taskflow/taskflow.hpp>
 
 namespace wangcai {
+
+// 单个合约的CSV数据
+struct SymbolData {
+    std::string symbol;        // 合约代码
+    std::string cstick_csv;    // tick数据CSV字符串
+    std::string order_csv;     // 委托数据CSV字符串  
+    std::string trade_csv;     // 成交数据CSV字符串
+    std::string csbar1d_csv;   // 日线数据CSV字符串（包含涨跌停限制）
+};
 
 struct EngineManager {
     std::string symbol;
@@ -41,9 +50,8 @@ struct QueueEvent {
 
 class MultiBacktestEngine {
 public:
-    explicit  MultiBacktestEngine(const std::vector<std::string>& symbols,
-                        const std::string& date,
-                        const std::string& data_path);
+    // 从CSV字符串初始化（Python传入多个合约的DataFrame.to_csv()生成的字符串）
+    explicit MultiBacktestEngine(const std::vector<SymbolData>& symbol_data_list);
 
     void registerStrategy(std::shared_ptr<Strategy> strategy);
 
@@ -54,8 +62,6 @@ public:
     double getTotalPnL() const;
 private:
     std::vector<EngineManager> engines_;         
-    std::vector<std::shared_ptr<Strategy>> strategies_; 
-    std::string date_;                          
-    std::string data_path_;    
+    std::vector<std::shared_ptr<Strategy>> strategies_;  
 };
 }; // namespace wangcai

@@ -35,8 +35,6 @@ public:
     // 调试接口
     int64_t getTotalBuy() const { return _tot_buy; }
     int64_t getTotalSell() const { return _tot_sell; }
-    void print_orderbook_to_csv(const std::string& filename);
-
     Price getRealPrice() const { return _real_px; }
 private:
     /* Fenwick helpers */

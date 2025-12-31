@@ -23,6 +23,7 @@ namespace wangcai {
 
 enum class OrderStatus : uint8_t {
     Submitted,      ///< 已提交
+    Pending,        ///< 待处理（休眠）
     PartFilled,     ///< 部分成交
     Filled,         ///< 全部成交
     Cancelled,      ///< 已撤销
@@ -49,6 +50,12 @@ using Timestamp = std::chrono::time_point<
 
     inline uint64_t generate_execution_id() {
         return ++g_execution_id_counter;
+    }
+    
+    // 重置全局计数器（用于多次回测）
+    inline void reset_order_id_counter() {
+        g_order_id_counter.store(0);
+        g_execution_id_counter.store(0);
     }
 
     namespace TradingTime {

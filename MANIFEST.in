@@ -1,0 +1,47 @@
+# 包含必要的 C++ 源文件和头文件
+recursive-include include *.h *.hpp
+recursive-include src *.cpp *.c
+recursive-include bindings *.cpp
+
+# 包含 CMake 配置
+include CMakeLists.txt
+
+# 包含第三方库
+recursive-include 3rd_party/taskflow *.hpp *.h
+prune 3rd_party/taskflow/benchmarks
+prune 3rd_party/taskflow/examples
+prune 3rd_party/taskflow/unittests
+prune 3rd_party/taskflow/docs
+
+# 包含文档
+include README.md
+include PACKAGING.md
+include LICENSE
+
+# 包含 Python 源文件
+recursive-include wangcai_syn *.py *.pyi
+
+# 排除测试和数据目录（这些文件很大）
+prune recoverSH
+prune backtest
+prune test
+prune test_bt
+prune new_log
+prune logs
+prune interface_test_output
+prune examples
+prune user_example
+prune docs
+
+# 排除构建和缓存文件
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude __pycache__
+global-exclude *.so
+global-exclude *.o
+global-exclude *.csv
+prune build
+prune dist
+prune _skbuild
+prune *.egg-info
+

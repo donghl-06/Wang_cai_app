@@ -38,6 +38,7 @@ struct Order {
     Quantity    traded_volume{}; // 已成交数量
     OrderStatus status{OrderStatus::Submitted}; // 订单状态
     Timestamp   timestamp{std::chrono::system_clock::now()}; // 订单时间
+    bool        is_historical{false}; // 是否是历史订单（避免字符串比较broker=="BRK"）
 
     std::string user_defined_string; // 用户定义字符串
     std::string algo_type; // 算法类型

@@ -13,6 +13,7 @@
 #include "orderpool.h"
 #include <utility>
 #include <map>
+#include <iostream>
 
 namespace wangcai {
 // 事件结构
@@ -181,7 +182,8 @@ private:
     //桶结构体
     struct Bucket {
         std::list<std::shared_ptr<Order>> orders;   // 时间顺序
-        Quantity vol_sum{0};
+        Quantity vol_sum{0};         // 历史订单量统计
+        Quantity user_vol_sum{0};    // USER订单量统计
         int  prev{-1};     // 非空桶链表 prev
         int  next{-1};     // 非空桶链表 next
     };

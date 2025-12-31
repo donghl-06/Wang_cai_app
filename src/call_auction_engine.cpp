@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream> // Added for debugging output
 #include <fstream>
+#include <string>
 
 namespace wangcai {
 
@@ -53,6 +54,7 @@ void CallAuctionEngine::accept(std::shared_ptr<Order> od)
     od->level_iter=std::prev(side[idx].orders.end()); // 更新订单迭代器
     ob_.bucketAdd(idx,buy,od->volume); // 更新桶挂单量
     ob_._loc[od->order_id]={buy,idx,od->level_iter}; // 更新订单位置映射
+    
     // 实时发布预测价
     publish();
 }
@@ -60,11 +62,13 @@ void CallAuctionEngine::accept(std::shared_ptr<Order> od)
 // 撤单：从集合竞价队列和订单簿移除订单，更新树状数组和映射 
 void CallAuctionEngine::cancel(uint64_t oid)
 {
-    // std::cout << "[集合竞价撤单] 系统订单ID=" << oid;
     auto it=ob_._loc.find(oid);
     if(it==ob_._loc.end()) {
-        // 订单不存在，撤单失败
-        std::cout << oid << " 开盘集合竞价 -> 失败：订单不存在" << std::endl;
+        // 订单不存在，撤单失败 - 用反查获取原始cstra ID
+        auto orig_it = ob_.sys2input_.find(oid);
+        uint64_t cstra_id = (orig_it != ob_.sys2input_.end()) ? orig_it->second : oid;
+        
+        std::cerr << "❌ [集合竞价撤单失败] cstra_id=" << cstra_id << " -> 订单不存在" << std::endl;
         if(on_cancel_) on_cancel_(oid, false, "订单不存在", nullptr);
         return;
     }
@@ -91,20 +95,24 @@ void CallAuctionEngine::cancel(uint64_t oid)
 // 通过输入订单ID撤单 
 void CallAuctionEngine::cancel_by_input_id(uint64_t input_id)
 {
-    // std::cout << "[集合竞价撤单请求] 输入订单ID=" << input_id;
-    
     auto it = ob_.input2sys_.find(input_id);          // 查共享表
     if (it != ob_.input2sys_.end()) {
-        // std::cout << " -> 找到系统订单ID=" << it->second << std::endl;
-        // 找到对应的系统订单ID，调用标准撤单方法
-        cancel(it->second);
-        // 从映射中移除
-        ob_.input2sys_.erase(it);                     // 从共享表删
-        ob_.sys2input_.erase(it->second);             // 从共享表删
+        uint64_t sys_id = it->second;
+        // 提前检查订单是否存在，用cstra_id输出
+        if (ob_._loc.find(sys_id) == ob_._loc.end()) {
+            std::cerr << "❌ [开盘集合竞价撤单失败] cstra_id=" << input_id 
+                      << " sys_id=" << sys_id << " -> 订单未被accept" << std::endl;
+            if (on_cancel_) on_cancel_(input_id, false, "订单不存在", nullptr);
+            ob_.input2sys_.erase(it);
+            ob_.sys2input_.erase(sys_id);
+            return;
+        }
+        cancel(sys_id);
+        ob_.input2sys_.erase(it);
+        ob_.sys2input_.erase(sys_id);
         return;
     } else {
-        // 输入订单ID不存在
-        std::cout << " 开盘集合竞价 -> 失败：输入订单ID不存在" << std::endl;
+        std::cerr << "❌ [开盘集合竞价撤单失败] cstra_id=" << input_id << " -> input2sys_映射中不存在" << std::endl;
         if (on_cancel_) on_cancel_(input_id, false, "输入订单ID不存在", nullptr);
     }
 }
@@ -433,38 +441,4 @@ void CallAuctionEngine::settle()
     _tot_buy=_tot_sell=0;
 }
 
-// 增加一个调试函数，打印出当时订单簿的挂单情况到csv
-void CallAuctionEngine::print_orderbook_to_csv(const std::string& filename) {
-    std::ofstream file(filename);
-    if (!file.is_open()) {
-        std::cerr << "无法打开文件: " << filename << std::endl;
-        return;
-    }
-    
-    // 写入表头
-    file << "price,buy_orders_volume,sell_orders_volume, upper_buy_vol, lower_sell_vol, same_price_buy_vol, same_price_sell_vol, tradable_volume, tradable\n";
-    
-    int N = ob_._buy.size();
-    uint64_t total_buy = _bit_buy.prefixSum(N-1);
-    uint64_t total_sell = _bit_sell.prefixSum(N-1);
-
-    for (int i = 0; i < N; ++i) {
-        uint64_t upper_buy_vol = (i < N-1) ? (total_buy - _bit_buy.prefixSum(i)) : 0;
-        uint64_t lower_sell_vol = (i > 0) ? _bit_sell.prefixSum(i-1) : 0;
-        uint64_t same_price_buy_vol = ob_._buy[i].vol_sum;
-        uint64_t same_price_sell_vol = ob_._sell[i].vol_sum;
-        uint64_t tradable_volume = std::min(lower_sell_vol + same_price_sell_vol, upper_buy_vol + same_price_buy_vol);
-        // buy_up <= (sell_down + sell_this) 且 sell_down <= (buy_up + buy_this)
-        uint64_t tradable = upper_buy_vol <= (lower_sell_vol + same_price_sell_vol) && lower_sell_vol <= (upper_buy_vol + same_price_buy_vol);
-        file << ob_.idxToPx(i) << ","
-             << same_price_buy_vol << ","
-             << same_price_sell_vol << ","
-             << upper_buy_vol << ","
-             << lower_sell_vol << ","
-             << same_price_buy_vol << ","
-             << same_price_sell_vol << ","
-             << tradable_volume << ","
-             << tradable << "\n";
-    }
-}
 } // namespace wangcai 

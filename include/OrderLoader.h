@@ -21,15 +21,22 @@ class InfoLoader {
 public:
     InfoLoader() = default;
     ~InfoLoader() = default;
-    void load_sh_info(const std::string& order_filename, std::string trade_filename, wangcai::OrderBook& order_book);
-    void load_sz_info(const std::string& order_filename, std::string trade_filename, wangcai::OrderBook& order_book);
-    void load_cstick_from_csv(const std::string& filename, wangcai::OrderBook& order_book);
-    wangcai::Price loadPrevClosePrice(const std::string& filename);
-    wangcai::Price loadOpenPrice(const std::string& filename);
+    
+    // 从CSV字符串加载数据（Python DataFrame.to_csv() 生成的字符串）
+    void load_sh_info(const std::string& order_csv_content, const std::string& trade_csv_content, wangcai::OrderBook& order_book);
+    void load_sz_info(const std::string& order_csv_content, const std::string& trade_csv_content, wangcai::OrderBook& order_book);
+    void load_cstick(const std::string& csv_content, wangcai::OrderBook& order_book);
+    wangcai::Price loadPrevClosePrice(const std::string& csv_content);
+    wangcai::Price loadOpenPrice(const std::string& csv_content);
+    
+    // 从csbar1d加载涨跌停限制（返回pair<上限,下限>，单位：厘，已包含0.1元冗余）
+    std::pair<wangcai::Price, wangcai::Price> loadPriceLimits(const std::string& csbar1d_csv_content);
+    
 private:
-    void load_traders_from_csv(const std::string& filename, wangcai::OrderBook& order_book);
+    void load_traders(const std::string& csv_content, wangcai::OrderBook& order_book);
     void insert_event(const Event& event);
     void clear_events();
+    
 private:
     std::vector<Event> call_auction_orders_;
     std::vector<Event> continuous_orders_;

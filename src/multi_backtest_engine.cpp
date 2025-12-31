@@ -5,46 +5,70 @@
  * @FilePath: /workspace/wangcai_cpp/src/multi_backtest_engine.cpp
  */
 #include "multi_backtest_engine.h"
+#include "types.h"
+#include <iostream>
+#include <algorithm>
 
 namespace wangcai {
 
-MultiBacktestEngine::MultiBacktestEngine(const std::vector<std::string>& symbols,
-                                         const std::string& date,
-                                         const std::string& data_path)
-    : date_(date), data_path_(data_path)
+MultiBacktestEngine::MultiBacktestEngine(const std::vector<SymbolData>& symbol_data_list)
 {
-    engines_.reserve(symbols.size());
+    // 自动重置全局订单ID计数器（支持多次回测）
+    reset_order_id_counter();
+    
+    engines_.reserve(symbol_data_list.size());
 
-    for (const auto& sym : symbols) {
+    for (const auto& data : symbol_data_list) {
         EngineManager se;
-        se.symbol = sym;
+        se.symbol = data.symbol;
 
-        se.engine = std::make_unique<BacktestEngine>(sym, date, data_path);
-        std::string trade_output_file = data_path + "/backtest_trades_" + sym + "_" + date + ".csv";
-        se.engine->enableTradeRecording(trade_output_file);
+        se.engine = std::make_unique<BacktestEngine>(data.symbol, data.cstick_csv, data.order_csv, data.trade_csv, data.csbar1d_csv);
 
-        // 双指针扫描所有事件 归并事件
+        // 合并所有事件到一个数组
         std::vector<Event> merged;
         merged.reserve(OrderBook::whole_events.size() + OrderBook::tick_events.size());
-        auto it_ord = OrderBook::whole_events.begin();
-        auto it_tick = OrderBook::tick_events.begin();
-        while (it_ord != OrderBook::whole_events.end() || it_tick != OrderBook::tick_events.end()) {
-            if (it_ord == OrderBook::whole_events.end()) {
-                merged.push_back(*it_tick);
-                ++it_tick;
-            } else if (it_tick == OrderBook::tick_events.end()) {
-                merged.push_back(*it_ord);
-                ++it_ord;
-            } else {
-                if (it_tick->datetime < it_ord->datetime) {
-                    merged.push_back(*it_tick);
-                    ++it_tick;
-                } else {
-                    merged.push_back(*it_ord);
-                    ++it_ord;
-                }
+        
+        // 直接添加所有事件
+        merged.insert(merged.end(), OrderBook::whole_events.begin(), OrderBook::whole_events.end());
+        merged.insert(merged.end(), OrderBook::tick_events.begin(), OrderBook::tick_events.end());
+        
+        // 排序逻辑：
+        // 主排序键：datetime（所有事件先按时间排序）
+        // 次排序键：
+        //   - 相同时间时，ord/tra 优先于 tick
+        //   - 相同时间且都是 ord/tra 时，按 orderid（SZ）或 bizindex（SH）排序
+        //   - 相同时间且都是 tick 时，保持原顺序
+        std::sort(merged.begin(), merged.end(), [](const Event& a, const Event& b) {
+            // 1. 主排序键：datetime
+            if (a.datetime != b.datetime) {
+                return a.datetime < b.datetime;
             }
-        }
+            
+            // 2. datetime 相同时的次排序键
+            bool a_is_tick = (a.source == "tick");
+            bool b_is_tick = (b.source == "tick");
+            
+            // 2.1 ord/tra 优先于 tick
+            if (!a_is_tick && b_is_tick) {
+                return true;  // a(ord/tra) 排在 b(tick) 前面
+            }
+            if (a_is_tick && !b_is_tick) {
+                return false; // a(tick) 排在 b(ord/tra) 后面
+            }
+            
+            // 2.2 都是 tick：保持原顺序（返回 false 以保持稳定排序）
+            if (a_is_tick && b_is_tick) {
+                return false;
+            }
+            
+            // 2.3 都是 ord/tra：按 orderid（SZ）或 bizindex（SH）排序
+            if (Event::is_SZ) {
+                return a.orderid < b.orderid;
+            } else {
+                return a.bizindex < b.bizindex;
+            }
+        });
+        
         se.events = std::move(merged);
         se.idx = 0;
         OrderBook::clearEvents();
@@ -108,6 +132,7 @@ void MultiBacktestEngine::run() {
         处理C
         B跳过
      */
+    int loop_count = 0;
     while (!pq.empty()) {
         // 取出当前最小时间戳
         const auto top_item = pq.top();
@@ -123,6 +148,7 @@ void MultiBacktestEngine::run() {
             auto item = pq.top();
             pq.pop();
             engine_events[item.engineIndex].push_back(item.event);
+            
             // 取下一事件并放入堆
             auto& se = engines_[item.engineIndex];
             if (se.idx < se.events.size()) {
@@ -131,21 +157,32 @@ void MultiBacktestEngine::run() {
                 se.idx ++;
             }
         }
+        
+        loop_count++;
 
         // Taskflow 并行处理每个引擎的事件
         tf::Taskflow taskflow;
         for (const auto& [engine_idx, events] : engine_events) {
             auto events_copy = events;
+            
             taskflow.emplace([this, engine_idx, events_copy]() mutable {
                 auto& eng_ref = *engines_[engine_idx].engine;
                 for (const auto& ev : events_copy) {
+                    try {
                     eng_ref.processEvent(ev);
+                    } catch (const std::exception& e) {
+                        std::cerr << "❌ [processEvent失败] bizindex=" << ev.bizindex 
+                                  << " datetime=" << ev.datetime 
+                                  << " error=" << e.what() << std::endl;
+                        // 不重新抛出异常，让其他事件继续处理
+                    }
                 }
             });
         }
         // 执行当前时间戳的所有任务并阻塞等待完成
         executor.run(taskflow).wait();
     }
+    
     std::ranges::for_each(engines_, [&](auto &se) {
         se.engine->finish();
     });

@@ -97,7 +97,12 @@ protected:
 // 回测引擎
 class BacktestEngine {
 public:
-    BacktestEngine(const std::string& symbol, const std::string& date, const std::string& data_path);
+    // 从CSV字符串初始化回测引擎（Python传入DataFrame.to_csv()生成的字符串）
+    BacktestEngine(const std::string& symbol, 
+                   const std::string& cstick_csv,
+                   const std::string& order_csv, 
+                   const std::string& trade_csv,
+                   const std::string& csbar1d_csv);
     
     // 注册策略
     void registerStrategy(std::shared_ptr<Strategy> strategy);
@@ -160,8 +165,10 @@ private:
     
     // 成员变量
     std::string symbol_;
-    std::string date_;
-    std::string data_path_;
+    std::string cstick_csv_;
+    std::string order_csv_;
+    std::string trade_csv_;
+    std::string csbar1d_csv_;
     
     // 订单簿和引擎
     std::unique_ptr<OrderBook> orderbook_;
@@ -184,6 +191,7 @@ private:
     // 事件数据
     bool continuous_mode_;
     bool closing_mode_ = false;                       // 是否进入收盘集合竞价阶段
+    bool price_cage_checked_ = false;                 // 是否已检查过价格笼子
     std::string current_datetime_;  // 当前事件时间
     std::string last_brk_datetime_; // 最后一条BRK事件时间（连续竞价成交回调用）
     

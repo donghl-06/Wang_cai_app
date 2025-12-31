@@ -20,37 +20,36 @@ static OrderType toOrderType(const Event& ev) {
     return OrderType::Limit;
 }
 
-// 构造函数，初始化回测引擎，设置合约、日期、数据路径等基本参数
-BacktestEngine::BacktestEngine(const std::string& symbol, const std::string& date, const std::string& data_path)
-    : symbol_(symbol), date_(date), data_path_(data_path), continuous_mode_(false), 
-      next_order_id_(1), next_trade_id_(1), recording_enabled_(false)
+// 构造函数，初始化回测引擎，从CSV字符串加载数据
+BacktestEngine::BacktestEngine(const std::string& symbol, 
+                               const std::string& cstick_csv,
+                               const std::string& order_csv, 
+                               const std::string& trade_csv,
+                               const std::string& csbar1d_csv)
+    : symbol_(symbol), cstick_csv_(cstick_csv), order_csv_(order_csv), trade_csv_(trade_csv), csbar1d_csv_(csbar1d_csv),
+      continuous_mode_(false), next_order_id_(1), next_trade_id_(1), recording_enabled_(false)
 {
     initialize();
 }
 
 // 初始化函数，完成回测环境的所有准备工作
 void BacktestEngine::initialize() {
-    // 1. 读取前收盘价和真实开盘价
+    // 1. 从CSV字符串读取前收盘价和真实开盘价
     InfoLoader loader;
-    std::string cstick_file = data_path_ + "/cstick_" + symbol_ + "_" + date_ + ".csv";
-    prev_close_ = loader.loadPrevClosePrice(cstick_file);
-    actual_open_ = loader.loadOpenPrice(cstick_file);
-    if (symbol_.find("SZ") != std::string::npos) {
-        Event::is_SZ = true;
-    }
+    prev_close_ = loader.loadPrevClosePrice(cstick_csv_);
+    actual_open_ = loader.loadOpenPrice(cstick_csv_);
+    // 根据股票代码设置市场类型（静态变量，每次必须重新设置）
+    Event::is_SZ = (symbol_.find("SZ") != std::string::npos);
 
     if (prev_close_ == 0) {
         // 如果前收盘价读取失败，抛出异常
         throw std::runtime_error("无法读取前收盘价");
     }
     
-    // 2. 计算涨跌停价格（四舍五入到分，单位为厘）
-    double upper_raw = prev_close_ * 1.1 / 10000.0; // 涨停价（元）
-    double lower_raw = prev_close_ * 0.9 / 10000.0; // 跌停价（元）
-    double upper = std::round(upper_raw * 100) / 100.0; // 四舍五入到分
-    double lower = std::floor(lower_raw * 100) / 100.0; // 向下取整到分
-    upper_limit_ = static_cast<Price>(upper * 10000); // 转回厘
-    lower_limit_ = static_cast<Price>(lower * 10000);
+    // 2. 从csbar1d文件读取涨跌停限制（含0.1元冗余）
+    auto [upper_limit, lower_limit] = loader.loadPriceLimits(csbar1d_csv_);
+    upper_limit_ = upper_limit;
+    lower_limit_ = lower_limit;
 
     // 3. 初始化订单簿，注册成交回调
     orderbook_ = std::make_unique<OrderBook>(upper_limit_, lower_limit_, false,
@@ -239,27 +238,23 @@ void BacktestEngine::initialize() {
 
     data_manager_ = std::make_unique<DataManager>(orderbook_.get(), call_engine_.get(), con_engine_.get(), close_engine_.get());
 
-    // 7. 加载历史订单和成交数据，合并为事件流
+    // 7. 从CSV字符串加载历史订单和成交数据，合并为事件流
     OrderBook::clearEvents(); // 清空事件
     OrderBook::clearTicks(); // 清空tick事件
-    std::string ord_file = data_path_ + "/csord_" + symbol_ + "_" + date_ + ".csv";
-    std::string tra_file = data_path_ + "/cstra_" + symbol_ + "_" + date_ + ".csv";
     
     if (Event::is_SZ) {
-        loader.load_sz_info(ord_file, tra_file, *orderbook_);
+        loader.load_sz_info(order_csv_, trade_csv_, *orderbook_);
         std::sort(std::execution::par_unseq, OrderBook::whole_events.begin(), OrderBook::whole_events.end(), [&](auto a, auto b) {
             return a.orderid < b.orderid; // SZ
         });
     } else {
-        loader.load_sh_info(ord_file, tra_file, *orderbook_);
+        loader.load_sh_info(order_csv_, trade_csv_, *orderbook_);
         std::sort(std::execution::par_unseq, OrderBook::whole_events.begin(), OrderBook::whole_events.end(), [&](auto a, auto b) {
             return a.bizindex < b.bizindex; // SH
         });
     }
     
-    loader.load_cstick_from_csv(cstick_file, *orderbook_);
-    size_t total_events = OrderBook::whole_events.size() + OrderBook::tick_events.size();
-    std::cout << "加载了 " << total_events << " 个历史事件" << std::endl;
+    loader.load_cstick(cstick_csv_, *orderbook_);
 }
 
 // 注册策略，支持多策略回测
@@ -767,6 +762,18 @@ void BacktestEngine::processEvent(const Event& ev) {
     if (current_datetime_.substr(11, 8) > "15:00:00") {
         return;
     }
+    
+    // ========== 价格笼子功能已禁用 ==========
+    // // 首次事件时自动检测是否启用价格笼子（2023年3月1日前启用）
+    // if (!price_cage_checked_ && con_engine_) {
+    //     price_cage_checked_ = true;
+    //     con_engine_->checkAndEnablePriceCage(current_datetime_);
+    //     if (con_engine_->isPriceCageEnabled()) {
+    //         std::cout << "[价格笼子] 检测到日期 " << current_datetime_.substr(0, 10) 
+    //                   << " < 2023-03-01，已启用价格笼子规则" << std::endl;
+    //     }
+    // }
+    
     // 收集策略产生的用户事件
     std::vector<UserEvent> strategy_events;
     
@@ -827,11 +834,14 @@ void BacktestEngine::processEvent(const Event& ev) {
             auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
                                                ev.sym, std::to_string(ev.orderid),
                                                toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+            ord->is_historical = true;  // 标记为历史订单，避免字符串比较
+            
             call_engine_->accept(ord);
             data_manager_->updateOrderDetail(ev, 'A');
         } else if (ev.source == "tra") {
             // 历史撤单推送
             uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
+            
             call_engine_->cancel_by_input_id(oid_raw);
         } else {
             // tick 推送
@@ -875,11 +885,14 @@ void BacktestEngine::processEvent(const Event& ev) {
                 auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
                                                    ev.sym, std::to_string(ev.orderid),
                                                    toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+                ord->is_historical = true;  // 标记为历史订单
+                
                 con_engine_->accept(ord);
                 data_manager_->updateOrderDetail(ev, 'A');
                 last_brk_datetime_ = ev.datetime;
             } else if (ev.source == "tra") {
                 uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
+                
                 con_engine_->cancel_by_input_id(oid_raw);
             } else {
                 data_manager_->updateSnapshot(ev);
@@ -901,6 +914,7 @@ void BacktestEngine::processEvent(const Event& ev) {
                 auto ord = orderbook_->createOrder("BRK", "AC", orderbook_->getExchange(),
                                                    ev.sym, std::to_string(ev.orderid),
                                                    toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
+                ord->is_historical = true;  // 标记为历史订单
                 close_engine_->accept(ord);
                 data_manager_->updateOrderDetail(ev, 'A');
             } else if (ev.source == "tra") {

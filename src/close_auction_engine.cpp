@@ -64,8 +64,10 @@ void CloseAuctionEngine::cancel(uint64_t oid)
     
     auto it=ob_._loc.find(oid);
     if(it==ob_._loc.end()) {
-        // 订单不存在，撤单失败
-        std::cout << " -> 失败：订单不存在" << std::endl;
+        // 订单不存在，撤单失败 - 用反查获取原始cstra ID
+        auto orig_it = ob_.sys2input_.find(oid);
+        uint64_t cstra_id = (orig_it != ob_.sys2input_.end()) ? orig_it->second : oid;
+        std::cerr << "❌ [收盘集合竞价撤单失败] cstra_id=" << cstra_id << " -> 订单不存在" << std::endl;
         if(on_cancel_) on_cancel_(oid, false, "订单不存在", nullptr);
         return;
     }
@@ -105,8 +107,8 @@ void CloseAuctionEngine::cancel_by_input_id(uint64_t input_id)
         ob_.sys2input_.erase(it->second);             // 从共享表删
         return;
     } else {
-        // 输入订单ID不存在
-        std::cout << " -> 失败：输入订单ID不存在" << std::endl;
+        // 输入订单ID不存在（未在input2sys_映射中找到）
+        std::cerr << "❌ [收盘集合竞价撤单失败] 输入订单ID=" << input_id << " -> input2sys_映射中不存在" << std::endl;
         if (on_cancel_) on_cancel_(input_id, false, "输入订单ID不存在", nullptr);
     }
 }

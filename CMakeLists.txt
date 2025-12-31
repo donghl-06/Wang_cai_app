@@ -140,8 +140,8 @@ if (DEFINED SKBUILD OR BUILD_PYTHON)
   # 通过 scikit-build-core 安装到 wheel 的包目录（变量由其提供）
   if (DEFINED SKBUILD)
     install(TARGETS wangcai_cpp
-      LIBRARY DESTINATION ${SKBUILD_PLATLIB_DIR}/wangcai_bt
-      RUNTIME DESTINATION ${SKBUILD_PLATLIB_DIR}/wangcai_bt
-      ARCHIVE DESTINATION ${SKBUILD_PLATLIB_DIR}/wangcai_bt)
+      LIBRARY DESTINATION ${SKBUILD_PLATLIB_DIR}/wangcai_syn
+      RUNTIME DESTINATION ${SKBUILD_PLATLIB_DIR}/wangcai_syn
+      ARCHIVE DESTINATION ${SKBUILD_PLATLIB_DIR}/wangcai_syn)
   endif()
 endif()

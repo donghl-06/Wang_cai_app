@@ -1,0 +1,81 @@
+[build-system]
+requires = ["scikit-build-core>=0.3.3", "pybind11>=2.10.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "wangcai-syn"
+version = "1.3.1"
+description = "旺财回测引擎 - 高性能股票回测框架"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "aitopia"}
+]
+keywords = ["backtest", "trading", "stock", "orderbook", "高频交易", "回测"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: C++",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Scientific/Engineering",
+]
+
+dependencies = [
+    "pandas>=1.5.0",
+    "numpy>=1.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourname/wangcai_syn"
+Documentation = "https://github.com/yourname/wangcai_syn"
+Repository = "https://github.com/yourname/wangcai_syn"
+
+[tool.scikit-build]
+# 指定 CMake 版本
+cmake.version = ">=3.20"
+# CMake 构建类型
+cmake.build-type = "Release"
+# 指定要安装的包
+wheel.packages = ["wangcai_syn"]
+# 安装 Python 源文件
+wheel.install-dir = "wangcai_syn"
+
+# 排除不需要打包的大文件目录
+sdist.exclude = [
+    "recoverSH",
+    "backtest", 
+    "test",
+    "test_bt",
+    "new_log",
+    "logs",
+    "interface_test_output",
+    "examples",
+    "user_example",
+    "docs",
+    "*.csv",
+    "build",
+    "dist",
+    "_skbuild",
+]
+
+[tool.scikit-build.cmake.define]
+BUILD_PYTHON = "ON"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

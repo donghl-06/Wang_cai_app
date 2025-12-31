@@ -384,10 +384,11 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("onOrderCallback", &Strategy::onOrderCallback)
         .def("isProcessingComplete", &Strategy::isProcessingComplete);
 
-    // BacktestEngine
+    // BacktestEngine - 从CSV字符串初始化
     py::class_<BacktestEngine>(m, "BacktestEngine")
-        .def(py::init<const std::string&, const std::string&, const std::string&>(),
-             py::arg("symbol"), py::arg("date"), py::arg("data_path"))
+        .def(py::init<const std::string&, const std::string&, const std::string&, const std::string&, const std::string&>(),
+             py::arg("symbol"), py::arg("cstick_csv"), py::arg("order_csv"), py::arg("trade_csv"), py::arg("csbar1d_csv"),
+             "从CSV字符串初始化回测引擎 (DataFrame.to_csv())")
         .def(
             "registerStrategy",
             [](BacktestEngine& eng, std::shared_ptr<Strategy> s) {
@@ -399,7 +400,30 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("getPositions", &BacktestEngine::getPositions)
         .def("getTotalPnL", &BacktestEngine::getTotalPnL)
         .def("setMarketDataCallback", &set_md_callback, py::arg("callback"),
-             "Set a Python callable to receive MarketData during backtest");
+             "Set a Python callable to receive MarketData during backtest")
+        .def("processEvent", &BacktestEngine::processEvent, py::arg("event"),
+             "Process a single event (for manual event feeding)")
+        .def("finish", &BacktestEngine::finish,
+             "Finalize backtest and write results");
+    
+    // InfoLoader - 从CSV字符串加载数据
+    py::class_<InfoLoader>(m, "InfoLoader")
+        .def(py::init<>())
+        .def("load_sh_info", &InfoLoader::load_sh_info,
+             py::arg("order_csv_content"), py::arg("trade_csv_content"), py::arg("order_book"),
+             "Load Shanghai market data from CSV strings (DataFrame.to_csv())")
+        .def("load_sz_info", &InfoLoader::load_sz_info,
+             py::arg("order_csv_content"), py::arg("trade_csv_content"), py::arg("order_book"),
+             "Load Shenzhen market data from CSV strings (DataFrame.to_csv())")
+        .def("load_cstick", &InfoLoader::load_cstick,
+             py::arg("csv_content"), py::arg("order_book"),
+             "Load tick data from CSV string (DataFrame.to_csv())")
+        .def("loadPrevClosePrice", &InfoLoader::loadPrevClosePrice,
+             py::arg("csv_content"),
+             "Load previous close price from CSV string")
+        .def("loadOpenPrice", &InfoLoader::loadOpenPrice,
+             py::arg("csv_content"),
+             "Load open price from CSV string");
 
     // Convenience makers (optional)
     m.def("make_order_event",
@@ -430,10 +454,32 @@ py::class_<OrderCallback>(m, "OrderCallback")
           },
           py::arg("order_id"), py::arg("strategy_id"));
     
+    // SymbolData - 单个合约的CSV数据
+    py::class_<SymbolData>(m, "SymbolData")
+        .def(py::init<>())
+        .def(py::init([](const std::string& symbol, const std::string& cstick_csv,
+                         const std::string& order_csv, const std::string& trade_csv,
+                         const std::string& csbar1d_csv) {
+            SymbolData data;
+            data.symbol = symbol;
+            data.cstick_csv = cstick_csv;
+            data.order_csv = order_csv;
+            data.trade_csv = trade_csv;
+            data.csbar1d_csv = csbar1d_csv;
+            return data;
+        }), py::arg("symbol"), py::arg("cstick_csv"), py::arg("order_csv"), py::arg("trade_csv"), py::arg("csbar1d_csv"))
+        .def_readwrite("symbol", &SymbolData::symbol)
+        .def_readwrite("cstick_csv", &SymbolData::cstick_csv)
+        .def_readwrite("order_csv", &SymbolData::order_csv)
+        .def_readwrite("trade_csv", &SymbolData::trade_csv)
+        .def_readwrite("csbar1d_csv", &SymbolData::csbar1d_csv);
+
+    // MultiBacktestEngine - 从CSV字符串初始化
     auto mbacktest_cls = py::class_<MultiBacktestEngine>(m, "MultiBacktestEngine");
     mbacktest_cls
-        .def(py::init<const std::vector<std::string>&, const std::string&, const std::string&>(),
-             py::arg("symbols"), py::arg("date"), py::arg("data_path"))
+        .def(py::init<const std::vector<SymbolData>&>(),
+             py::arg("symbol_data_list"),
+             "从多个合约的CSV字符串初始化 (DataFrame.to_csv())")
         .def("registerStrategy",
              [](MultiBacktestEngine& eng, std::shared_ptr<Strategy> s) {
                  eng.registerStrategy(std::move(s));
