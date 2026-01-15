@@ -60,8 +60,31 @@ public:
     std::map<std::string, Position> getPositions() const;
 
     double getTotalPnL() const;
+    
+    // === 严格主动单模式（欠债限制功能）===
+    void setStrictActiveOrderMode(bool enabled);
+    bool isStrictActiveOrderMode() const;
+    bool hasDebt() const;
+    
+    // === 用户自定义数据推送功能 ===
+    // 设置自定义事件时间戳列表（由 Python 层传入）
+    // 时间戳格式需与其他事件一致（如 "2025-11-17 09:35:00"）
+    void loadCustomEventTimes(const std::vector<std::string>& datetimes);
+    
+    // 开启/关闭自定义数据功能（默认关闭）
+    void setCustomDataEnabled(bool enabled) { custom_data_enabled_ = enabled; }
+    bool isCustomDataEnabled() const { return custom_data_enabled_; }
+    
+    // 获取当前自定义事件索引（用于 Python 层获取对应数据）
+    size_t getCurrentCustomEventIndex() const { return custom_event_idx_; }
+    
 private:
     std::vector<EngineManager> engines_;         
-    std::vector<std::shared_ptr<Strategy>> strategies_;  
+    std::vector<std::shared_ptr<Strategy>> strategies_;
+    
+    // === 用户自定义数据相关 ===
+    bool custom_data_enabled_ = false;                    // 功能开关，默认关闭
+    std::vector<CustomEventTime> custom_events_;         // 自定义事件时间戳列表
+    size_t custom_event_idx_ = 0;                        // 当前处理的自定义事件索引
 };
 }; // namespace wangcai

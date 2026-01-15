@@ -29,6 +29,7 @@ struct Order {
     std::string instrument;         ///< 代码
     std::string order_local_id;     ///< 本地编号
     uint64_t    order_id{};         ///< 系统 ID
+    uint64_t    input_id{};         ///< 原始数字ID（如果order_local_id是纯数字）
     int64_t    bizindex{};         ///< 业务编号
 
     OrderType   order_type{OrderType::Limit}; // 订单类型

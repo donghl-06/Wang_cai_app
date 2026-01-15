@@ -64,10 +64,8 @@ void CallAuctionEngine::cancel(uint64_t oid)
 {
     auto it=ob_._loc.find(oid);
     if(it==ob_._loc.end()) {
-        // 订单不存在，撤单失败 - 用反查获取原始cstra ID
-        auto orig_it = ob_.sys2input_.find(oid);
-        uint64_t cstra_id = (orig_it != ob_.sys2input_.end()) ? orig_it->second : oid;
-        
+        // 订单不存在，撤单失败
+        uint64_t cstra_id = ob_.getInputId(oid);
         std::cerr << "❌ [集合竞价撤单失败] cstra_id=" << cstra_id << " -> 订单不存在" << std::endl;
         if(on_cancel_) on_cancel_(oid, false, "订单不存在", nullptr);
         return;
@@ -95,21 +93,19 @@ void CallAuctionEngine::cancel(uint64_t oid)
 // 通过输入订单ID撤单 
 void CallAuctionEngine::cancel_by_input_id(uint64_t input_id)
 {
-    auto it = ob_.input2sys_.find(input_id);          // 查共享表
+    auto it = ob_.input2sys_.find(input_id);
     if (it != ob_.input2sys_.end()) {
         uint64_t sys_id = it->second;
-        // 提前检查订单是否存在，用cstra_id输出
+        // 提前检查订单是否存在
         if (ob_._loc.find(sys_id) == ob_._loc.end()) {
             std::cerr << "❌ [开盘集合竞价撤单失败] cstra_id=" << input_id 
                       << " sys_id=" << sys_id << " -> 订单未被accept" << std::endl;
             if (on_cancel_) on_cancel_(input_id, false, "订单不存在", nullptr);
             ob_.input2sys_.erase(it);
-            ob_.sys2input_.erase(sys_id);
             return;
         }
         cancel(sys_id);
         ob_.input2sys_.erase(it);
-        ob_.sys2input_.erase(sys_id);
         return;
     } else {
         std::cerr << "❌ [开盘集合竞价撤单失败] cstra_id=" << input_id << " -> input2sys_映射中不存在" << std::endl;
@@ -312,8 +308,11 @@ void CallAuctionEngine::applyAuctionTrade(int idx, uint64_t /*bu_tot*/, uint64_t
 
     auto log_exec = [&](uint64_t buy_sys, uint64_t sell_sys, Quantity q)
     {
-        uint64_t buy_input  = ob_.sys2input_.count(buy_sys)  ? ob_.sys2input_[buy_sys]  : 0;
-        uint64_t sell_input = ob_.sys2input_.count(sell_sys) ? ob_.sys2input_[sell_sys] : 0;
+        uint64_t buy_input  = ob_.getInputId(buy_sys);
+        uint64_t sell_input = ob_.getInputId(sell_sys);
+        // 如果 getInputId 返回的是 sys_id 本身（没有 input_id），则用 0
+        if (buy_input == buy_sys) buy_input = 0;
+        if (sell_input == sell_sys) sell_input = 0;
 
         if (ob_._on_exec)
             ob_._on_exec(Execution(buy_input, sell_input, open_price, q));
@@ -413,7 +412,46 @@ void CallAuctionEngine::applyAuctionTrade(int idx, uint64_t /*bu_tot*/, uint64_t
         if (buy ->remaining_volume() == 0) ++bi;
         if (sell->remaining_volume() == 0) ++si;
     }
-    /* 剩余 buy_q / sell_q 自动留在桶里，进入连续竞价 */
+    
+    // ========== BUG修复：清理完全成交的订单 ==========
+    // 集合竞价结束后，必须从订单簿中删除完全成交的订单
+    // 否则它们会进入连续竞价，导致虚拟订单排队阻塞
+    
+    // 清理买方完全成交的订单
+    for (int i = ob_._buy.size() - 1; i >= idx; --i) {
+        auto& orders = ob_._buy[i].orders;
+        for (auto it = orders.begin(); it != orders.end(); ) {
+            if ((*it)->status == OrderStatus::Filled) {
+                // 从位置映射中删除
+                ob_._loc.erase((*it)->order_id);
+                // 从订单映射中删除
+                ob_._omap.erase((*it)->order_id);
+                // 从队列中删除
+                it = orders.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    
+    // 清理卖方完全成交的订单
+    for (int i = 0; i <= idx; ++i) {
+        auto& orders = ob_._sell[i].orders;
+        for (auto it = orders.begin(); it != orders.end(); ) {
+            if ((*it)->status == OrderStatus::Filled) {
+                // 从位置映射中删除
+                ob_._loc.erase((*it)->order_id);
+                // 从订单映射中删除
+                ob_._omap.erase((*it)->order_id);
+                // 从队列中删除
+                it = orders.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    
+    /* 剩余未成交/部分成交的订单留在桶里，进入连续竞价 */
 }
 
 // 结算：集合竞价结束，撮合成交，清空树状数组和累计量

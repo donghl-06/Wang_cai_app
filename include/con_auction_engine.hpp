@@ -6,6 +6,7 @@
 #include "orderbook.h"
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <list>
 #include <map>
 #include <vector>
@@ -70,6 +71,15 @@ public:
         for (const auto& [price, vlist] : virtual_sell_) count += vlist.size();
         return count;
     }
+    
+    // === 严格主动单模式（欠债限制功能）===
+    // 开启后，虚拟主动单吃掉的历史订单需要被真实市场消耗后才能下新的主动单
+    void setStrictActiveOrderMode(bool enabled) { strict_active_order_mode_ = enabled; }
+    bool isStrictActiveOrderMode() const { return strict_active_order_mode_; }
+    // 检查是否有未还清的欠债（被虚拟吃掉但未被真实市场消耗的历史订单）
+    bool hasDebt() const { return !debt_orders_.empty(); }
+    // 获取欠债订单数量（用于调试）
+    size_t getDebtCount() const { return debt_orders_.size(); }
 
 private:
     void match(std::shared_ptr<Order>&);
@@ -122,6 +132,11 @@ private:
     std::unordered_map<uint64_t, std::vector<VirtualOrder*>> trigger_map_;
     // 虚拟订单位置映射：order_id -> 位置信息（O(1)撤单）
     std::unordered_map<uint64_t, VirtualOrderLoc> virtual_loc_;
+    
+    // === 严格主动单模式（欠债限制）===
+    bool strict_active_order_mode_ = false;  // 开关，默认关闭
+    // 被虚拟主动单吃掉但未被真实市场消耗的历史订单ID集合
+    std::unordered_set<uint64_t> debt_orders_;
 };
 
 } // namespace wangcai 

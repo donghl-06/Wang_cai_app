@@ -175,7 +175,10 @@ def create_multi_symbol_data(data_dict: Dict[str, Tuple[pd.DataFrame, pd.DataFra
 
 def run_backtest(data_dict: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]], 
                  strategy, 
-                 output_dir: str = None) -> bool:
+                 output_dir: str = None,
+                 strict_active_order_mode: bool = False,
+                 custom_data: pd.DataFrame = None,
+                 enable_custom_data: bool = False) -> bool:
     """
     运行回测（支持单合约/多合约，单策略）
     
@@ -183,6 +186,14 @@ def run_backtest(data_dict: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataF
         data_dict: 格式为 {symbol: (cstick_df, order_df, trade_df, csbar1d_df), ...}
         strategy: 策略实例（单个策略）
         output_dir: 输出目录，默认不保存
+        strict_active_order_mode: 是否启用严格主动单模式（默认关闭）
+            开启后，虚拟主动单只能成交市场实际提供的量，剩余部分撤单，
+            且在欠债未还清前禁止下新的主动单
+        custom_data: 用户自定义数据 DataFrame（默认None）
+            必须包含 'datetime' 列，格式如 '2025-11-17 09:35:00'
+            其他列可自定义，会作为 dict 传递给策略的 onCustomEvent
+        enable_custom_data: 是否启用自定义数据推送功能（默认关闭）
+            需设为 True 才会启用自定义数据推送
     
     Returns:
         bool: 回测是否成功
@@ -198,12 +209,28 @@ def run_backtest(data_dict: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataF
         ...     "688516.SH": (cstick_df2, order_df2, trade_df2, csbar1d_df2),
         ... }
         >>> run_backtest(data, strategy)
+        
+        # 启用严格主动单模式
+        >>> run_backtest(data, strategy, strict_active_order_mode=True)
+        
+        # 使用自定义数据
+        >>> custom_df = pd.DataFrame({
+        ...     'datetime': ['2025-11-17 09:35:00', '2025-11-17 10:00:00'],
+        ...     'signal': [1, -1]
+        ... })
+        >>> run_backtest(data, strategy, custom_data=custom_df, enable_custom_data=True)
     """
     try:
         print(f"🚀 开始回测")
         print(f"   合约数量: {len(data_dict)}")
         for symbol, (cstick_df, order_df, trade_df, csbar1d_df) in data_dict.items():
             print(f"   {symbol}: Tick {len(cstick_df)}行, 委托 {len(order_df)}行, 成交 {len(trade_df)}行, 日线 {len(csbar1d_df)}行")
+        
+        if strict_active_order_mode:
+            print(f"   ⚙️ 严格主动单模式: {'✅ 开启' if strict_active_order_mode else '❌ 关闭'}")
+        
+        if enable_custom_data:
+            print(f"   ⚙️ 自定义数据推送: {'✅ 开启' if enable_custom_data else '❌ 关闭'}")
         
         # 创建 SymbolData 列表
         print(f"\n🔄 转换数据格式...")
@@ -212,6 +239,45 @@ def run_backtest(data_dict: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataF
         # 创建回测引擎
         print(f"⚙️ 初始化回测引擎...")
         engine = MultiBacktestEngine(symbol_data_list)
+        
+        # 设置严格主动单模式（如果启用）
+        if strict_active_order_mode and hasattr(engine, 'setStrictActiveOrderMode'):
+            # 这里额外打印一次状态，便于确认"是否真的启用了 C++ 侧的严格模式"
+            # （避免因为加载到旧 .so 或绑定未生效导致误判）
+            if hasattr(engine, 'isStrictActiveOrderMode'):
+                print(f"   🔎 严格主动单模式(设置前): {engine.isStrictActiveOrderMode()}")
+            engine.setStrictActiveOrderMode(True)
+            if hasattr(engine, 'isStrictActiveOrderMode'):
+                print(f"   ✅ 严格主动单模式已启用，当前状态: {engine.isStrictActiveOrderMode()}")
+            else:
+                print(f"   ✅ 严格主动单模式已启用")
+        
+        # 设置自定义数据推送功能（如果启用）
+        if enable_custom_data:
+            if custom_data is None:
+                raise ValueError("已启用自定义数据推送，但 custom_data 为空")
+            
+            # 校验必须有 datetime 列
+            if 'datetime' not in custom_data.columns:
+                raise ValueError("自定义数据必须包含 'datetime' 列")
+            
+            # 将 DataFrame 转换为时间戳列表和字典列表
+            datetimes = custom_data['datetime'].astype(str).tolist()
+            data_list = custom_data.to_dict(orient='records')
+            
+            # 设置自定义事件时间戳
+            if hasattr(engine, 'loadCustomEventTimes'):
+                engine.loadCustomEventTimes(datetimes)
+            
+            # 启用自定义数据功能
+            if hasattr(engine, 'setCustomDataEnabled'):
+                engine.setCustomDataEnabled(True)
+            
+            # 将数据列表设置到策略中
+            if hasattr(strategy, 'setCustomDataList'):
+                strategy.setCustomDataList(data_list)
+            
+            print(f"   ✅ 自定义数据已加载，共 {len(data_list)} 条记录")
         
         # 注册策略
         engine.registerStrategy(strategy)

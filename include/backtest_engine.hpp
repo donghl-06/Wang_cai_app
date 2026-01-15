@@ -37,6 +37,11 @@ public:
     //  接受Tick事件，返回要处理的事件列表（下单或撤单）
     virtual std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) = 0;
     
+    // 接收用户自定义事件，返回要处理的事件列表（下单或撤单）
+    // 参数 index 对应 Python 层自定义数据列表的索引，实际数据由 Python 绑定层传入
+    // 默认返回空事件，避免影响未实现该接口的策略
+    virtual std::vector<UserEvent> onCustomEvent(size_t index) { return {}; }
+    
     // 新的统一交易回调接口（包含持仓管理）
     virtual void onTradeCallback(const TradeCallback& callback) = 0;
     
@@ -119,6 +124,19 @@ public:
     void writeTradeRecords() const;                             // 输出交易记录到CSV
     const std::vector<TradeRecord>& getTradeRecords() const;    // 获取所有交易记录
     
+    // === 严格主动单模式（欠债限制功能）===
+    // 开启后，虚拟主动单吃掉的历史订单需要被真实市场消耗后才能下新的主动单
+    void setStrictActiveOrderMode(bool enabled);
+    bool isStrictActiveOrderMode() const;
+    bool hasDebt() const;  // 检查是否有未还清的欠债
+
+    // === 用户自定义事件支持 ===
+    // 提交用户事件（用于外部驱动，例如自定义数据推送）
+    void submitUserEvent(const UserEvent& user_event);
+    // 检查是否包含某个用户订单（用于撤单路由）
+    bool hasUserOrder(const std::string& order_id) const;
+    // 设置当前时间（用于自定义事件推送时的回调时间）
+    void setCurrentDatetimeForCustomEvent(const std::string& datetime);
 
     void processEvent(const Event& ev);
     void finish();

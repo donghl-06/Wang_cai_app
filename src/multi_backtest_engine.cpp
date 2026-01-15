@@ -8,6 +8,7 @@
 #include "types.h"
 #include <iostream>
 #include <algorithm>
+#include <unordered_map>
 
 namespace wangcai {
 
@@ -88,6 +89,13 @@ void MultiBacktestEngine::registerStrategy(std::shared_ptr<Strategy> strategy) {
 void MultiBacktestEngine::run() {
 
     std::priority_queue<QueueEvent, std::vector<QueueEvent>, std::greater<>> pq;
+
+    // 构建 symbol -> 引擎索引映射，用于自定义事件的订单路由
+    std::unordered_map<std::string, std::size_t> symbol_to_engine;
+    symbol_to_engine.reserve(engines_.size());
+    for (std::size_t i = 0; i < engines_.size(); ++i) {
+        symbol_to_engine[engines_[i].symbol] = i;
+    }
 
     // init：每个引擎推入第一个事件
     for (std::size_t i = 0; i < engines_.size(); ++i) {
@@ -181,6 +189,59 @@ void MultiBacktestEngine::run() {
         }
         // 执行当前时间戳的所有任务并阻塞等待完成
         executor.run(taskflow).wait();
+        
+        // === 用户自定义数据推送 ===
+        // 在当前时间戳的市场事件处理完成后，检查是否有需要推送的自定义事件
+        if (custom_data_enabled_ && !custom_events_.empty()) {
+            // 推送所有 datetime <= current_time 的自定义事件
+            while (custom_event_idx_ < custom_events_.size() && 
+                   custom_events_[custom_event_idx_].datetime <= current_time) {
+                
+                size_t event_index = custom_events_[custom_event_idx_].index;
+                const std::string& event_time = custom_events_[custom_event_idx_].datetime;
+                
+                // 调用所有策略的 onCustomEvent 回调
+                for (auto& strategy : strategies_) {
+                    try {
+                        auto user_events = strategy->onCustomEvent(event_index);
+                        // 处理策略返回的下单/撤单请求
+                        for (const auto& ue : user_events) {
+                            if (ue.type == UserEvent::ORDER) {
+                                // 下单：按 symbol 路由到对应引擎
+                                auto it = symbol_to_engine.find(ue.order.symbol);
+                                if (it != symbol_to_engine.end()) {
+                                    engines_[it->second].engine->setCurrentDatetimeForCustomEvent(event_time);
+                                    engines_[it->second].engine->submitUserEvent(ue);
+                                } else {
+                                    std::cerr << "❌ [自定义事件下单失败] 未找到合约: " 
+                                              << ue.order.symbol << std::endl;
+                                }
+                            } else if (ue.type == UserEvent::CANCEL) {
+                                // 撤单：在所有引擎中查找并撤单
+                                bool handled = false;
+                                for (auto& se : engines_) {
+                                    if (se.engine->hasUserOrder(ue.cancel.order_id)) {
+                                        se.engine->setCurrentDatetimeForCustomEvent(event_time);
+                                        se.engine->submitUserEvent(ue);
+                                        handled = true;
+                                        break;
+                                    }
+                                }
+                                if (!handled) {
+                                    std::cerr << "❌ [自定义事件撤单失败] 找不到订单: " 
+                                              << ue.cancel.order_id << std::endl;
+                                }
+                            }
+                        }
+                    } catch (const std::exception& e) {
+                        std::cerr << "❌ [onCustomEvent失败] index=" << event_index 
+                                  << " error=" << e.what() << std::endl;
+                    }
+                }
+                
+                custom_event_idx_++;
+            }
+        }
     }
     
     std::ranges::for_each(engines_, [&](auto &se) {
@@ -205,6 +266,53 @@ double MultiBacktestEngine::getTotalPnL() const {
         sum += se.engine->getTotalPnL();
     }
     return sum;
+}
+
+// === 严格主动单模式（欠债限制功能）===
+void MultiBacktestEngine::setStrictActiveOrderMode(bool enabled) {
+    for (auto& se : engines_) {
+        se.engine->setStrictActiveOrderMode(enabled);
+    }
+}
+
+bool MultiBacktestEngine::isStrictActiveOrderMode() const {
+    if (!engines_.empty()) {
+        return engines_[0].engine->isStrictActiveOrderMode();
+    }
+    return false;
+}
+
+bool MultiBacktestEngine::hasDebt() const {
+    for (const auto& se : engines_) {
+        if (se.engine->hasDebt()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// === 用户自定义数据推送功能 ===
+void MultiBacktestEngine::loadCustomEventTimes(const std::vector<std::string>& datetimes) {
+    custom_events_.clear();
+    custom_events_.reserve(datetimes.size());
+    
+    // 将时间戳列表转换为 CustomEventTime 对象，并记录索引
+    for (size_t i = 0; i < datetimes.size(); ++i) {
+        custom_events_.emplace_back(datetimes[i], i);
+    }
+    
+    // 按时间戳排序（确保按时间顺序推送）
+    std::sort(custom_events_.begin(), custom_events_.end(), 
+              [](const CustomEventTime& a, const CustomEventTime& b) {
+                  if (a.datetime != b.datetime) {
+                      return a.datetime < b.datetime;
+                  }
+                  // 时间相同保持原始输入顺序
+                  return a.index < b.index;
+              });
+    
+    // 重置索引
+    custom_event_idx_ = 0;
 }
 
 }; // namespace wangcai

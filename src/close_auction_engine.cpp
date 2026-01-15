@@ -64,9 +64,8 @@ void CloseAuctionEngine::cancel(uint64_t oid)
     
     auto it=ob_._loc.find(oid);
     if(it==ob_._loc.end()) {
-        // 订单不存在，撤单失败 - 用反查获取原始cstra ID
-        auto orig_it = ob_.sys2input_.find(oid);
-        uint64_t cstra_id = (orig_it != ob_.sys2input_.end()) ? orig_it->second : oid;
+        // 订单不存在，撤单失败
+        uint64_t cstra_id = ob_.getInputId(oid);
         std::cerr << "❌ [收盘集合竞价撤单失败] cstra_id=" << cstra_id << " -> 订单不存在" << std::endl;
         if(on_cancel_) on_cancel_(oid, false, "订单不存在", nullptr);
         return;
@@ -97,14 +96,11 @@ void CloseAuctionEngine::cancel_by_input_id(uint64_t input_id)
 {
     // std::cout << "[集合竞价撤单请求] 输入订单ID=" << input_id;
     
-    auto it = ob_.input2sys_.find(input_id);          // 查共享表
+    auto it = ob_.input2sys_.find(input_id);
     if (it != ob_.input2sys_.end()) {
-        // std::cout << " -> 找到系统订单ID=" << it->second << std::endl;
-        // 找到对应的系统订单ID，调用标准撤单方法
-        cancel(it->second);
-        // 从映射中移除
-        ob_.input2sys_.erase(it);                     // 从共享表删
-        ob_.sys2input_.erase(it->second);             // 从共享表删
+        uint64_t sys_id = it->second;
+        cancel(sys_id);
+        ob_.input2sys_.erase(it);  // 从映射中移除
         return;
     } else {
         // 输入订单ID不存在（未在input2sys_映射中找到）
@@ -326,8 +322,11 @@ void CloseAuctionEngine::applyAuctionTrade(int idx, uint64_t /*bu_tot*/, uint64_
 
     auto log_exec = [&](uint64_t buy_sys, uint64_t sell_sys, Quantity q)
     {
-        uint64_t buy_input  = ob_.sys2input_.count(buy_sys)  ? ob_.sys2input_[buy_sys]  : 0;
-        uint64_t sell_input = ob_.sys2input_.count(sell_sys) ? ob_.sys2input_[sell_sys] : 0;
+        uint64_t buy_input  = ob_.getInputId(buy_sys);
+        uint64_t sell_input = ob_.getInputId(sell_sys);
+        // 如果 getInputId 返回的是 sys_id 本身（没有 input_id），则用 0
+        if (buy_input == buy_sys) buy_input = 0;
+        if (sell_input == sell_sys) sell_input = 0;
 
         if (ob_._on_exec)
             ob_._on_exec(Execution(buy_input, sell_input, open_price, q));

@@ -1,34 +1,33 @@
+#!/usr/bin/env python3
 """
-旺财回测平台 - 运行示例
-
-使用方法:
-    python run_example.py
-
-需要准备的数据文件（放在 data/ 目录下）:
-    - cstick_{symbol}_{date}.csv  (Tick快照)
-    - csord_{symbol}_{date}.csv   (逐笔委托)  
-    - cstra_{symbol}_{date}.csv   (逐笔成交)
-    - csbar1d_{symbol}_{date}.csv (日线数据，含涨跌停)
+运行严格主动单模式全面测试
 """
 
-import sys
 import os
-
-# 使用本地编译的包，而不是安装的包
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-import pandas as pd
+import sys
 from pathlib import Path
 
+import pandas as pd
+
+# 确保使用本地编译的包
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+
+import wangcai_syn
 from wangcai_syn import run_backtest
-from my_strategy import MyStrategy
+
+# 验证加载的包路径
+print(f"📦 wangcai_syn: {wangcai_syn.__file__}")
+print(f"📦 扩展模块: {wangcai_syn.wangcai_cpp.__file__}")
+
+from test_strict_mode_comprehensive import ComprehensiveStrictModeTest
 
 
 # ========== 配置区 ==========
 SYMBOL = "300827.SZ"          # 股票代码
 DATE = "2025-11-17"           # 回测日期
-DATA_DIR = "../new_log"       # 数据目录
-OUTPUT_DIR = "./output"       # 输出目录
+DATA_DIR = "../../new_log"       # 数据目录
+OUTPUT_DIR = "../../user_example/output"       # 输出目录
+ENABLE_STRICT_MODE = True     # 是否启用严格主动单模式
 # ============================
 
 
@@ -48,29 +47,39 @@ def load_data(symbol: str, date: str, data_dir: str):
 
 
 def main():
-    # 1. 加载数据
+    print(f"\n{'='*70}")
+    print(f"🧪 严格主动单模式 - 全面测试")
+    print(f"{'='*70}")
+    print(f"  标的: {SYMBOL}")
+    print(f"  日期: {DATE}")
+    print(f"  严格模式: {'✅ 开启' if ENABLE_STRICT_MODE else '❌ 关闭'}")
+    print(f"{'='*70}")
+    
+    # 加载数据
     print(f"\n📖 加载数据: {SYMBOL} @ {DATE}")
     cstick, csord, cstra, csbar1d = load_data(SYMBOL, DATE, DATA_DIR)
     
-    # 2. 组织数据格式
+    # 组织数据格式
     data = {
         SYMBOL: (cstick, csord, cstra, csbar1d)
     }
     
-    # 3. 创建策略
-    strategy = MyStrategy(account="user1")
+    # 创建测试策略
+    strategy = ComprehensiveStrictModeTest(account="comprehensive_test")
     
-    # 4. 运行回测
+    # 运行回测
     print(f"\n🚀 开始回测...")
+    
     success = run_backtest(
         data_dict=data,
         strategy=strategy,
-        output_dir=f"{OUTPUT_DIR}/{SYMBOL}_{DATE}"
+        output_dir=f"{OUTPUT_DIR}/{SYMBOL}_{DATE}_comprehensive",
+        strict_active_order_mode=ENABLE_STRICT_MODE
     )
     
-    # 5. 输出结果
     if success:
-        print(f"\n🎉 回测完成!")
+        print(f"\n✅ 回测完成!")
+        # 打印测试结果
         strategy.print_summary()
     else:
         print(f"\n❌ 回测失败")
@@ -81,4 +90,3 @@ def main():
 
 if __name__ == "__main__":
     exit(main())
-

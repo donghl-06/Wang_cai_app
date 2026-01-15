@@ -17,7 +17,16 @@ class PyStrategy : public Strategy {
 public:
     using Strategy::Strategy;
     
+    // === 用户自定义数据支持 ===
+    // 存储用户传入的自定义数据列表（每个元素是一个 dict）
+    void setCustomDataList(py::list data_list) {
+        custom_data_list_ = data_list;
+    }
+    
 private:
+    // 用户自定义数据列表（由 Python 层设置）
+    py::list custom_data_list_;
+    
     // 自动跟踪处理中的事件数量
     mutable std::atomic<int> processing_count_{0};
     
@@ -72,6 +81,27 @@ public:
                 return ret.cast<std::vector<UserEvent>>();
             } catch (const py::error_already_set& e) {
                 py::print("[Strategy.onTickEvent] exception:", e.what());
+            }
+        }
+        return {};
+    }
+
+    // 用户自定义事件回调
+    // C++ 层传入 index，这里转换为实际的 dict 数据后调用 Python 回调
+    std::vector<UserEvent> onCustomEvent(size_t index) override {
+        py::gil_scoped_acquire gil;
+        if (py::function f = py::get_override(this, "onCustomEvent")) {
+            ProcessingGuard guard(processing_count_);
+            try {
+                // 从 custom_data_list_ 中获取对应索引的数据
+                py::dict data;
+                if (!custom_data_list_.is_none() && index < py::len(custom_data_list_)) {
+                    data = custom_data_list_[index].cast<py::dict>();
+                }
+                py::object ret = f(data);
+                return ret.cast<std::vector<UserEvent>>();
+            } catch (const py::error_already_set& e) {
+                py::print("[Strategy.onCustomEvent] exception:", e.what());
             }
         }
         return {};
@@ -377,12 +407,24 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("onOrderEvent", &Strategy::onOrderEvent)
         .def("onTradeEvent", &Strategy::onTradeEvent)
         .def("onTickEvent", &Strategy::onTickEvent)
+        .def("onCustomEvent", &Strategy::onCustomEvent,
+             "接收用户自定义事件（参数为 index，PyStrategy 会自动转换为 dict）")
         .def("onOrderFilled", &Strategy::onOrderFilled)
         .def("onOrderCancelled", &Strategy::onOrderCancelled)
         .def("getStrategyId", &Strategy::getStrategyId)
         .def("onTradeCallback", &Strategy::onTradeCallback)
         .def("onOrderCallback", &Strategy::onOrderCallback)
-        .def("isProcessingComplete", &Strategy::isProcessingComplete);
+        .def("isProcessingComplete", &Strategy::isProcessingComplete)
+        // === 用户自定义数据支持 ===
+        .def("setCustomDataList", 
+             [](Strategy& s, py::list data_list) {
+                 // 向下转型为 PyStrategy 并设置数据列表
+                 if (auto* ps = dynamic_cast<PyStrategy*>(&s)) {
+                     ps->setCustomDataList(data_list);
+                 }
+             },
+             py::arg("data_list"),
+             "设置用户自定义数据列表（每个元素是一个 dict）");
 
     // BacktestEngine - 从CSV字符串初始化
     py::class_<BacktestEngine>(m, "BacktestEngine")
@@ -404,7 +446,14 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("processEvent", &BacktestEngine::processEvent, py::arg("event"),
              "Process a single event (for manual event feeding)")
         .def("finish", &BacktestEngine::finish,
-             "Finalize backtest and write results");
+             "Finalize backtest and write results")
+        // === 严格主动单模式（欠债限制功能）===
+        .def("setStrictActiveOrderMode", &BacktestEngine::setStrictActiveOrderMode, py::arg("enabled"),
+             "开启/关闭严格主动单模式：开启后，虚拟主动单吃掉的历史订单需要被真实市场消耗后才能下新的主动单")
+        .def("isStrictActiveOrderMode", &BacktestEngine::isStrictActiveOrderMode,
+             "检查是否开启了严格主动单模式")
+        .def("hasDebt", &BacktestEngine::hasDebt,
+             "检查是否有未还清的欠债（被虚拟吃掉但未被真实市场消耗的历史订单）");
     
     // InfoLoader - 从CSV字符串加载数据
     py::class_<InfoLoader>(m, "InfoLoader")
@@ -489,5 +538,19 @@ py::class_<OrderCallback>(m, "OrderCallback")
              "运行多合约同步回测",
              py::call_guard<py::gil_scoped_release>())
         .def("getPositions", &MultiBacktestEngine::getPositions)
-        .def("getTotalPnL", &MultiBacktestEngine::getTotalPnL);
+        .def("getTotalPnL", &MultiBacktestEngine::getTotalPnL)
+        // === 严格主动单模式（欠债限制功能）===
+        .def("setStrictActiveOrderMode", &MultiBacktestEngine::setStrictActiveOrderMode, py::arg("enabled"),
+             "开启/关闭严格主动单模式：开启后，虚拟主动单吃掉的历史订单需要被真实市场消耗后才能下新的主动单")
+        .def("isStrictActiveOrderMode", &MultiBacktestEngine::isStrictActiveOrderMode,
+             "检查是否开启了严格主动单模式")
+        .def("hasDebt", &MultiBacktestEngine::hasDebt,
+             "检查是否有未还清的欠债（被虚拟吃掉但未被真实市场消耗的历史订单）")
+        // === 用户自定义数据推送功能 ===
+        .def("loadCustomEventTimes", &MultiBacktestEngine::loadCustomEventTimes, py::arg("datetimes"),
+             "加载自定义事件时间戳列表（格式如 '2025-11-17 09:35:00'）")
+        .def("setCustomDataEnabled", &MultiBacktestEngine::setCustomDataEnabled, py::arg("enabled"),
+             "开启/关闭自定义数据推送功能（默认关闭）")
+        .def("isCustomDataEnabled", &MultiBacktestEngine::isCustomDataEnabled,
+             "检查是否开启了自定义数据推送功能");
 }

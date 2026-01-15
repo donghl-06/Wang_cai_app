@@ -15,9 +15,7 @@ void ConAuctionEngine::virtual_fill(std::shared_ptr<Order>& od, Price fill_price
     
     if (ob_._on_exec) {
         bool buy = (od->direction == Direction::Buy);
-        // 对手方ID转换为input_id（如果有映射的话）
-        auto cp_it = ob_.sys2input_.find(counterparty_id);
-        uint64_t cp_input_id = (cp_it != ob_.sys2input_.end()) ? cp_it->second : counterparty_id;
+        uint64_t cp_input_id = ob_.getInputId(counterparty_id);
         
         Execution ex(
             buy ? od->order_id : cp_input_id,   // 买方ID
@@ -34,13 +32,135 @@ void ConAuctionEngine::accept_virtual_order(std::shared_ptr<Order> od)
 {
     bool buy = (od->direction == Direction::Buy);
     
-    // ========== 第一步：检查是否立即成交 ==========
+    // ========== 第一步：检查是否立即成交（主动单）==========
     int& best_opp = buy ? ob_._best_ask : ob_._best_bid;
     if (best_opp != -1) {
         Price best_opp_price = ob_._lower + best_opp * ob_._tick;
         bool can_trade = (buy && best_opp_price <= od->price) || 
                          (!buy && best_opp_price >= od->price);
         if (can_trade) {
+            // ========== 严格主动单模式检查 ==========
+            // 如果开启了严格模式且有未还清的欠债，拒绝主动单
+            if (strict_active_order_mode_ && !debt_orders_.empty()) {
+                // 设置订单状态为 Rejected
+                od->status = OrderStatus::Rejected;
+                ob_._omap[od->order_id] = od;  // 添加到omap以便查询
+                
+                // 通过撤单回调通知策略订单被拒绝
+                //
+                // 重要说明（为什么这里用 success=true）：
+                // - BacktestEngine 在注册 ConAuctionEngine 的 on_cancel_ 回调时，当前只在 success==true
+                //   的情况下才会向策略发送统一回调（onTradeCallback matchtype='D'）并清理映射。
+                // - 如果这里传 success=false，策略侧“看不到拒单”，且映射可能残留，影响后续测试/回测。
+                // - 因此这里把“拒单”也走同一条通知链路：用 success=true + reason 明确标注为拒单。
+                if (on_cancel_) {
+                    on_cancel_(od->order_id, true, 
+                        "严格主动单模式：存在未还清的欠债，禁止下新的主动单", od);
+                }
+                return;
+            }
+            
+            // ========== 严格主动单模式：计算实际可成交量并记录欠债 ==========
+            if (strict_active_order_mode_) {
+                // 遍历对手方订单簿，计算虚拟主动单实际能吃掉多少量
+                auto& opp_side = buy ? ob_._sell : ob_._buy;
+                Quantity remaining = od->volume;
+                Quantity total_available = 0;  // 市场能提供的总量
+                int current_idx = best_opp;
+                Price fill_price = best_opp_price;  // 成交价（取第一个价位）
+                uint64_t counterparty_id = 0;      // 第一个对手方订单ID
+                const size_t debt_before = debt_orders_.size();
+                
+                // 计算可成交量并记录欠债
+                while (remaining > 0 && current_idx != -1) {
+                    Price px = ob_._lower + current_idx * ob_._tick;
+                    // 检查价格是否满足成交条件
+                    if ((buy && px > od->price) || (!buy && px < od->price)) {
+                        break;
+                    }
+                    
+                    auto& bkt = opp_side[current_idx];
+                    for (auto& hist_order : bkt.orders) {
+                        if (!hist_order->is_historical) continue;  // 跳过虚拟订单
+                        
+                        // 记录第一个对手方订单ID
+                        if (counterparty_id == 0) {
+                            counterparty_id = hist_order->order_id;
+                        }
+                        
+                        // 记录这个历史订单到欠债集合
+                        debt_orders_.insert(hist_order->order_id);
+                        
+                        // 计算能吃掉多少量
+                        Quantity q = std::min(remaining, hist_order->remaining_volume());
+                        total_available += q;
+                        remaining -= q;
+                        
+                        if (remaining == 0) break;
+                    }
+                    
+                    // 移动到下一个价位（使用桶链表的 next 字段）
+                    current_idx = buy ? bkt.next : bkt.prev;
+                }
+                // 计算实际成交量（市场能提供的量）
+                Quantity actual_fill = total_available;
+                Quantity unfilled = od->volume - actual_fill;
+                
+                if (actual_fill > 0) {
+                    // 部分成交或全部成交
+                    od->traded_volume = actual_fill;
+                    
+                    if (unfilled > 0) {
+                        // 有剩余：部分成交 + 剩余撤单
+                        od->status = OrderStatus::PartFilled;
+                        
+                        // 发送成交回调
+                        if (ob_._on_exec) {
+                            uint64_t cp_input_id = ob_.getInputId(counterparty_id);
+                            Execution ex(
+                                buy ? od->order_id : cp_input_id,
+                                buy ? cp_input_id : od->order_id,
+                                fill_price,
+                                actual_fill
+                            );
+                            ob_._on_exec(ex);
+                        }
+                        
+                        // 剩余部分撤单回调
+                        if (on_cancel_) {
+                            on_cancel_(od->order_id, true, 
+                                "严格主动单模式：市场量不足，剩余" + std::to_string(unfilled) + "撤单", od);
+                        }
+                    } else {
+                        // 全部成交
+                        od->status = OrderStatus::Filled;
+                        
+                        // 发送成交回调
+                        if (ob_._on_exec) {
+                            uint64_t cp_input_id = ob_.getInputId(counterparty_id);
+                            Execution ex(
+                                buy ? od->order_id : cp_input_id,
+                                buy ? cp_input_id : od->order_id,
+                                fill_price,
+                                actual_fill
+                            );
+                            ob_._on_exec(ex);
+                        }
+                    }
+                } else {
+                    // 市场没有任何可用量，全部撤单
+                    od->status = OrderStatus::Cancelled;
+                    if (on_cancel_) {
+                        on_cancel_(od->order_id, true, 
+                            "严格主动单模式：市场无可用量，全部撤单", od);
+                    }
+                }
+                
+                ob_._omap[od->order_id] = od;  // 添加到omap以便查询
+                return;
+            }
+            
+            // ========== 非严格模式：原有逻辑，立即全部成交 ==========
             // 找到对手方第一个历史订单作为counterparty
             auto& opp_side = buy ? ob_._sell : ob_._buy;
             auto& opp_bkt = opp_side[best_opp];
@@ -101,6 +221,12 @@ void ConAuctionEngine::on_historical_order_removing(
     bool is_buy,
     bool is_filled)
 {
+    // ========== 严格主动单模式：清除欠债 ==========
+    // 当历史订单被真实市场成交时，从欠债集合中移除
+    if (strict_active_order_mode_ && is_filled) {
+        debt_orders_.erase(removing_order->order_id);
+    }
+    
     // 检查是否有虚拟订单以它为标签
     auto it = trigger_map_.find(removing_order->order_id);
     if (it == trigger_map_.end()) return;
@@ -390,15 +516,9 @@ void ConAuctionEngine::match_sh(std::shared_ptr<Order>& inc)
 
             // 成交回调
             if (ob_._on_exec) {
-                uint64_t bid_id = buy ? inc->order_id : oppo->order_id;
-                uint64_t ask_id = buy ? oppo->order_id : inc->order_id;
-                
-                auto bid_it = ob_.sys2input_.find(bid_id);
-                auto ask_it = ob_.sys2input_.find(ask_id);
-                
                 Execution ex(
-                    bid_it != ob_.sys2input_.end() ? bid_it->second : bid_id,
-                    ask_it != ob_.sys2input_.end() ? ask_it->second : ask_id,
+                    ob_.getInputId(buy ? inc->order_id : oppo->order_id),
+                    ob_.getInputId(buy ? oppo->order_id : inc->order_id),
                     px, q);
                 ob_._on_exec(ex);
             }
@@ -467,20 +587,10 @@ void ConAuctionEngine::match_sz(std::shared_ptr<Order>& inc)
 
             // 成交回调
             if (ob_._on_exec) {
-                uint64_t buy_input_id = buy ? inc->order_id : oppo->order_id;
-                uint64_t sell_input_id = buy ? oppo->order_id : inc->order_id;
-                
-                auto buy_it = ob_.sys2input_.find(buy_input_id);
-                if (buy_it != ob_.sys2input_.end()) {
-                    buy_input_id = buy_it->second;
-                }
-                
-                auto sell_it = ob_.sys2input_.find(sell_input_id);
-                if (sell_it != ob_.sys2input_.end()) {
-                    sell_input_id = sell_it->second;
-                }
-                
-                Execution ex(buy_input_id, sell_input_id, px, q);
+                Execution ex(
+                    ob_.getInputId(buy ? inc->order_id : oppo->order_id),
+                    ob_.getInputId(buy ? oppo->order_id : inc->order_id),
+                    px, q);
                 ob_._on_exec(ex);
             }
 
@@ -520,8 +630,7 @@ bool ConAuctionEngine::cancel(uint64_t oid)
         }
         
         // 订单不存在，撤单失败
-        auto orig_it = ob_.sys2input_.find(oid);
-        uint64_t cstra_id = (orig_it != ob_.sys2input_.end()) ? orig_it->second : oid;
+        uint64_t cstra_id = ob_.getInputId(oid);
         std::cerr << "❌ [连续竞价撤单失败] cstra_id=" << cstra_id << " -> 订单不存在" << std::endl;
         if (on_cancel_) on_cancel_(oid, false, "订单不存在", nullptr);
         return false;
@@ -564,13 +673,11 @@ bool ConAuctionEngine::cancel(uint64_t oid)
 // 撤单（通过输入订单ID）
 bool ConAuctionEngine::cancel_by_input_id(uint64_t input_id)
 {
-    auto it = ob_.input2sys_.find(input_id);          // 查共享表
+    auto it = ob_.input2sys_.find(input_id);
     if (it != ob_.input2sys_.end()) {
-        // 找到对应的系统订单ID，调用标准撤单方法
-        bool result = cancel(it->second);
-        // 从映射中移除
-        ob_.input2sys_.erase(it);                     // 从共享表删
-        ob_.sys2input_.erase(it->second);             // 从共享表删
+        uint64_t sys_id = it->second;
+        bool result = cancel(sys_id);
+        ob_.input2sys_.erase(it);  // 从映射中移除
         return result;
     } else {
         // 输入订单ID不存在（未在input2sys_映射中找到）

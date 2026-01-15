@@ -175,7 +175,7 @@ void BacktestEngine::initialize() {
                                                               std::shared_ptr<Order> order_info) {
                                                            // 集合竞价撤单回调
                                                            if (success && recording_enabled_ && order_info) {
-                                                               uint64_t original_id = orderbook_->getOriginalOrderId(order_id);
+                                                               uint64_t original_id = orderbook_->getInputId(order_id);
                                                                recordCancelWithOrderInfo(original_id, current_datetime_, order_info);
                                                            }
                                                        });
@@ -190,7 +190,7 @@ void BacktestEngine::initialize() {
                 if (order_info->broker == "BRK") {
                     // 历史订单撤单：只记录撤单到CSV，不通知策略
                     if (recording_enabled_) {
-                        uint64_t original_id = orderbook_->getOriginalOrderId(order_id);
+                        uint64_t original_id = orderbook_->getInputId(order_id);
                         recordCancelWithOrderInfo(original_id, current_datetime_, order_info);
                     }
                     // 注意：历史订单撤单不通知策略，因为策略不应该关心历史订单的撤单
@@ -230,7 +230,7 @@ void BacktestEngine::initialize() {
                                                         [this](uint64_t order_id, bool success, const std::string& reason,
                                                                std::shared_ptr<Order> order_info) {
                                                             if (success && recording_enabled_ && order_info) {
-                                                                uint64_t original_id = orderbook_->getOriginalOrderId(order_id);
+                                                                uint64_t original_id = orderbook_->getInputId(order_id);
                                                                 recordCancelWithOrderInfo(original_id, current_datetime_, order_info);
                                                             }
                                                         });
@@ -266,6 +266,11 @@ void BacktestEngine::registerStrategy(std::shared_ptr<Strategy> strategy) {
 
 // 尝试立即成交USER订单
 bool BacktestEngine::tryFillImmediately(std::shared_ptr<Order> user_order) {
+    // ==================== 严格主动单模式：禁用“秒成捷径” ====================
+    if (con_engine_ && con_engine_->isStrictActiveOrderMode()) {
+        return false;
+    }
+
     bool is_buy = user_order->direction == Direction::Buy;
     Price best_opp_price = is_buy ? orderbook_->bestAsk() : orderbook_->bestBid();
     
@@ -476,11 +481,46 @@ void BacktestEngine::enableTradeRecording(const std::string& output_file) {
     next_trade_id_ = 1000000;  // 重置交易ID
 }
 
+// === 严格主动单模式（欠债限制功能）===
+void BacktestEngine::setStrictActiveOrderMode(bool enabled) {
+    if (con_engine_) {
+        con_engine_->setStrictActiveOrderMode(enabled);
+    }
+}
+
+bool BacktestEngine::isStrictActiveOrderMode() const {
+    if (con_engine_) {
+        return con_engine_->isStrictActiveOrderMode();
+    }
+    return false;
+}
+
+bool BacktestEngine::hasDebt() const {
+    if (con_engine_) {
+        return con_engine_->hasDebt();
+    }
+    return false;
+}
+
+// === 用户自定义事件支持 ===
+void BacktestEngine::submitUserEvent(const UserEvent& user_event) {
+    // 复用现有用户事件处理逻辑
+    processUserEvent(user_event);
+}
+
+bool BacktestEngine::hasUserOrder(const std::string& order_id) const {
+    return user_order_mapping_.find(order_id) != user_order_mapping_.end();
+}
+
+void BacktestEngine::setCurrentDatetimeForCustomEvent(const std::string& datetime) {
+    current_datetime_ = datetime;
+}
+
 // 记录单笔交易信息
 void BacktestEngine::recordTrade(const Execution& ex, const std::string& datetime) {
     // 获取原始输入订单ID
-    uint64_t buy_input_id = orderbook_->getOriginalOrderId(ex.buy_order_id);
-    uint64_t sell_input_id = orderbook_->getOriginalOrderId(ex.sell_order_id);
+    uint64_t buy_input_id = orderbook_->getInputId(ex.buy_order_id);
+    uint64_t sell_input_id = orderbook_->getInputId(ex.sell_order_id);
 
     TradeRecord record(
         datetime,                           // 交易时间

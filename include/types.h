@@ -149,6 +149,16 @@ struct Position {
     double realized_pnl;   // 已实现盈亏
 };
 
+// 用户自定义事件时间戳（实际数据存储在 Python 层）
+// 用于用户自定义数据推送功能
+struct CustomEventTime {
+    std::string datetime;  // 时间戳，格式与其他事件一致（如 "2025-11-17 09:35:00"）
+    size_t index;          // 对应 Python 层数据列表的索引
+    
+    CustomEventTime(const std::string& dt, size_t idx) 
+        : datetime(dt), index(idx) {}
+};
+
 // 交易回调信息结构体
 struct TradeCallback {
     std::string localid;      // 本地订单ID

@@ -2,8 +2,8 @@ import adata
 adata.login("linzhuoyu", 'Lzy160115?')
 
 
-date = "2025-12-15" 
-sym = "002929.SZ"
+date = "2025-11-17" 
+sym = "300827.SZ"
 base_name = f"{sym}_{date}"
 cstick = adata.get_data("cstick", date, date, [sym])
 csord = adata.get_data("csord", date, date, [sym])

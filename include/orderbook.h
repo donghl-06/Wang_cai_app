@@ -126,10 +126,13 @@ public:
     void setLastTradePrice(Price p) { _last_trade_price = p; }
     Price getLastTradePrice() const { return _last_trade_price; }
     
-    // 获取原始订单ID（如果存在映射的话）
-    uint64_t getOriginalOrderId(uint64_t system_id) const {
-        auto it = sys2input_.find(system_id);
-        return (it != sys2input_.end()) ? it->second : system_id;
+    // 获取原始订单ID（通过 Order::input_id）
+    uint64_t getInputId(uint64_t system_id) const {
+        auto it = _omap.find(system_id);
+        if (it != _omap.end() && it->second->input_id != 0) {
+            return it->second->input_id;
+        }
+        return system_id;
     }
     
     // 获取订单信息
@@ -145,21 +148,15 @@ public:
         // 1) 从对象池拿一块内存并原地构造
         auto od = _order_pool.acquire(std::forward<Args>(args)...);
 
-        //
-        // ① 字符串 → 系统 ID（无论是否全数字都写）
-        sys2str_[od->order_id] = od->order_local_id;
-        str2sys_[od->order_local_id] = od->order_id;
-
-        // ② 如果字符串是纯数字，再额外写 uint64_t ↔ uint64_t
+        // 2) 如果 order_local_id 是纯数字，缓存到 input_id 并建立映射
         char* endptr = nullptr;
         uint64_t num = std::strtoull(od->order_local_id.c_str(), &endptr, 10);
         if (endptr != od->order_local_id.c_str() && *endptr == '\0') {
-            if (num != 0) { // 0 号单直接忽略
-                input2sys_[num] = od->order_id;
-                sys2input_[od->order_id] = num;
+            od->input_id = num;  // 缓存到 Order 对象
+            if (num != 0) {
+                input2sys_[num] = od->order_id;  // 正向映射（撤单用）
             }
         }
-        /* -------------------------------------- */
         return od;
     }
     
@@ -209,13 +206,8 @@ private:
     std::unordered_map<uint64_t, std::shared_ptr<Order>> _omap;  //订单映射表 - 依赖对象池
     ExecCallback _on_exec;  //成交回调函数
 
-    // >>> 共享：原始输入ID  →  系统ID  (盘前+盘中都用)
+    // 原始输入ID → 系统ID（撤单时 O(1) 查找）
     std::unordered_map<uint64_t, uint64_t> input2sys_;
-    // 系统id → 原始输入id
-    std::unordered_map<uint64_t, uint64_t> sys2input_;
-    // 新增：支持字符串单号（以后策略想用 “MR_0001” 也 OK）
-    std::unordered_map<std::string, uint64_t> str2sys_;
-    std::unordered_map<uint64_t, std::string> sys2str_;
 
     //订单价格转换为桶索引
     int  pxToIdx(Price p) const { 
