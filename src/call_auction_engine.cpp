@@ -282,8 +282,9 @@ Price CallAuctionEngine::calcPredict_SH()
             sum += p;
         }
         double avg = sum / tradable_prices.size();
-        // 四舍五入到100
-        Price rounded = static_cast<Price>(std::round(avg / 100.0) * 100.0);
+        // 四舍五入到tick（ETF=10, 股票=100）
+        Price tick = ob_.getTick();
+        Price rounded = static_cast<Price>(std::round(avg / tick) * tick);
         return rounded;
     }
     

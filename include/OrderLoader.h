@@ -26,11 +26,14 @@ public:
     void load_sh_info(const std::string& order_csv_content, const std::string& trade_csv_content, wangcai::OrderBook& order_book);
     void load_sz_info(const std::string& order_csv_content, const std::string& trade_csv_content, wangcai::OrderBook& order_book);
     void load_cstick(const std::string& csv_content, wangcai::OrderBook& order_book);
-    wangcai::Price loadPrevClosePrice(const std::string& csv_content);
-    wangcai::Price loadOpenPrice(const std::string& csv_content);
+    
+    // 加载前收盘价和开盘价（is_etf: true=ETF三位小数, false=股票两位小数）
+    wangcai::Price loadPrevClosePrice(const std::string& csv_content, bool is_etf = false);
+    wangcai::Price loadOpenPrice(const std::string& csv_content, bool is_etf = false);
     
     // 从csbar1d加载涨跌停限制（返回pair<上限,下限>，单位：厘，已包含0.1元冗余）
-    std::pair<wangcai::Price, wangcai::Price> loadPriceLimits(const std::string& csbar1d_csv_content);
+    // is_etf: true=ETF（tick=10厘=0.001元）, false=股票（tick=100厘=0.01元）
+    std::pair<wangcai::Price, wangcai::Price> loadPriceLimits(const std::string& csbar1d_csv_content, bool is_etf = false);
     
 private:
     void load_traders(const std::string& csv_content, wangcai::OrderBook& order_book);

@@ -112,7 +112,8 @@ def create_symbol_data(symbol: str,
                        cstick_df: pd.DataFrame,
                        order_df: pd.DataFrame, 
                        trade_df: pd.DataFrame,
-                       csbar1d_df: pd.DataFrame) -> SymbolData:
+                       csbar1d_df: pd.DataFrame,
+                       is_etf: bool = False) -> SymbolData:
     """
     从 DataFrame 创建 SymbolData 对象
     
@@ -122,6 +123,7 @@ def create_symbol_data(symbol: str,
         order_df: 逐笔委托数据 DataFrame
         trade_df: 逐笔成交数据 DataFrame
         csbar1d_df: 日线数据 DataFrame（包含涨跌停限制）
+        is_etf: 是否为ETF（True=三位小数/tick=0.001元，False=两位小数/tick=0.01元）
     
     Returns:
         SymbolData: 回测引擎所需的数据对象
@@ -146,44 +148,63 @@ def create_symbol_data(symbol: str,
     trade_csv = trade_df.to_csv(index=False)
     csbar1d_csv = csbar1d_df.to_csv(index=False)
     
-    return SymbolData(symbol, cstick_csv, order_csv, trade_csv, csbar1d_csv)
+    return SymbolData(symbol, cstick_csv, order_csv, trade_csv, csbar1d_csv, is_etf)
 
 
-def create_multi_symbol_data(data_dict: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]]) -> List[SymbolData]:
+def create_multi_symbol_data(data_dict) -> List[SymbolData]:
     """
     从字典创建多个合约的 SymbolData
     
     Args:
-        data_dict: 格式为 {symbol: (cstick_df, order_df, trade_df, csbar1d_df), ...}
+        data_dict: 格式为以下两种之一：
+            - 4元组（股票）: {symbol: (cstick_df, order_df, trade_df, csbar1d_df), ...}
+            - 5元组（指定ETF）: {symbol: (cstick_df, order_df, trade_df, csbar1d_df, is_etf), ...}
     
     Returns:
         List[SymbolData]: SymbolData 对象列表
     
     Example:
+        # 股票（默认）
         >>> data = {
         ...     "000488.SZ": (cstick_df1, order_df1, trade_df1, csbar1d_df1),
         ...     "688516.SH": (cstick_df2, order_df2, trade_df2, csbar1d_df2),
         ... }
+        
+        # 混合ETF和股票
+        >>> data = {
+        ...     "159001.SZ": (cstick_df1, order_df1, trade_df1, csbar1d_df1, True),   # ETF
+        ...     "300827.SZ": (cstick_df2, order_df2, trade_df2, csbar1d_df2, False),  # 股票
+        ... }
         >>> symbol_data_list = create_multi_symbol_data(data)
     """
     symbol_data_list = []
-    for symbol, (cstick_df, order_df, trade_df, csbar1d_df) in data_dict.items():
-        symbol_data = create_symbol_data(symbol, cstick_df, order_df, trade_df, csbar1d_df)
+    for symbol, data_tuple in data_dict.items():
+        # 支持 4 元组（兼容旧格式）和 5 元组（新格式）
+        if len(data_tuple) == 5:
+            cstick_df, order_df, trade_df, csbar1d_df, is_etf = data_tuple
+        else:
+            cstick_df, order_df, trade_df, csbar1d_df = data_tuple
+            is_etf = False
+        
+        symbol_data = create_symbol_data(symbol, cstick_df, order_df, trade_df, csbar1d_df, is_etf)
         symbol_data_list.append(symbol_data)
     return symbol_data_list
 
 
-def run_backtest(data_dict: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]], 
+def run_backtest(data_dict, 
                  strategy, 
                  output_dir: str = None,
                  strict_active_order_mode: bool = False,
                  custom_data: pd.DataFrame = None,
                  enable_custom_data: bool = False) -> bool:
     """
-    运行回测（支持单合约/多合约，单策略）
+    运行回测（支持单合约/多合约，单策略，股票/ETF）
     
     Args:
-        data_dict: 格式为 {symbol: (cstick_df, order_df, trade_df, csbar1d_df), ...}
+        data_dict: 格式为以下两种之一：
+            - 4元组（股票，两位小数）: {symbol: (cstick_df, order_df, trade_df, csbar1d_df), ...}
+            - 5元组（指定ETF/股票）: {symbol: (cstick_df, order_df, trade_df, csbar1d_df, is_etf), ...}
+              其中 is_etf=True 表示ETF（三位小数），is_etf=False 表示股票（两位小数）
         strategy: 策略实例（单个策略）
         output_dir: 输出目录，默认不保存
         strict_active_order_mode: 是否启用严格主动单模式（默认关闭）
@@ -199,14 +220,25 @@ def run_backtest(data_dict: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataF
         bool: 回测是否成功
     
     Example:
-        # 单合约
+        # 单合约（股票）
         >>> data = {"688516.SH": (cstick_df, order_df, trade_df, csbar1d_df)}
         >>> run_backtest(data, strategy)
         
-        # 多合约
+        # 多合约（股票）
         >>> data = {
         ...     "000488.SZ": (cstick_df1, order_df1, trade_df1, csbar1d_df1),
         ...     "688516.SH": (cstick_df2, order_df2, trade_df2, csbar1d_df2),
+        ... }
+        >>> run_backtest(data, strategy)
+        
+        # ETF 回测（三位小数）
+        >>> data = {"159001.SZ": (cstick_df, order_df, trade_df, csbar1d_df, True)}
+        >>> run_backtest(data, strategy)
+        
+        # 混合 ETF 和股票
+        >>> data = {
+        ...     "159001.SZ": (cstick_df1, order_df1, trade_df1, csbar1d_df1, True),   # ETF
+        ...     "300827.SZ": (cstick_df2, order_df2, trade_df2, csbar1d_df2, False),  # 股票
         ... }
         >>> run_backtest(data, strategy)
         
@@ -223,8 +255,15 @@ def run_backtest(data_dict: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataF
     try:
         print(f"🚀 开始回测")
         print(f"   合约数量: {len(data_dict)}")
-        for symbol, (cstick_df, order_df, trade_df, csbar1d_df) in data_dict.items():
-            print(f"   {symbol}: Tick {len(cstick_df)}行, 委托 {len(order_df)}行, 成交 {len(trade_df)}行, 日线 {len(csbar1d_df)}行")
+        for symbol, data_tuple in data_dict.items():
+            # 支持 4 元组（股票）和 5 元组（ETF/股票）
+            if len(data_tuple) == 5:
+                cstick_df, order_df, trade_df, csbar1d_df, is_etf = data_tuple
+            else:
+                cstick_df, order_df, trade_df, csbar1d_df = data_tuple
+                is_etf = False
+            etf_flag = " [ETF]" if is_etf else ""
+            print(f"   {symbol}{etf_flag}: Tick {len(cstick_df)}行, 委托 {len(order_df)}行, 成交 {len(trade_df)}行, 日线 {len(csbar1d_df)}行")
         
         if strict_active_order_mode:
             print(f"   ⚙️ 严格主动单模式: {'✅ 开启' if strict_active_order_mode else '❌ 关闭'}")

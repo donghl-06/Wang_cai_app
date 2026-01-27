@@ -23,7 +23,7 @@ MultiBacktestEngine::MultiBacktestEngine(const std::vector<SymbolData>& symbol_d
         EngineManager se;
         se.symbol = data.symbol;
 
-        se.engine = std::make_unique<BacktestEngine>(data.symbol, data.cstick_csv, data.order_csv, data.trade_csv, data.csbar1d_csv);
+        se.engine = std::make_unique<BacktestEngine>(data.symbol, data.cstick_csv, data.order_csv, data.trade_csv, data.csbar1d_csv, data.is_etf);
 
         // 合并所有事件到一个数组
         std::vector<Event> merged;

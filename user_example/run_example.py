@@ -14,13 +14,10 @@
 import sys
 import os
 
-# 使用本地编译的包，而不是安装的包
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import pandas as pd
 from pathlib import Path
-
-from wangcai_syn import run_backtest
+import wangcai_syn
 from my_strategy import MyStrategy
 
 
@@ -62,7 +59,7 @@ def main():
     
     # 4. 运行回测
     print(f"\n🚀 开始回测...")
-    success = run_backtest(
+    success = wangcai_syn.run_backtest(
         data_dict=data,
         strategy=strategy,
         output_dir=f"{OUTPUT_DIR}/{SYMBOL}_{DATE}"

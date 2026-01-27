@@ -14,12 +14,16 @@
 
 namespace wangcai {
 
-// 工具函数：将价格字符串转为int64_t，*10000并四舍五入到100
-inline uint64_t parse_price(const std::string& price_str) {
+// 获取 tick 大小（ETF=10厘=0.001元，股票=100厘=0.01元）
+inline Price get_tick(bool is_etf) { return is_etf ? 10 : 100; }
+
+// 工具函数：将价格字符串转为int64_t，*10000并四舍五入到tick
+// tick: ETF=10, 股票=100
+inline uint64_t parse_price(const std::string& price_str, Price tick = 100) {
     if (price_str.empty()) return 0;
     double price_raw = std::stod(price_str);
     double price_multiplied = price_raw * 10000;
-    double price_rounded = std::round(price_multiplied / 100.0) * 100.0;
+    double price_rounded = std::round(price_multiplied / tick) * tick;
     return static_cast<int64_t>(price_rounded);
 }
 
@@ -81,8 +85,9 @@ void InfoLoader::load_sh_info(const std::string& order_csv_content, const std::s
             std::string time_part = format_time_to_milliseconds(time);
             std::string datetime = date + " " + time_part;
 
-            // 解析数据
-            int64_t price = parse_price(price_str);
+            // 解析数据（使用 order_book 的 tick 值）
+            Price tick = order_book.getTick();
+            int64_t price = parse_price(price_str, tick);
             int64_t size = size_str.empty() ? 0 : std::stod(size_str);
             int64_t side = side_str.empty() ? 0 : std::stoi(side_str);
             int64_t ordertype = ordertype_str.empty() ? 0 : std::stoi(ordertype_str);
@@ -181,8 +186,9 @@ void InfoLoader::load_sz_info(const std::string& order_csv_content, const std::s
             std::string time_part = format_time_to_milliseconds(time);
             std::string datetime = date + " " + time_part;
 
-            // 解析数据
-            int64_t price = parse_price(price_str);
+            // 解析数据（使用 order_book 的 tick 值）
+            Price tick = order_book.getTick();
+            int64_t price = parse_price(price_str, tick);
             int64_t size = size_str.empty() ? 0 : std::stod(size_str);
             int64_t side = side_str.empty() ? 0 : std::stoi(side_str);
             int64_t ordertype = ordertype_str.empty() ? 0 : std::stoi(ordertype_str);
@@ -301,7 +307,9 @@ void InfoLoader::load_traders(const std::string& csv_content, wangcai::OrderBook
             // 去除空格
             tradebsflag.erase(std::remove(tradebsflag.begin(), tradebsflag.end(), ' '), tradebsflag.end());
 
-            int64_t price = parse_price(price_str);
+            // 使用 order_book 的 tick 值（根据 is_etf 设置：ETF=10，股票=100）
+            Price tick = order_book.getTick();
+            int64_t price = parse_price(price_str, tick);
             int64_t size = size_str.empty() ? 0 : std::stod(size_str);
             int64_t bidorderid = bidorderid_str.empty() ? 0 : std::stoi(bidorderid_str);
             int64_t askorderid = askorderid_str.empty() ? 0 : std::stoi(askorderid_str);
@@ -467,25 +475,28 @@ void InfoLoader::load_cstick(const std::string& csv_content, wangcai::OrderBook&
             std::getline(ss, totalasize_str, ',');
             std::getline(ss, iopv_str, ',');
 
-            int64_t prevclose = parse_price(prevclose_str);
-            int64_t open = parse_price(open_str);
-            int64_t high = parse_price(high_str);
-            int64_t low = parse_price(low_str);
-            int64_t close = parse_price(close_str);
+            // 使用 order_book 的 tick 值（根据 is_etf 设置：ETF=10，股票=100）
+            Price tick = order_book.getTick();
+
+            int64_t prevclose = parse_price(prevclose_str, tick);
+            int64_t open = parse_price(open_str, tick);
+            int64_t high = parse_price(high_str, tick);
+            int64_t low = parse_price(low_str, tick);
+            int64_t close = parse_price(close_str, tick);
             int64_t volume = volume_str.empty() ? 0 : std::stod(volume_str);
             int64_t turnover = turnover_str.empty() ? 0 : std::stod(turnover_str);
             int64_t tradecount = tradecount_str.empty() ? 0 : std::stoi(tradecount_str);
             std::array<std::uint64_t, 10> bids = {
-                parse_price(bid1_str), parse_price(bid2_str), parse_price(bid3_str),
-                parse_price(bid4_str), parse_price(bid5_str), parse_price(bid6_str),
-                parse_price(bid7_str), parse_price(bid8_str), parse_price(bid9_str),
-                parse_price(bid10_str)
+                parse_price(bid1_str, tick), parse_price(bid2_str, tick), parse_price(bid3_str, tick),
+                parse_price(bid4_str, tick), parse_price(bid5_str, tick), parse_price(bid6_str, tick),
+                parse_price(bid7_str, tick), parse_price(bid8_str, tick), parse_price(bid9_str, tick),
+                parse_price(bid10_str, tick)
             };
             std::array<std::uint64_t, 10> asks = {
-                parse_price(ask1_str), parse_price(ask2_str), parse_price(ask3_str),
-                parse_price(ask4_str), parse_price(ask5_str), parse_price(ask6_str),
-                parse_price(ask7_str), parse_price(ask8_str), parse_price(ask9_str),
-                parse_price(ask10_str)
+                parse_price(ask1_str, tick), parse_price(ask2_str, tick), parse_price(ask3_str, tick),
+                parse_price(ask4_str, tick), parse_price(ask5_str, tick), parse_price(ask6_str, tick),
+                parse_price(ask7_str, tick), parse_price(ask8_str, tick), parse_price(ask9_str, tick),
+                parse_price(ask10_str, tick)
             };
             std::array<std::uint64_t, 10> bid_sizes = {
                 bsize1_str.empty() ? 0 : std::stoul(bsize1_str), 
@@ -512,8 +523,8 @@ void InfoLoader::load_cstick(const std::string& csv_content, wangcai::OrderBook&
                 asize10_str.empty() ? 0 : std::stoul(asize10_str)
             };
 
-            int64_t avgbid = parse_price(avgbid_str);
-            int64_t avgask = parse_price(avgask_str);
+            int64_t avgbid = parse_price(avgbid_str, tick);
+            int64_t avgask = parse_price(avgask_str, tick);
             int64_t totalbsize = totalbsize_str.empty() ? 0 : std::stoul(totalbsize_str);
             int64_t totalasize = totalasize_str.empty() ? 0 : std::stoul(totalasize_str);
             int64_t iopv = iopv_str.empty() ? 0 : std::stod(iopv_str);
@@ -546,7 +557,7 @@ void InfoLoader::clear_events() {
 }
 
 
-wangcai::Price InfoLoader::loadPrevClosePrice(const std::string& csv_content) {
+wangcai::Price InfoLoader::loadPrevClosePrice(const std::string& csv_content, bool is_etf) {
     std::istringstream file(csv_content);
 
     std::string line;
@@ -569,9 +580,10 @@ wangcai::Price InfoLoader::loadPrevClosePrice(const std::string& csv_content) {
         std::getline(ss, sym, ',');
         std::getline(ss, prevclose_str, ',');
         double prev_close_raw = std::stod(prevclose_str);
-        // 先乘以10000，再四舍五入到100
+        // 先乘以10000，再四舍五入到tick（ETF=10, 股票=100）
+        Price tick = get_tick(is_etf);
         double prev_close_multiplied = prev_close_raw * 10000;
-        double prev_close_rounded = std::round(prev_close_multiplied / 100.0) * 100.0;
+        double prev_close_rounded = std::round(prev_close_multiplied / tick) * tick;
         wangcai::Price prev_close = static_cast<wangcai::Price>(prev_close_rounded);
         return prev_close;
     }
@@ -579,7 +591,7 @@ wangcai::Price InfoLoader::loadPrevClosePrice(const std::string& csv_content) {
     return 0;
 }
 
-wangcai::Price InfoLoader::loadOpenPrice(const std::string& csv_content) {
+wangcai::Price InfoLoader::loadOpenPrice(const std::string& csv_content, bool is_etf) {
     std::istringstream file(csv_content);
     
     std::string line;
@@ -604,9 +616,10 @@ wangcai::Price InfoLoader::loadOpenPrice(const std::string& csv_content) {
         std::getline(ss, open_str, ',');
         
         double open_raw = std::stod(open_str);
-        // 先乘以10000，再四舍五入到100
+        // 先乘以10000，再四舍五入到tick（ETF=10, 股票=100）
+        Price tick = get_tick(is_etf);
         double open_multiplied = open_raw * 10000;
-        double open_rounded = std::round(open_multiplied / 100.0) * 100.0;
+        double open_rounded = std::round(open_multiplied / tick) * tick;
         wangcai::Price open_price = static_cast<wangcai::Price>(open_rounded);
 
         return open_price;
@@ -616,7 +629,8 @@ wangcai::Price InfoLoader::loadOpenPrice(const std::string& csv_content) {
 }
 
 // 从csbar1d加载涨跌停限制
-std::pair<wangcai::Price, wangcai::Price> InfoLoader::loadPriceLimits(const std::string& csbar1d_csv_content) {
+// is_etf: true=ETF（tick=10厘=0.001元）, false=股票（tick=100厘=0.01元）
+std::pair<wangcai::Price, wangcai::Price> InfoLoader::loadPriceLimits(const std::string& csbar1d_csv_content, bool is_etf) {
     std::istringstream file(csbar1d_csv_content);
     std::string line;
     std::getline(file, line); // 跳过标题行
@@ -644,20 +658,24 @@ std::pair<wangcai::Price, wangcai::Price> InfoLoader::loadPriceLimits(const std:
         throw std::runtime_error("无法从csbar1d读取涨跌停限制");
     }
     
-    // 添加0.1元的冗余
-    upper_limit_yuan += 0.1;
-    lower_limit_yuan -= 0.1;
+    // 添加冗余（ETF=0.01元，股票=0.1元）
+    double margin = is_etf ? 0.01 : 0.1;
+    upper_limit_yuan += margin;
+    lower_limit_yuan -= margin;
     
-    // 先四舍五入到0.01元（分）
-    upper_limit_yuan = std::round(upper_limit_yuan * 100.0) / 100.0;
-    lower_limit_yuan = std::round(lower_limit_yuan * 100.0) / 100.0;
+    // 获取 tick（ETF=10厘=0.001元，股票=100厘=0.01元）
+    wangcai::Price tick = get_tick(is_etf);
+    double tick_yuan = tick / 10000.0;  // 转换为元
     
-    // 转换为厘（1元=10000厘），确保是100的整数倍（tick对齐）
+    // 先四舍五入到 tick 精度
+    upper_limit_yuan = std::round(upper_limit_yuan / tick_yuan) * tick_yuan;
+    lower_limit_yuan = std::round(lower_limit_yuan / tick_yuan) * tick_yuan;
+    
+    // 转换为厘（1元=10000厘）
     wangcai::Price upper_limit = static_cast<wangcai::Price>(std::round(upper_limit_yuan * 10000.0));
     wangcai::Price lower_limit = static_cast<wangcai::Price>(std::round(lower_limit_yuan * 10000.0));
     
-    // 确保对齐到tick（100厘=0.01元）
-    const wangcai::Price tick = 100;
+    // 确保对齐到tick
     upper_limit = ((upper_limit + tick - 1) / tick) * tick; // 向上对齐
     lower_limit = (lower_limit / tick) * tick;               // 向下对齐
     

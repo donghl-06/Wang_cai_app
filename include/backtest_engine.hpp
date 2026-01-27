@@ -103,11 +103,13 @@ protected:
 class BacktestEngine {
 public:
     // 从CSV字符串初始化回测引擎（Python传入DataFrame.to_csv()生成的字符串）
+    // is_etf: true=ETF（三位小数，tick=10）, false=股票（两位小数，tick=100）
     BacktestEngine(const std::string& symbol, 
                    const std::string& cstick_csv,
                    const std::string& order_csv, 
                    const std::string& trade_csv,
-                   const std::string& csbar1d_csv);
+                   const std::string& csbar1d_csv,
+                   bool is_etf = false);
     
     // 注册策略
     void registerStrategy(std::shared_ptr<Strategy> strategy);
@@ -187,6 +189,7 @@ private:
     std::string order_csv_;
     std::string trade_csv_;
     std::string csbar1d_csv_;
+    bool is_etf_ = false;      // 是否为ETF（ETF=三位小数/tick=10，股票=两位小数/tick=100）
     
     // 订单簿和引擎
     std::unique_ptr<OrderBook> orderbook_;

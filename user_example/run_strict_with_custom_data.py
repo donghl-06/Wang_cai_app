@@ -10,18 +10,9 @@
 import os
 import sys
 from pathlib import Path
-
 import pandas as pd
-
-# 确保使用本地编译的包
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
 import wangcai_syn
-from wangcai_syn import run_backtest, Strategy, make_order, make_cancel, UserEvent
 
-# 打印加载路径，确认本地包
-print(f"📦 wangcai_syn: {wangcai_syn.__file__}")
-print(f"📦 扩展模块: {wangcai_syn.wangcai_cpp.__file__}")
 
 
 # ========== 配置区 ==========
@@ -32,7 +23,7 @@ OUTPUT_DIR = "./output"
 # ============================
 
 
-class StrictCustomStrategy(Strategy):
+class StrictCustomStrategy(wangcai_syn.Strategy):
     """
     综合策略示例：
     - 使用自定义数据中的 signal 字段判断是否下单
@@ -74,7 +65,7 @@ class StrictCustomStrategy(Strategy):
             price_li = int(target_price * 10000)
             
             # 下主动买单（价格会穿越卖一，触发严格模式的欠债检查）
-            order = make_order(
+            order = wangcai_syn.make_order(
                 Broker='',
                 Account=self.account,
                 Exchange=1,  # 深圳
@@ -201,7 +192,7 @@ def main():
     print(f"   ⚙️ 严格主动单模式: ✅ 开启")
     print(f"   ⚙️ 自定义数据推送: ✅ 开启")
     
-    success = run_backtest(
+    success = wangcai_syn.run_backtest(
         data_dict=data,
         strategy=strategy,
         output_dir=f"{OUTPUT_DIR}/{SYMBOL}_{DATE}_strict_custom",

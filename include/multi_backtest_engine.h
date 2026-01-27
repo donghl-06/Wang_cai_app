@@ -27,6 +27,7 @@ struct SymbolData {
     std::string order_csv;     // 委托数据CSV字符串  
     std::string trade_csv;     // 成交数据CSV字符串
     std::string csbar1d_csv;   // 日线数据CSV字符串（包含涨跌停限制）
+    bool is_etf = false;       // 是否为ETF（ETF=三位小数/tick=10，股票=两位小数/tick=100）
 };
 
 struct EngineManager {

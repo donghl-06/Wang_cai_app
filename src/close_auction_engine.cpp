@@ -289,15 +289,16 @@ Price CloseAuctionEngine::calcPredict_SH()
     // 设置最大可成交量
     _predict_vol = bestVol;
 
-    // 若存在多个可成交价，取其均价（四舍五入到100厘，即分）
+    // 若存在多个可成交价，取其均价（四舍五入到tick）
     if (!tradable_prices.empty()) {
         double sum = 0;
         for (Price p : tradable_prices) {
             sum += p;
         }
         double avg = sum / tradable_prices.size();
-        // 四舍五入到100厘（分）
-        Price rounded = static_cast<Price>(std::round(avg / 100.0) * 100.0);
+        // 四舍五入到tick（ETF=10厘, 股票=100厘）
+        Price tick = ob_.getTick();
+        Price rounded = static_cast<Price>(std::round(avg / tick) * tick);
         return rounded;
     }
 

@@ -126,6 +126,9 @@ public:
     void setLastTradePrice(Price p) { _last_trade_price = p; }
     Price getLastTradePrice() const { return _last_trade_price; }
     
+    // 获取 tick 大小（ETF=10, 股票=100）
+    Price getTick() const { return _tick; }
+    
     // 获取原始订单ID（通过 Order::input_id）
     uint64_t getInputId(uint64_t system_id) const {
         auto it = _omap.find(system_id);

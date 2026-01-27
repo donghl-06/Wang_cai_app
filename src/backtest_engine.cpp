@@ -21,23 +21,25 @@ static OrderType toOrderType(const Event& ev) {
 }
 
 // 构造函数，初始化回测引擎，从CSV字符串加载数据
+// is_etf: true=ETF（三位小数，tick=10）, false=股票（两位小数，tick=100）
 BacktestEngine::BacktestEngine(const std::string& symbol, 
                                const std::string& cstick_csv,
                                const std::string& order_csv, 
                                const std::string& trade_csv,
-                               const std::string& csbar1d_csv)
+                               const std::string& csbar1d_csv,
+                               bool is_etf)
     : symbol_(symbol), cstick_csv_(cstick_csv), order_csv_(order_csv), trade_csv_(trade_csv), csbar1d_csv_(csbar1d_csv),
-      continuous_mode_(false), next_order_id_(1), next_trade_id_(1), recording_enabled_(false)
+      continuous_mode_(false), next_order_id_(1), next_trade_id_(1), recording_enabled_(false), is_etf_(is_etf)
 {
     initialize();
 }
 
 // 初始化函数，完成回测环境的所有准备工作
 void BacktestEngine::initialize() {
-    // 1. 从CSV字符串读取前收盘价和真实开盘价
+    // 1. 从CSV字符串读取前收盘价和真实开盘价（传入 is_etf_ 以正确对齐 tick）
     InfoLoader loader;
-    prev_close_ = loader.loadPrevClosePrice(cstick_csv_);
-    actual_open_ = loader.loadOpenPrice(cstick_csv_);
+    prev_close_ = loader.loadPrevClosePrice(cstick_csv_, is_etf_);
+    actual_open_ = loader.loadOpenPrice(cstick_csv_, is_etf_);
     // 根据股票代码设置市场类型（静态变量，每次必须重新设置）
     Event::is_SZ = (symbol_.find("SZ") != std::string::npos);
 
@@ -46,13 +48,13 @@ void BacktestEngine::initialize() {
         throw std::runtime_error("无法读取前收盘价");
     }
     
-    // 2. 从csbar1d文件读取涨跌停限制（含0.1元冗余）
-    auto [upper_limit, lower_limit] = loader.loadPriceLimits(csbar1d_csv_);
+    // 2. 从csbar1d文件读取涨跌停限制（含冗余，ETF=0.01元，股票=0.1元）
+    auto [upper_limit, lower_limit] = loader.loadPriceLimits(csbar1d_csv_, is_etf_);
     upper_limit_ = upper_limit;
     lower_limit_ = lower_limit;
 
-    // 3. 初始化订单簿，注册成交回调
-    orderbook_ = std::make_unique<OrderBook>(upper_limit_, lower_limit_, false,
+    // 3. 初始化订单簿，注册成交回调（传入 is_etf_ 设置 tick）
+    orderbook_ = std::make_unique<OrderBook>(upper_limit_, lower_limit_, is_etf_,
         [this](const Execution& ex) {
             std::string trade_datetime = current_datetime_;
             
@@ -833,10 +835,14 @@ void BacktestEngine::processEvent(const Event& ev) {
         order.SeqNo = ev.seqno;
         order.BizIndex = ev.bizindex;
         
-        for (auto& strategy : strategies_) {
-            auto user_events = strategy->onOrderEvent(order);
-            for (const auto& ue : user_events) {
-                strategy_events.push_back(ue);
+        // 上海市场：延迟到 accept 之后再调用 onOrderEvent（只对剩余量回调）
+        // 深圳市场：保持原有逻辑，在这里调用
+        if (Event::is_SZ) {
+            for (auto& strategy : strategies_) {
+                auto user_events = strategy->onOrderEvent(order);
+                for (const auto& ue : user_events) {
+                    strategy_events.push_back(ue);
+                }
             }
         }
     } else if (ev.source == "tra") {
@@ -930,6 +936,29 @@ void BacktestEngine::processEvent(const Event& ev) {
                 con_engine_->accept(ord);
                 data_manager_->updateOrderDetail(ev, 'A');
                 last_brk_datetime_ = ev.datetime;
+                
+                // 上海市场：accept 之后，只有剩余量 > 0 才通知用户
+                if (!Event::is_SZ && ord->remaining_volume() > 0) {
+                    OrderDetail order;
+                    order.Exchange = ev.exchange != -1 ? ev.exchange : 0;  // SH=0
+                    order.Instrument = ev.sym;
+                    order.Time = ev.time_raw != -1 ? ev.time_raw : 0;
+                    order.ChannelNo = ev.channelno;
+                    order.OrderNo = ev.orderid;
+                    order.Price = ev.price;
+                    order.Volume = ord->remaining_volume();  // 使用剩余量
+                    order.Side = ev.side == 1 ? "1" : "2";
+                    order.OrderKind = ev.order_kind != '\0' ? ev.order_kind : (ev.ordertype == 1 ? '1' : '2');
+                    order.SeqNo = ev.seqno;
+                    order.BizIndex = ev.bizindex;
+                    
+                    for (auto& strategy : strategies_) {
+                        auto user_events = strategy->onOrderEvent(order);
+                        for (const auto& ue : user_events) {
+                            strategy_events.push_back(ue);
+                        }
+                    }
+                }
             } else if (ev.source == "tra") {
                 uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
                 

@@ -1,9 +1,15 @@
 import adata
 adata.login("linzhuoyu", 'Lzy160115?')
-
-
+#etf list
+etf_list = [
+    "510050.SH",
+    "510300.SH",
+    "510500.SH",
+    "159915.SZ",
+    "159919.SZ"
+]
 date = "2025-11-17" 
-sym = "300827.SZ"
+sym = "510050.SH"
 base_name = f"{sym}_{date}"
 cstick = adata.get_data("cstick", date, date, [sym])
 csord = adata.get_data("csord", date, date, [sym])

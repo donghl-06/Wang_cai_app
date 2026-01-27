@@ -468,10 +468,10 @@ py::class_<OrderCallback>(m, "OrderCallback")
              py::arg("csv_content"), py::arg("order_book"),
              "Load tick data from CSV string (DataFrame.to_csv())")
         .def("loadPrevClosePrice", &InfoLoader::loadPrevClosePrice,
-             py::arg("csv_content"),
+             py::arg("csv_content"), py::arg("is_etf") = false,
              "Load previous close price from CSV string")
         .def("loadOpenPrice", &InfoLoader::loadOpenPrice,
-             py::arg("csv_content"),
+             py::arg("csv_content"), py::arg("is_etf") = false,
              "Load open price from CSV string");
 
     // Convenience makers (optional)
@@ -508,20 +508,22 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def(py::init<>())
         .def(py::init([](const std::string& symbol, const std::string& cstick_csv,
                          const std::string& order_csv, const std::string& trade_csv,
-                         const std::string& csbar1d_csv) {
+                         const std::string& csbar1d_csv, bool is_etf) {
             SymbolData data;
             data.symbol = symbol;
             data.cstick_csv = cstick_csv;
             data.order_csv = order_csv;
             data.trade_csv = trade_csv;
             data.csbar1d_csv = csbar1d_csv;
+            data.is_etf = is_etf;
             return data;
-        }), py::arg("symbol"), py::arg("cstick_csv"), py::arg("order_csv"), py::arg("trade_csv"), py::arg("csbar1d_csv"))
+        }), py::arg("symbol"), py::arg("cstick_csv"), py::arg("order_csv"), py::arg("trade_csv"), py::arg("csbar1d_csv"), py::arg("is_etf") = false)
         .def_readwrite("symbol", &SymbolData::symbol)
         .def_readwrite("cstick_csv", &SymbolData::cstick_csv)
         .def_readwrite("order_csv", &SymbolData::order_csv)
         .def_readwrite("trade_csv", &SymbolData::trade_csv)
-        .def_readwrite("csbar1d_csv", &SymbolData::csbar1d_csv);
+        .def_readwrite("csbar1d_csv", &SymbolData::csbar1d_csv)
+        .def_readwrite("is_etf", &SymbolData::is_etf);
 
     // MultiBacktestEngine - 从CSV字符串初始化
     auto mbacktest_cls = py::class_<MultiBacktestEngine>(m, "MultiBacktestEngine");
