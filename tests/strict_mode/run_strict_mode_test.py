@@ -96,6 +96,9 @@ def main():
         print(f"\n❌ 回测失败")
         return 1
     
+    if not strategy.passed():
+        print(f"\n❌ 核心断言未全部通过")
+        return 1
     return 0
 
 

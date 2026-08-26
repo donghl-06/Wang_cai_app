@@ -22,8 +22,8 @@ from my_strategy import MyStrategy
 
 
 # ========== 配置区 ==========
-SYMBOL = "300827.SZ"          # 股票代码
-DATE = "2025-11-17"           # 回测日期
+SYMBOL = "518880.SH"          # 股票代码
+DATE = "2025-02-17"           # 回测日期
 DATA_DIR = "../new_log"       # 数据目录
 OUTPUT_DIR = "./output"       # 输出目录
 # ============================

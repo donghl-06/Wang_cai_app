@@ -91,24 +91,25 @@ void CallAuctionEngine::cancel(uint64_t oid)
 }
 
 // 通过输入订单ID撤单 
-void CallAuctionEngine::cancel_by_input_id(uint64_t input_id)
+void CallAuctionEngine::cancel_by_input_id(uint64_t input_id, int channel_no)
 {
-    auto it = ob_.input2sys_.find(input_id);
-    if (it != ob_.input2sys_.end()) {
-        uint64_t sys_id = it->second;
+    auto system_id = ob_.findSystemOrderId(input_id, channel_no);
+    if (system_id.has_value()) {
+        uint64_t sys_id = *system_id;
         // 提前检查订单是否存在
         if (ob_._loc.find(sys_id) == ob_._loc.end()) {
             std::cerr << "❌ [开盘集合竞价撤单失败] cstra_id=" << input_id 
                       << " sys_id=" << sys_id << " -> 订单未被accept" << std::endl;
             if (on_cancel_) on_cancel_(input_id, false, "订单不存在", nullptr);
-            ob_.input2sys_.erase(it);
+            ob_.eraseActiveMarketOrder(sys_id);
             return;
         }
         cancel(sys_id);
-        ob_.input2sys_.erase(it);
+        ob_.eraseActiveMarketOrder(sys_id);
         return;
     } else {
-        std::cerr << "❌ [开盘集合竞价撤单失败] cstra_id=" << input_id << " -> input2sys_映射中不存在" << std::endl;
+        std::cerr << "❌ [开盘集合竞价撤单失败] channel=" << channel_no
+                  << " cstra_id=" << input_id << " -> 市场身份映射中不存在" << std::endl;
         if (on_cancel_) on_cancel_(input_id, false, "输入订单ID不存在", nullptr);
     }
 }
@@ -237,7 +238,7 @@ Price CallAuctionEngine::calcPredict_SH()
     uint64_t bestVol  = 0;
     uint64_t bestDiff = ~0ULL;
     int      bestIdx  = -1;
-    std::vector<Price> tradable_prices;  // 记录所有可成交价格
+    std::vector<Price> tradable_prices;  // 并列最优的潜在开盘价
  
     for (int idx = 0; idx < N; ++idx) {
         const uint64_t same_buy  = ob_._buy[idx].vol_sum;
@@ -258,9 +259,8 @@ Price CallAuctionEngine::calcPredict_SH()
                                                               (sell_down + same_sell)));
 
         const Price px = ob_.idxToPx(idx);
-        // 记录可成交价格
-        tradable_prices.push_back(px);
-        
+
+        // 潜在开盘价：成交量优先；成交量相同时未成交量小者优先
         const bool better = (tradable_volume > bestVol) ||
                            (tradable_volume == bestVol && diff < bestDiff);
 
@@ -268,6 +268,10 @@ Price CallAuctionEngine::calcPredict_SH()
             bestVol  = tradable_volume;
             bestDiff = diff;
             bestIdx  = idx;
+            tradable_prices.clear();        // 出现更优价位，先前记录的全部作废
+            tradable_prices.push_back(px);
+        } else if (tradable_volume == bestVol && diff == bestDiff) {
+            tradable_prices.push_back(px);  // 与当前最优完全并列，一并保留
         }
     }
 
@@ -275,7 +279,7 @@ Price CallAuctionEngine::calcPredict_SH()
 
     _predict_vol = bestVol;
     
-    // 计算所有可成交价格的平均值
+    // 并列的潜在开盘价取均价
     if (!tradable_prices.empty()) {
         double sum = 0;
         for (Price p : tradable_prices) {
@@ -309,14 +313,8 @@ void CallAuctionEngine::applyAuctionTrade(int idx, uint64_t /*bu_tot*/, uint64_t
 
     auto log_exec = [&](uint64_t buy_sys, uint64_t sell_sys, Quantity q)
     {
-        uint64_t buy_input  = ob_.getInputId(buy_sys);
-        uint64_t sell_input = ob_.getInputId(sell_sys);
-        // 如果 getInputId 返回的是 sys_id 本身（没有 input_id），则用 0
-        if (buy_input == buy_sys) buy_input = 0;
-        if (sell_input == sell_sys) sell_input = 0;
-
         if (ob_._on_exec)
-            ob_._on_exec(Execution(buy_input, sell_input, open_price, q));
+            ob_._on_exec(Execution::historical(buy_sys, sell_sys, open_price, q));
     };
 
     /* === 1. 先取 >= 开盘价的买单，按交易所规则排序 === */
@@ -423,6 +421,7 @@ void CallAuctionEngine::applyAuctionTrade(int idx, uint64_t /*bu_tot*/, uint64_t
         auto& orders = ob_._buy[i].orders;
         for (auto it = orders.begin(); it != orders.end(); ) {
             if ((*it)->status == OrderStatus::Filled) {
+                ob_.eraseActiveMarketOrder((*it)->order_id);
                 // 从位置映射中删除
                 ob_._loc.erase((*it)->order_id);
                 // 从订单映射中删除
@@ -440,6 +439,7 @@ void CallAuctionEngine::applyAuctionTrade(int idx, uint64_t /*bu_tot*/, uint64_t
         auto& orders = ob_._sell[i].orders;
         for (auto it = orders.begin(); it != orders.end(); ) {
             if ((*it)->status == OrderStatus::Filled) {
+                ob_.eraseActiveMarketOrder((*it)->order_id);
                 // 从位置映射中删除
                 ob_._loc.erase((*it)->order_id);
                 // 从订单映射中删除
@@ -480,4 +480,4 @@ void CallAuctionEngine::settle()
     _tot_buy=_tot_sell=0;
 }
 
-} // namespace wangcai 
+} // namespace wangcai

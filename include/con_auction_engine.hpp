@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "orderbook.h"
+#include "types.h"
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
@@ -38,6 +39,25 @@ struct VirtualOrderLoc {
     std::list<VirtualOrder>::iterator it;
 };
 
+// === 真实成交替代模式：带队列位置的虚拟订单 ===
+struct RtVirtualOrder {
+    std::shared_ptr<Order> order;       // 订单本体
+    uint64_t queue_position;            // 下单时同侧同价位历史订单总量（排在前面的量）
+    uint64_t pool_at_entry{0};          // 下单时真实成交池的累积值（只算下单之后的增量）
+    uint64_t frontier_hist_order_id{0}; // 下单瞬间"队首边界"历史单ID（仅<=该ID的撤单可推进队列）
+    Quantity filled_volume{0};          // 已成交量（支持部分成交）
+    
+    RtVirtualOrder(std::shared_ptr<Order> od, uint64_t qpos, uint64_t pool_entry, uint64_t frontier_id)
+        : order(od), queue_position(qpos), pool_at_entry(pool_entry), frontier_hist_order_id(frontier_id) {}
+};
+
+// 真实成交替代模式：虚拟订单位置（用于O(1)撤单）
+struct RtVirtualOrderLoc {
+    Price price;
+    bool is_buy;
+    std::list<RtVirtualOrder>::iterator it;
+};
+
 class ConAuctionEngine {
 public:
         using CancelCallback = std::function<void(uint64_t order_id, bool success, const std::string& reason, 
@@ -48,7 +68,7 @@ public:
     
     void accept(std::shared_ptr<Order>);
     bool cancel(uint64_t oid);
-    bool cancel_by_input_id(uint64_t input_id);  // 通过输入订单ID撤单
+    bool cancel_by_input_id(uint64_t input_id, int channel_no = -1);  // 通过市场复合键撤单
     
     // === 价格笼子功能（2023年3月前规则）===
     void enablePriceCage(bool enable) { price_cage_enabled_ = enable; }
@@ -76,10 +96,41 @@ public:
     // 开启后，虚拟主动单吃掉的历史订单需要被真实市场消耗后才能下新的主动单
     void setStrictActiveOrderMode(bool enabled) { strict_active_order_mode_ = enabled; }
     bool isStrictActiveOrderMode() const { return strict_active_order_mode_; }
-    // 检查是否有未还清的欠债（被虚拟吃掉但未被真实市场消耗的历史订单）
-    bool hasDebt() const { return !debt_orders_.empty(); }
-    // 获取欠债订单数量（用于调试）
-    size_t getDebtCount() const { return debt_orders_.size(); }
+    // 检查是否有未还清的欠债（虚拟消耗量尚未被真实市场补回）
+    bool hasDebt() const { return debt_volume_ > 0; }
+    // 获取欠债量（用于调试）
+    uint64_t getDebtVolume() const { return debt_volume_; }
+    
+    // === 真实成交替代模式 ===
+    // 开启后：主动单复用严格模式，被动单使用"队列位置+真实成交池"匹配
+    void setRealTradeMatchMode(bool enabled) { 
+        real_trade_match_mode_ = enabled;
+        if (enabled) strict_active_order_mode_ = true;  // 自动启用严格主动单模式
+    }
+    bool isRealTradeMatchMode() const { return real_trade_match_mode_; }
+    // 喂入真实成交事件（由 BacktestEngine 在处理 cstra ExecType='1' 时调用）
+    // buy_side_passive: true=买方被动被消耗，false=卖方被动被消耗
+    void feedRealTrade(Price price, Quantity volume, bool buy_side_passive);
+    // === 用户下单队列信息（可选）===
+    struct QueueInfo {
+        int64_t ahead_count{-1};         // 前方历史订单数量
+        int64_t ahead_volume{-1};        // 前方历史订单总量
+        std::vector<uint64_t> prev_order_ids; // 最近3个前序历史订单ID（从近到远）
+    };
+    void setQueueInfoEnabled(bool enabled) { queue_info_enabled_ = enabled; }
+    bool isQueueInfoEnabled() const { return queue_info_enabled_; }
+    QueueInfo getQueueInfoForUserOrder(Price price, bool is_buy) const;
+    // 获取RT虚拟订单数量（用于调试）
+    size_t getRtVirtualBuyCount() const {
+        size_t count = 0;
+        for (const auto& [price, vlist] : rt_virtual_buy_) count += vlist.size();
+        return count;
+    }
+    size_t getRtVirtualSellCount() const {
+        size_t count = 0;
+        for (const auto& [price, vlist] : rt_virtual_sell_) count += vlist.size();
+        return count;
+    }
 
 private:
     void match(std::shared_ptr<Order>&);
@@ -135,8 +186,48 @@ private:
     
     // === 严格主动单模式（欠债限制）===
     bool strict_active_order_mode_ = false;  // 开关，默认关闭
-    // 被虚拟主动单吃掉但未被真实市场消耗的历史订单ID集合
-    std::unordered_set<uint64_t> debt_orders_;
+    // 虚拟主动单消耗的总量中，尚未被真实市场补回的部分
+    uint64_t debt_volume_ = 0;
+    
+    // === 真实成交替代模式 ===
+    bool real_trade_match_mode_ = false;  // 开关，默认关闭
+    // RT模式虚拟订单入队（被动单专用）
+    void accept_rt_virtual_order(std::shared_ptr<Order> od);
+    // RT模式尝试成交虚拟订单（真实成交事件触发）
+    void try_fill_rt_virtual_orders(Price price, bool is_buy_side);
+    // RT模式虚拟订单成交（支持部分成交）
+    void rt_virtual_fill(std::shared_ptr<Order>& od, Price fill_price, Quantity fill_qty);
+    // RT模式撤销虚拟订单
+    bool cancel_rt_virtual_order(uint64_t order_id);
+    // RT模式：历史订单撤单时调整队列位置
+    void on_historical_order_cancel_rt(int bucket_idx, bool is_buy, uint64_t cancel_hist_order_id, Quantity cancel_vol);
+    
+    // RT模式虚拟订单簿（按价格分组，FIFO）
+    std::map<Price, std::list<RtVirtualOrder>> rt_virtual_buy_;
+    std::map<Price, std::list<RtVirtualOrder>> rt_virtual_sell_;
+    // RT虚拟订单位置映射（O(1)撤单）
+    std::unordered_map<uint64_t, RtVirtualOrderLoc> rt_virtual_loc_;
+    // 真实成交池：每个价位每个方向的累积真实成交量
+    std::unordered_map<Price, uint64_t> rt_pool_buy_;   // 买侧被消耗的累积量
+    std::unordered_map<Price, uint64_t> rt_pool_sell_;  // 卖侧被消耗的累积量
+    // 用户下单回调队列信息开关（默认关闭）
+    bool queue_info_enabled_ = false;
+
+public:
+    // === 诊断计数器（仅用于日志，不影响业务逻辑）===
+    struct DiagCounters {
+        uint64_t passive_order_count = 0;
+        uint64_t active_order_count = 0;
+        uint64_t passive_fill_count = 0;
+        uint64_t active_fill_count = 0;
+        uint64_t active_fill_volume = 0;
+        uint64_t debt_reject_count = 0;
+        uint64_t debt_create_total = 0;
+        uint64_t debt_clear_total = 0;
+        uint64_t rt_feed_count = 0;
+        uint64_t rt_feed_volume = 0;
+        uint64_t rt_cancel_count = 0;
+    } diag_;
 };
 
-} // namespace wangcai 
+} // namespace wangcai

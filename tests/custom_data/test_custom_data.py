@@ -153,6 +153,10 @@ class CustomDataTestStrategy(Strategy):
     def onOrderCancelled(self, order_id: str, reason: str) -> None:
         pass
 
+    def passed(self) -> bool:
+        """核心断言：策略必须收到自定义数据（供 runner 决定退出码）"""
+        return len(self.received_custom_events) > 0
+
     def print_summary(self):
         """打印测试结果"""
         print(f"\n{'='*70}")

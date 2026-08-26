@@ -115,6 +115,7 @@ def main():
 
     # 2. 构造自定义数据样例并逐个测试
     cases = build_custom_data_cases()
+    failed_cases = []
     
     for case_name, custom_df in cases:
         print(f"\n{'-'*70}")
@@ -138,10 +139,15 @@ def main():
         if success:
             print("\n✅ 回测完成!")
             strategy.print_summary()
+            if not strategy.passed():
+                failed_cases.append(case_name)
         else:
             print("\n❌ 回测失败")
             return 1
 
+    if failed_cases:
+        print(f"\n❌ 未收到自定义数据的样例: {failed_cases}")
+        return 1
     return 0
 
 

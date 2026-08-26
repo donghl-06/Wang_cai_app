@@ -35,9 +35,13 @@ class ComprehensiveStrictModeTest(Strategy):
     - 10:00:00: 测试7 - 欠债可能已清除，再次下主动单
     """
 
-    def __init__(self, account: str = "comprehensive_test"):
+    def __init__(self, account: str = "comprehensive_test", strict_mode_expected: bool = True):
         super().__init__()
         self.account = account
+        
+        # 期望的引擎模式：True=严格主动单模式开启（主动单应被拦截），
+        # False=严格模式关闭（主动单应正常成交）。断言方向随之取反。
+        self.strict_mode_expected = strict_mode_expected
         
         # 订单ID计数器
         self._order_counter = 2000
@@ -49,7 +53,9 @@ class ComprehensiveStrictModeTest(Strategy):
         self.results = {
             'test1_active_buy_filled': False,          # 主动买单成交
             'test2_active_buy_rejected': False,        # 有欠债时主动买单被拦截
+            'test2_active_buy_filled': False,          # 有欠债时主动买单成交
             'test3_active_sell_rejected': False,       # 有欠债时主动卖单被拦截
+            'test3_active_sell_filled': False,         # 有欠债时主动卖单成交
             'test4_passive_buy_accepted': False,       # 被动买单可以挂单
             'test5_passive_sell_accepted': False,      # 被动卖单可以挂单
             'test6_active_sell_filled': False,         # 主动卖单成交
@@ -89,6 +95,9 @@ class ComprehensiveStrictModeTest(Strategy):
         m = t % 100
         h = t // 100
         return h == hour and m == minute and s == second
+
+    def _debt_expectation(self, when_strict: str, when_loose: str) -> str:
+        return when_strict if self.strict_mode_expected else when_loose
 
     def onTickEvent(self, tick: Snapshot) -> List[UserEvent]:
         events = []
@@ -141,7 +150,7 @@ class ComprehensiveStrictModeTest(Strategy):
                 print(f"\n📌 [测试2] [{time_str}] 有欠债时下主动买单")
                 print(f"   订单ID: {order_id2}")
                 print(f"   价格: {upper_limit/10000:.4f} (涨停价, 主动单)")
-                print(f"   预期: ❌ 应被拒绝（存在欠债）")
+                print(f"   预期: {self._debt_expectation('❌ 应被拒绝（存在欠债）', '✅ 应正常成交（严格模式关闭）')}")
                 
                 self._tests_completed.add('test2')
                 
@@ -158,7 +167,7 @@ class ComprehensiveStrictModeTest(Strategy):
                     print(f"\n📌 [测试3] [{time_str}] 有欠债时下主动卖单")
                     print(f"   订单ID: {order_id3}")
                     print(f"   价格: {lower_limit/10000:.4f} (跌停价, 主动卖)")
-                    print(f"   预期: ❌ 应被拒绝（存在欠债）")
+                    print(f"   预期: {self._debt_expectation('❌ 应被拒绝（存在欠债）', '✅ 应正常成交（严格模式关闭）')}")
                     
                     self._tests_completed.add('test3')
         
@@ -218,7 +227,7 @@ class ComprehensiveStrictModeTest(Strategy):
                 
                 print(f"\n📌 [测试6] [{time_str}] 再次尝试主动买单")
                 print(f"   订单ID: {order_id6}")
-                print(f"   预期: ❌ 应被拒绝（欠债可能仍未清除）")
+                print(f"   预期: {self._debt_expectation('❌ 应被拒绝（欠债可能仍未清除）', '✅ 应正常成交（严格模式关闭）')}")
                 
                 self._tests_completed.add('test6')
         
@@ -286,8 +295,15 @@ class ComprehensiveStrictModeTest(Strategy):
                 self.results['test7_after_debt_cleared'] = 'filled'
                 print(f"  ℹ️  [测试7] 主动单成交，说明欠债已清除")
             elif 'test2' in label or 'test3' in label:
-                # 这些不应该成交
-                print(f"  ❌ [测试失败] {label} 不应该成交但成交了！")
+                # 严格模式开启时这些不应该成交；关闭时成交才是正确行为
+                if 'test2' in label:
+                    self.results['test2_active_buy_filled'] = True
+                else:
+                    self.results['test3_active_sell_filled'] = True
+                if self.strict_mode_expected:
+                    print(f"  ❌ [测试失败] {label} 不应该成交但成交了！")
+                else:
+                    print(f"  ✅ [通过] {label} 严格模式关闭，主动单未被拦截")
                 
         elif cb.matchtype == 'D':
             # 撤单/拒绝
@@ -295,10 +311,16 @@ class ComprehensiveStrictModeTest(Strategy):
             
             if 'test2' in label:
                 self.results['test2_active_buy_rejected'] = True
-                print(f"  ✅ [测试2通过] 有欠债时主动买单被拦截")
+                if self.strict_mode_expected:
+                    print(f"  ✅ [测试2通过] 有欠债时主动买单被拦截")
+                else:
+                    print(f"  ❌ [测试失败] 严格模式关闭，主动买单不应被拦截")
             elif 'test3' in label:
                 self.results['test3_active_sell_rejected'] = True
-                print(f"  ✅ [测试3通过] 有欠债时主动卖单被拦截")
+                if self.strict_mode_expected:
+                    print(f"  ✅ [测试3通过] 有欠债时主动卖单被拦截")
+                else:
+                    print(f"  ❌ [测试失败] 严格模式关闭，主动卖单不应被拦截")
             elif 'test6' in label:
                 print(f"  ℹ️  [测试6] 第三个主动单被拦截（欠债仍存在）")
             elif 'test7' in label:
@@ -309,43 +331,44 @@ class ComprehensiveStrictModeTest(Strategy):
         label = self._order_ids.get(order_id, 'unknown')
         print(f"  ℹ️  撤单原因: {order_id} ({label}) - {reason}")
 
+    def _expected_checks(self):
+        """返回 [(描述, 是否通过)]，test2/test3 的断言方向随期望模式取反"""
+        if self.strict_mode_expected:
+            test2_desc = "有欠债时主动买单被拦截"
+            test2_ok = self.results['test2_active_buy_rejected']
+            test3_desc = "有欠债时主动卖单被拦截"
+            test3_ok = self.results['test3_active_sell_rejected']
+        else:
+            test2_desc = "严格模式关闭时主动买单正常成交"
+            test2_ok = (self.results['test2_active_buy_filled']
+                        and not self.results['test2_active_buy_rejected'])
+            test3_desc = "严格模式关闭时主动卖单正常成交"
+            test3_ok = (self.results['test3_active_sell_filled']
+                        and not self.results['test3_active_sell_rejected'])
+        
+        return [
+            ("测试1 - 主动买单成交（制造欠债）", self.results['test1_active_buy_filled']),
+            (f"测试2 - {test2_desc}", test2_ok),
+            (f"测试3 - {test3_desc}", test3_ok),
+            ("测试4 - 被动买单不受欠债限制", self.results['test4_passive_buy_accepted']),
+            ("测试5 - 被动卖单不受欠债限制", self.results['test5_passive_sell_accepted']),
+        ]
+
+    def passed(self) -> bool:
+        """核心断言是否全部通过（供 runner 决定退出码）"""
+        return all(ok for _, ok in self._expected_checks())
+
     def print_summary(self):
         """打印测试结果汇总"""
+        mode_label = "开启" if self.strict_mode_expected else "关闭"
         print(f"\n{'='*70}")
-        print(f"📊 严格主动单模式 - 全面测试结果")
+        print(f"📊 严格主动单模式（期望{mode_label}） - 全面测试结果")
         print(f"{'='*70}")
         
-        all_passed = True
-        
-        # 测试1: 主动买单成交
-        status = "✅ 通过" if self.results['test1_active_buy_filled'] else "❌ 失败"
-        print(f"  测试1 - 主动买单成交（制造欠债）: {status}")
-        if not self.results['test1_active_buy_filled']:
-            all_passed = False
-        
-        # 测试2: 有欠债时主动买单被拦截
-        status = "✅ 通过" if self.results['test2_active_buy_rejected'] else "❌ 失败"
-        print(f"  测试2 - 有欠债时主动买单被拦截: {status}")
-        if not self.results['test2_active_buy_rejected']:
-            all_passed = False
-        
-        # 测试3: 有欠债时主动卖单被拦截
-        status = "✅ 通过" if self.results['test3_active_sell_rejected'] else "❌ 失败"
-        print(f"  测试3 - 有欠债时主动卖单被拦截: {status}")
-        if not self.results['test3_active_sell_rejected']:
-            all_passed = False
-        
-        # 测试4: 被动买单可挂单
-        status = "✅ 通过" if self.results['test4_passive_buy_accepted'] else "❌ 失败"
-        print(f"  测试4 - 被动买单不受欠债限制: {status}")
-        if not self.results['test4_passive_buy_accepted']:
-            all_passed = False
-        
-        # 测试5: 被动卖单可挂单
-        status = "✅ 通过" if self.results['test5_passive_sell_accepted'] else "❌ 失败"
-        print(f"  测试5 - 被动卖单不受欠债限制: {status}")
-        if not self.results['test5_passive_sell_accepted']:
-            all_passed = False
+        checks = self._expected_checks()
+        for desc, ok in checks:
+            print(f"  {desc}: {'✅ 通过' if ok else '❌ 失败'}")
+        all_passed = all(ok for _, ok in checks)
         
         # 测试7: 等待后
         if self.results['test7_after_debt_cleared'] == 'filled':

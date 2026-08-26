@@ -25,7 +25,7 @@ public:
 
     void accept(std::shared_ptr<Order>);
     void cancel(uint64_t oid);
-    void cancel_by_input_id(uint64_t input_id);  // 通过输入订单ID撤单
+    void cancel_by_input_id(uint64_t input_id, int channel_no = -1);  // 通过市场复合键撤单
     void settle();                       // 09:25
 
     // 获取预测结果的公共接口
@@ -62,4 +62,4 @@ private:
     Price    _real_px{0};
 };
 
-} // namespace wangcai 
+} // namespace wangcai

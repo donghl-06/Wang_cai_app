@@ -37,7 +37,7 @@ public:
 
     // 撤单（通过原始输入ID）
     // input_id: 原始订单输入ID
-    void cancel_by_input_id(uint64_t input_id);
+    void cancel_by_input_id(uint64_t input_id, int channel_no = -1);
 
     // 集合竞价结算与撮合（如09:25/14:57）
     void settle();  // 15:30

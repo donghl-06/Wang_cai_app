@@ -3,15 +3,11 @@
 测试Python策略中耗时操作对回测结束时机的影响
 """
 
-import sys
 import time
 import os
 from typing import List
 
-# 添加本地编译的模块路径
-sys.path.insert(0, './build')
-
-from wangcai_cpp import (
+from wangcai_syn.wangcai_cpp import (
     BacktestEngine, Strategy,
     Direction, OrderType,
     Event, UserEvent, Execution, Snapshot,
@@ -108,8 +104,8 @@ class SleepTestStrategy(Strategy):
         print(f"   - 完成状态: 由isProcessingComplete()自动检测")
 
 
-def test_sleep_strategy(symbol: str, date: str, data_path: str):
-    """测试耗时策略的回测结束时机"""
+def run_sleep_strategy(symbol: str, date: str, data_path: str):
+    """测试耗时策略的回测结束时机（手动脚本入口，不是 pytest 用例）"""
     print("🧪 开始测试耗时策略对回测结束时机的影响")
     print(f"合约: {symbol}")
     print(f"日期: {date}")
@@ -192,7 +188,7 @@ def main():
     print("✅ 数据文件检查通过")
     
     # 运行测试
-    success = test_sleep_strategy(symbol, date, data_path)
+    success = run_sleep_strategy(symbol, date, data_path)
     
     if success:
         print(f"\n🎉 测试通过：回测引擎正确等待了策略处理完成！")

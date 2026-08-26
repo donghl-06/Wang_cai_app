@@ -51,8 +51,8 @@ struct QueueEvent {
 
 class MultiBacktestEngine {
 public:
-    // 从CSV字符串初始化（Python传入多个合约的DataFrame.to_csv()生成的字符串）
-    explicit MultiBacktestEngine(const std::vector<SymbolData>& symbol_data_list);
+    // 从CSV字符串初始化，处理完每只后自动释放其 CSV 字符串节省内存
+    explicit MultiBacktestEngine(std::vector<SymbolData> symbol_data_list);
 
     void registerStrategy(std::shared_ptr<Strategy> strategy);
 
@@ -66,6 +66,14 @@ public:
     void setStrictActiveOrderMode(bool enabled);
     bool isStrictActiveOrderMode() const;
     bool hasDebt() const;
+    
+    // === 真实成交替代模式 ===
+    void setRealTradeMatchMode(bool enabled);
+    bool isRealTradeMatchMode() const;
+    
+    // === 用户下单队列回报开关 ===
+    void setQueueInfoEnabled(bool enabled);
+    bool isQueueInfoEnabled() const;
     
     // === 用户自定义数据推送功能 ===
     // 设置自定义事件时间戳列表（由 Python 层传入）
@@ -84,6 +92,7 @@ private:
     std::vector<std::shared_ptr<Strategy>> strategies_;
     
     // === 用户自定义数据相关 ===
+    bool queue_info_enabled_ = false;                    // 队列回报开关（默认关闭）
     bool custom_data_enabled_ = false;                    // 功能开关，默认关闭
     std::vector<CustomEventTime> custom_events_;         // 自定义事件时间戳列表
     size_t custom_event_idx_ = 0;                        // 当前处理的自定义事件索引

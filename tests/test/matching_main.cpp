@@ -106,12 +106,14 @@ inline int64_t parse_price(const std::string& price_str) {
              if (ev.source == "ord") { // 下单
                  Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
                  OrderType  typ = OrderType::Limit; 
-                 auto ord = ob.createOrder("BRK", "AC", ob.getExchange(), ev.sym, std::to_string(ev.orderid), typ,
-                                             dir, ev.price, ev.size, ev.bizindex);
+                 auto ord = ob.createHistoricalOrder(
+                     static_cast<uint64_t>(ev.orderid), static_cast<int>(ev.channelno), ev.trading_day,
+                     "BRK", "AC", ob.getExchange(), ev.sym, std::to_string(ev.orderid), typ,
+                     dir, ev.price, ev.size, ev.bizindex);
                  call_engine.accept(ord);
              } else { // 撤单
                  uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
-                 call_engine.cancel_by_input_id(oid_raw);
+                 call_engine.cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
              }
  
              if (hit_cut) { // 集合竞价结束
@@ -125,12 +127,14 @@ inline int64_t parse_price(const std::string& price_str) {
              if (ev.source == "ord") {
                  Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
                  OrderType  typ = OrderType::Limit; // 简化示例
-                 auto ord = ob.createOrder("BRK", "AC", ob.getExchange(), ev.sym, std::to_string(ev.orderid), typ,
-                                             dir, ev.price, ev.size, ev.bizindex);
+                 auto ord = ob.createHistoricalOrder(
+                     static_cast<uint64_t>(ev.orderid), static_cast<int>(ev.channelno), ev.trading_day,
+                     "BRK", "AC", ob.getExchange(), ev.sym, std::to_string(ev.orderid), typ,
+                     dir, ev.price, ev.size, ev.bizindex);
                  con_engine.accept(ord);
              } else {
                  uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
-                 con_engine.cancel_by_input_id(oid_raw);
+                 con_engine.cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
              }
          }
      }

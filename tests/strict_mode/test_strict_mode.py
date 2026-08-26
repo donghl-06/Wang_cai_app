@@ -197,6 +197,10 @@ class StrictModeTestStrategy(Strategy):
         """保留接口（可选），此处仅打印，不作为核心判定依据"""
         print(f"  ☑️  onOrderCancelled: {order_id}, reason={reason}")
 
+    def passed(self) -> bool:
+        """核心断言：第二个主动单必须被拦截（供 runner 决定退出码）"""
+        return self.order_count > 0 and self.rejected_count > 0
+
     def print_summary(self):
         """打印测试摘要"""
         print(f"\n{'='*60}")

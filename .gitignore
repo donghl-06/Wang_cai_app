@@ -33,5 +33,23 @@ install_manifest.txt
 .DS_Store
 Thumbs.db
 
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# 打包产物
+dist/
+_skbuild/
+*.whl
+
+# 本地行情数据与回测输出（不入库）
+new_log/
+data/
+adata_logs/
+user_example/output/
+
 # 其他
 *.bak

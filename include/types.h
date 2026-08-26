@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <vector>
 
 namespace wangcai {
     using Price = uint64_t;
@@ -187,6 +188,10 @@ struct OrderCallback {
     Quantity volume;          // 下单数量
     int direction;            // 方向（1=买入, 2=卖出）
     std::string orderlocalid; // 本地订单ID
+    // 可选队列信息（仅开启 queue_info_enabled 时填充）
+    int64_t queue_ahead_count{-1};     // 前方历史订单数量
+    int64_t queue_ahead_volume{-1};    // 前方历史订单总量
+    std::vector<uint64_t> prev_order_ids; // 最近3个前序历史订单ID（真实orderid）
     
     OrderCallback(const std::string& tm, int exch, Price a1, Price b1, 
                  int64_t delta, Price px, Quantity vol, int dir, const std::string& id)

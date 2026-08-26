@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <unordered_set>
 #include <fstream>
 #include <atomic>  // 用于 atomic<bool>
 
@@ -131,6 +132,14 @@ public:
     void setStrictActiveOrderMode(bool enabled);
     bool isStrictActiveOrderMode() const;
     bool hasDebt() const;  // 检查是否有未还清的欠债
+    
+    // === 真实成交替代模式 ===
+    // 开启后：主动单自动使用严格模式，被动单使用队列位置+真实成交池匹配
+    void setRealTradeMatchMode(bool enabled);
+    bool isRealTradeMatchMode() const;
+    // === 用户下单队列回报开关 ===
+    void setQueueInfoEnabled(bool enabled);
+    bool isQueueInfoEnabled() const;
 
     // === 用户自定义事件支持 ===
     // 提交用户事件（用于外部驱动，例如自定义数据推送）
@@ -140,20 +149,38 @@ public:
     // 设置当前时间（用于自定义事件推送时的回调时间）
     void setCurrentDatetimeForCustomEvent(const std::string& datetime);
 
-    void processEvent(const Event& ev);
+    // 取出并清空跨标的用户事件（策略在本引擎回调里返回但属于其它标的的订单/撤单）
+    // 由上层 MultiBacktestEngine 在 Taskflow join 之后串行调用，按 symbol 路由到正确的子引擎
+    std::vector<UserEvent> drainCrossSymbolEvents();
+
+    void processEvent(const Event& ev, const std::unordered_set<int64_t>& will_trade_ids = {});
     void finish();
     
 private:
+    // 集合竞价期间暂存的用户订单（影子单）
+    // 不参与真实集合竞价的 Fenwick 价格发现，仅在 settle 之后按集合竞价成交价做影子成交判定
+    struct PendingAuctionOrder {
+        std::shared_ptr<Order> order;
+        bool is_close_auction;  // false=开盘集合竞价, true=收盘集合竞价
+    };
+
     void initialize();
     void processUserOrder(const UserOrder& user_order);
     void processUserCancel(const UserCancel& user_cancel);
     void processUserEvent(const UserEvent& user_event);
     bool tryFillImmediately(std::shared_ptr<Order> user_order);
 
+    // 集合竞价 settle 时处理影子订单：
+    //  - 能成交的按集合竞价成交价全量成交，发 onTradeCallback 并更新持仓
+    //  - 开盘未成交订单结转到连续竞价（con_engine_->accept，仍然是 USER 影子单）
+    //  - 收盘未成交订单直接撤单（'D' 回调）
+    void settleAuctionUserOrders(bool is_close);
+
     void updatePosition(const std::string& strategy_id, const std::string& symbol, 
                        Direction direction, Quantity volume, Price price);
     void printResults() const;
-    void recordTrade(const Execution& ex, const std::string& datetime);
+    TradeDetail normalizeHistoricalExecution(const Execution& ex, const std::string& datetime) const;
+    void recordTrade(const TradeDetail& trade, const std::string& datetime);
     void recordCancel(uint64_t order_id, const std::string& datetime);
     void recordCancelWithOrderInfo(uint64_t original_id, const std::string& datetime, 
                                   std::shared_ptr<Order> order_info);
@@ -208,6 +235,14 @@ private:
     
     // 成交事件产生的策略事件队列
     std::vector<UserEvent> pending_trade_events_;
+
+    // 跨标的用户事件暂存：策略在本引擎回调里返回、但 symbol 不属于本引擎的订单/撤单
+    // 仅在 Taskflow 并行阶段内写入，join 之后由上层串行 drain + 路由
+    std::vector<UserEvent> cross_symbol_events_;
+
+    // 集合竞价期间暂存的用户订单（开盘 09:15-09:25、收盘 14:57-15:00）
+    // settle 时做影子成交判定
+    std::vector<PendingAuctionOrder> pending_auction_orders_;
     
     // 事件数据
     bool continuous_mode_;
@@ -236,6 +271,13 @@ private:
     std::vector<TradeRecord> trade_records_;  // 所有交易记录
     std::string trade_output_file_;           // 输出文件路径
     bool recording_enabled_;                  // 是否启用记录
+    
+    // 真实成交替代模式
+    bool real_trade_match_mode_ = false;
+    // 用户下单队列回报开关（默认关闭）
+    bool queue_info_enabled_ = false;
+    // 判断真实成交中被消耗的一侧（买方被动 or 卖方被动）
+    bool determineBuyPassive(const Event& ev) const;
 };
 
-} // namespace wangcai 
+} // namespace wangcai

@@ -14,8 +14,38 @@
 #include <utility>
 #include <map>
 #include <iostream>
+#include <optional>
+#include <stdexcept>
 
 namespace wangcai {
+struct MarketOrderKey {
+    int channel_no{-1};
+    uint64_t market_order_id{0};
+
+    bool operator==(const MarketOrderKey&) const = default;
+};
+
+struct MarketOrderKeyHash {
+    std::size_t operator()(const MarketOrderKey& key) const noexcept {
+        const auto h1 = std::hash<int>{}(key.channel_no);
+        const auto h2 = std::hash<uint64_t>{}(key.market_order_id);
+        return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+    }
+};
+
+struct MarketOrderIdentity {
+    int trading_day{-1};
+    std::string instrument;
+    int channel_no{-1};
+    uint64_t market_order_id{0};
+    Direction direction{Direction::Buy};
+};
+
+class MarketIdentityError : public std::logic_error {
+public:
+    using std::logic_error::logic_error;
+};
+
 // 事件结构
 struct Event {
     std::string datetime;
@@ -64,7 +94,11 @@ struct Event {
     int64_t trade_index;    // 成交索引 (TradeDetail中的TradeIndex)
     int time_raw;           // 原始时间字段 (市场数据中的Time字段)
 
-    static bool is_SZ;
+    [[nodiscard]] bool isSZ() const {
+        if (exchange == 1) return true;
+        if (exchange == 0) return false;
+        return sym.size() >= 3 && sym.ends_with(".SZ");
+    }
     // uint64_t sort_key; // 排序键：SZ用orderid，SH用bizindex
     
     Event(const std::string& dt, const std::string& symbol, int64_t p, int64_t sz, int64_t sd, 
@@ -92,6 +126,37 @@ struct Event {
           order_kind(okind), trade_index(tidx), time_raw(traw) {}
 };
 
+inline int eventSourceRank(const Event& event) {
+    if (event.source == "ord") return 0;
+    if (event.source == "tra") return 1;
+    return 2;  // tick
+}
+
+// AData 的深圳逐笔流共用一条递增业务序列：委托取 csord.orderid，
+// 成交/撤单取 cstra.tradeid。不要依赖加载器恰好把 tradeid 复制到 orderid。
+inline int64_t marketEventSequenceKey(const Event& event) {
+    if (!event.isSZ()) return event.bizindex;
+    return event.source == "tra" ? event.tradeid : event.orderid;
+}
+
+// 单条事件自带交易所属性，不能依赖跨标的共享的静态市场开关。
+inline bool marketEventLess(const Event& a, const Event& b) {
+    if (a.datetime != b.datetime) return a.datetime < b.datetime;
+
+    const int a_rank = eventSourceRank(a);
+    const int b_rank = eventSourceRank(b);
+    if ((a_rank == 2) != (b_rank == 2)) return a_rank < b_rank;  // 逐笔先于快照
+    if (a_rank == 2 && b_rank == 2) return false;
+
+    if (a.isSZ() != b.isSZ()) return a.exchange < b.exchange;
+    const int64_t a_key = marketEventSequenceKey(a);
+    const int64_t b_key = marketEventSequenceKey(b);
+    if (a_key != b_key) return a_key < b_key;
+    if (a_rank != b_rank) return a_rank < b_rank;  // 同键时先注册委托，再处理成交/撤单
+    if (a.channelno != b.channelno) return a.channelno < b.channelno;
+    return a.seqno < b.seqno;
+}
+
 
 class CallAuctionEngine;   // friend
 class ConAuctionEngine;    // friend
@@ -109,10 +174,10 @@ public:
 
     // 用于 SZ 市价单特殊逻辑的共享表
     // ① 外部 ID  ↦  最优价成交（0 表示尚未出现成交）
-    std::unordered_map<uint64_t, Price> first_trade_px_;
+    std::unordered_map<MarketOrderKey, Price, MarketOrderKeyHash> first_trade_px_;
 
     // ② 外部 ID  ↦  "替换后真实价格"（只有 ordtype 1/3 被限价化的才会记录）
-    std::unordered_map<uint64_t, Price> real_mkt_orders_;
+    std::unordered_map<MarketOrderKey, Price, MarketOrderKeyHash> real_mkt_orders_;
 
     // （可选）简单的 getter，供外部只读
     const auto& firstTradePx()   const { return first_trade_px_;   }
@@ -129,19 +194,30 @@ public:
     // 获取 tick 大小（ETF=10, 股票=100）
     Price getTick() const { return _tick; }
     
-    // 获取原始订单ID（通过 Order::input_id）
+    // 兼容内部诊断：只有已注册的历史 system-id 才会转换；禁止用于输出边界。
     uint64_t getInputId(uint64_t system_id) const {
-        auto it = _omap.find(system_id);
-        if (it != _omap.end() && it->second->input_id != 0) {
-            return it->second->input_id;
-        }
+        auto it = market_identity_by_system_id_.find(system_id);
+        if (it != market_identity_by_system_id_.end()) return it->second.market_order_id;
         return system_id;
     }
+
+    void registerHistoricalOrder(const std::shared_ptr<Order>& order, uint64_t market_order_id,
+                                 int channel_no, int trading_day);
+    [[nodiscard]] const MarketOrderIdentity& requireMarketIdentity(uint64_t system_id) const;
+    [[nodiscard]] std::optional<uint64_t> findSystemOrderId(
+        uint64_t market_order_id, int channel_no = -1) const;
+    void eraseActiveMarketOrder(uint64_t system_id);
     
     // 获取订单信息
     std::shared_ptr<Order> getOrder(uint64_t order_id) const {
         auto it = _omap.find(order_id);
         return (it != _omap.end()) ? it->second : nullptr;
+    }
+
+    // 通过原始输入订单ID判断订单是否仍在簿（供真实成交替代模式回退判定）
+    bool hasOrderByInputId(uint64_t input_id, int channel_no = -1) const {
+        auto sys_id = findSystemOrderId(input_id, channel_no);
+        return sys_id.has_value() && _omap.find(*sys_id) != _omap.end();
     }
 
     // 工厂：统一通过对象池生成订单 
@@ -151,16 +227,16 @@ public:
         // 1) 从对象池拿一块内存并原地构造
         auto od = _order_pool.acquire(std::forward<Args>(args)...);
 
-        // 2) 如果 order_local_id 是纯数字，缓存到 input_id 并建立映射
-        char* endptr = nullptr;
-        uint64_t num = std::strtoull(od->order_local_id.c_str(), &endptr, 10);
-        if (endptr != od->order_local_id.c_str() && *endptr == '\0') {
-            od->input_id = num;  // 缓存到 Order 对象
-            if (num != 0) {
-                input2sys_[num] = od->order_id;  // 正向映射（撤单用）
-            }
-        }
         return od;
+    }
+
+    template<typename... Args>
+    std::shared_ptr<Order> createHistoricalOrder(uint64_t market_order_id, int channel_no,
+                                                 int trading_day, Args&&... args)
+    {
+        auto order = createOrder(std::forward<Args>(args)...);
+        registerHistoricalOrder(order, market_order_id, channel_no, trading_day);
+        return order;
     }
     
     // 设置前收盘价和交易所
@@ -209,8 +285,10 @@ private:
     std::unordered_map<uint64_t, std::shared_ptr<Order>> _omap;  //订单映射表 - 依赖对象池
     ExecCallback _on_exec;  //成交回调函数
 
-    // 原始输入ID → 系统ID（撤单时 O(1) 查找）
-    std::unordered_map<uint64_t, uint64_t> input2sys_;
+    // system-id → 原始市场身份是持久表；订单成交/撤销后仍保留，供回调和 CSV 解析。
+    std::unordered_map<uint64_t, MarketOrderIdentity> market_identity_by_system_id_;
+    // 活跃市场身份 → system-id，仅用于市场撤单反查。
+    std::unordered_map<MarketOrderKey, uint64_t, MarketOrderKeyHash> market_system_id_by_key_;
 
     //订单价格转换为桶索引
     int  pxToIdx(Price p) const { 

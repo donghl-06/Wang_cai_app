@@ -202,6 +202,12 @@ class DebtClearTestStrategy(Strategy):
         if 'check' not in label:
             print(f"  ℹ️  撤单原因: {order_id} - {reason}")
 
+    def passed(self) -> bool:
+        """核心断言：产生欠债 + 欠债期间主动单被拦截。
+        步骤3（欠债清零）取决于市场数据，不作为硬性失败条件。"""
+        return (self.results['first_order_filled']
+                and self.results['second_order_rejected'])
+
     def print_summary(self):
         print(f"\n{'='*70}")
         print(f"📊 欠债清零测试结果")

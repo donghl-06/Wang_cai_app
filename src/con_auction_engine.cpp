@@ -5,6 +5,251 @@
 
 namespace wangcai {
 
+// ============== 真实成交替代模式函数实现 ==============
+
+// RT模式：虚拟订单成交（支持部分成交）
+void ConAuctionEngine::rt_virtual_fill(std::shared_ptr<Order>& od, Price fill_price, Quantity fill_qty)
+{
+    od->traded_volume += fill_qty;
+    if (od->remaining_volume() == 0) {
+        od->status = OrderStatus::Filled;
+    } else {
+        od->status = OrderStatus::PartFilled;
+    }
+    
+    if (ob_._on_exec) {
+        bool buy = (od->direction == Direction::Buy);
+        Execution ex = Execution::userSynthetic(
+            buy ? od->order_id : 0,    // 买方ID（虚拟订单）或0
+            buy ? 0 : od->order_id,    // 卖方ID（虚拟订单）或0
+            fill_price,
+            fill_qty
+        );
+        ob_._on_exec(ex);
+    }
+}
+
+// RT模式：被动虚拟订单入队
+void ConAuctionEngine::accept_rt_virtual_order(std::shared_ptr<Order> od)
+{
+    bool buy = (od->direction == Direction::Buy);
+    int idx = ob_.pxToIdx(od->price);
+    auto& same_side = buy ? ob_._buy : ob_._sell;
+    
+    // 队列位置 = 同侧同价位历史订单的当前总量
+    uint64_t queue_pos = same_side[idx].vol_sum;
+    
+    // 记录下单时真实成交池的累积值（只算下单之后的增量才是"属于我的"）
+    auto& pool = buy ? rt_pool_buy_ : rt_pool_sell_;
+    uint64_t pool_entry = pool[od->price];
+
+    // 记录入场边界：下单瞬间同价位最后一个历史单ID
+    // 后续只有 <= 该ID 的历史撤单，才会推进本虚拟单 queue_position
+    uint64_t frontier_hist_order_id = 0;
+    const auto& bkt = same_side[idx];
+    for (auto rit = bkt.orders.rbegin(); rit != bkt.orders.rend(); ++rit) {
+        if ((*rit)->is_historical) {
+            frontier_hist_order_id = (*rit)->order_id;
+            break;
+        }
+    }
+    
+    // (DIAG-2 RT_ACCEPT 诊断日志已移除)
+
+    // 入队到RT虚拟订单簿
+    auto& vmap = buy ? rt_virtual_buy_ : rt_virtual_sell_;
+    vmap[od->price].emplace_back(RtVirtualOrder(od, queue_pos, pool_entry, frontier_hist_order_id));
+    
+    // 获取刚插入的迭代器
+    auto it = std::prev(vmap[od->price].end());
+    
+    // 维护位置映射（O(1)撤单）
+    rt_virtual_loc_[od->order_id] = { od->price, buy, it };
+    
+    // 添加到omap以便后续查找
+    ob_._omap[od->order_id] = od;
+    
+    // 立即尝试一次撮合（避免漏掉下单后已进入池子的同价真实成交）
+    try_fill_rt_virtual_orders(od->price, buy);
+}
+
+// RT模式：喂入真实成交事件
+void ConAuctionEngine::feedRealTrade(Price price, Quantity volume, bool buy_side_passive)
+{
+    // 累加到对应侧的真实成交池
+    auto& pool = buy_side_passive ? rt_pool_buy_ : rt_pool_sell_;
+    pool[price] += volume;
+    diag_.rt_feed_count++;
+    diag_.rt_feed_volume += volume;
+    
+    // (DIAG-7 FEED_RT 诊断日志已移除)
+    
+    // 尝试成交该价位该侧的虚拟订单
+    try_fill_rt_virtual_orders(price, buy_side_passive);
+}
+
+// 用户下单回调：采集同价位同侧的历史队列信息
+ConAuctionEngine::QueueInfo ConAuctionEngine::getQueueInfoForUserOrder(Price price, bool is_buy) const
+{
+    QueueInfo info;
+    if (!queue_info_enabled_) return info;
+
+    try {
+        int idx = ob_.pxToIdx(price);
+        const auto& side = is_buy ? ob_._buy : ob_._sell;
+        if (idx < 0 || idx >= static_cast<int>(side.size())) {
+            return info;
+        }
+
+        const auto& bkt = side[idx];
+        info.ahead_count = 0;
+        info.ahead_volume = 0;
+
+        std::vector<uint64_t> hist_ids;
+        hist_ids.reserve(16);
+        for (const auto& ord : bkt.orders) {
+            if (!ord || !ord->is_historical) continue;
+            info.ahead_count += 1;
+            info.ahead_volume += static_cast<int64_t>(ord->remaining_volume());
+
+            // 优先返回真实 orderid（input_id）；若缺失则退化到映射查询
+            uint64_t raw_id = ord->input_id;
+            if (raw_id == 0) raw_id = ob_.getInputId(ord->order_id);
+            hist_ids.push_back(raw_id);
+        }
+
+        // 取最近3个前序历史订单ID（从近到远）
+        for (auto rit = hist_ids.rbegin();
+             rit != hist_ids.rend() && info.prev_order_ids.size() < 3;
+             ++rit) {
+            info.prev_order_ids.push_back(*rit);
+        }
+    } catch (...) {
+        // 价格越界/未对齐等异常时保持默认值，避免影响主流程
+        return info;
+    }
+
+    return info;
+}
+
+// RT模式：尝试成交某价位某侧的虚拟订单
+void ConAuctionEngine::try_fill_rt_virtual_orders(Price price, bool is_buy_side)
+{
+    auto& vmap = is_buy_side ? rt_virtual_buy_ : rt_virtual_sell_;
+    
+    auto vit = vmap.find(price);
+    if (vit == vmap.end()) return;
+    
+    // 获取该价位该侧的真实成交池总量
+    auto& pool = is_buy_side ? rt_pool_buy_ : rt_pool_sell_;
+    uint64_t pool_at_price = pool[price];
+    
+    auto& vlist = vit->second;
+    uint64_t virtual_fills_before = 0;  // 前面所有虚拟订单的累积已成交量
+    
+    for (auto it = vlist.begin(); it != vlist.end(); ) {
+        auto& vod = *it;
+        
+        // 关键：只算下单之后的真实成交增量
+        // pool_delta = 下单以来该价位新增的真实成交量
+        // available = pool_delta - queue_position - 前面虚拟订单的已成交总量
+        uint64_t pool_delta = (pool_at_price >= vod.pool_at_entry) 
+                            ? (pool_at_price - vod.pool_at_entry) : 0;
+        int64_t available = static_cast<int64_t>(pool_delta)
+                          - static_cast<int64_t>(vod.queue_position) 
+                          - static_cast<int64_t>(virtual_fills_before);
+        
+        // (DIAG-3 RT_TRY_FILL 诊断日志已移除)
+
+        if (available > 0) {
+            Quantity can_fill = static_cast<Quantity>(available);
+            Quantity remaining = vod.order->remaining_volume();
+            Quantity fill_qty = std::min(can_fill, remaining);
+            
+            if (fill_qty > 0) {
+                diag_.passive_fill_count++;
+                // (DIAG-3 RT_FILL 诊断日志已移除)
+                vod.filled_volume += fill_qty;
+                rt_virtual_fill(vod.order, price, fill_qty);
+            }
+        }
+        
+        // 无论是否成交，都累加此订单的已成交量（给后面的订单计算用）
+        virtual_fills_before += vod.filled_volume;
+        
+        // 完全成交的订单移出队列
+        if (vod.order->remaining_volume() == 0) {
+            rt_virtual_loc_.erase(vod.order->order_id);
+            ob_._omap.erase(vod.order->order_id);
+            it = vlist.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    
+    // 清空空的价位
+    if (vlist.empty()) {
+        vmap.erase(vit);
+    }
+}
+
+// RT模式：撤销虚拟订单（O(1)复杂度）
+bool ConAuctionEngine::cancel_rt_virtual_order(uint64_t order_id)
+{
+    auto loc_it = rt_virtual_loc_.find(order_id);
+    if (loc_it == rt_virtual_loc_.end()) return false;
+    
+    auto& loc = loc_it->second;
+    auto& vmap = loc.is_buy ? rt_virtual_buy_ : rt_virtual_sell_;
+    auto& vlist = vmap[loc.price];
+    auto& vod = *loc.it;
+    
+    diag_.rt_cancel_count++;
+    // 更新状态
+    vod.order->status = OrderStatus::Cancelled;
+    
+    // 回调
+    if (on_cancel_) on_cancel_(order_id, true, "撤单成功", vod.order);
+    
+    // 从各映射中移除
+    ob_._omap.erase(order_id);
+    vlist.erase(loc.it);
+    rt_virtual_loc_.erase(loc_it);
+    
+    // 如果该价位为空，移除整个价位
+    if (vlist.empty()) {
+        vmap.erase(loc.price);
+    }
+    
+    return true;
+}
+
+// RT模式：历史订单撤单时调整队列位置
+void ConAuctionEngine::on_historical_order_cancel_rt(int bucket_idx, bool is_buy, uint64_t cancel_hist_order_id, Quantity cancel_vol)
+{
+    Price price = ob_._lower + bucket_idx * ob_._tick;
+    auto& vmap = is_buy ? rt_virtual_buy_ : rt_virtual_sell_;
+    
+    auto vit = vmap.find(price);
+    if (vit == vmap.end()) return;
+    
+    // 只推进"边界之前"的历史撤单：
+    // 对每个虚拟单，只有取消单ID <= frontier_hist_order_id，才减少 queue_position
+    for (auto& vod : vit->second) {
+        if (vod.frontier_hist_order_id == 0 || cancel_hist_order_id > vod.frontier_hist_order_id) {
+            continue;
+        }
+        if (vod.queue_position >= cancel_vol) {
+            vod.queue_position -= cancel_vol;
+        } else {
+            vod.queue_position = 0;
+        }
+    }
+    
+    // 调整后可能有虚拟订单可以成交了
+    try_fill_rt_virtual_orders(price, is_buy);
+}
+
 // ============== 虚拟订单处理函数实现 ==============
 
 // 虚拟订单成交（counterparty_id是对手方历史订单ID）
@@ -15,11 +260,10 @@ void ConAuctionEngine::virtual_fill(std::shared_ptr<Order>& od, Price fill_price
     
     if (ob_._on_exec) {
         bool buy = (od->direction == Direction::Buy);
-        uint64_t cp_input_id = ob_.getInputId(counterparty_id);
-        
-        Execution ex(
-            buy ? od->order_id : cp_input_id,   // 买方ID
-            buy ? cp_input_id : od->order_id,   // 卖方ID
+
+        Execution ex = Execution::userHistorical(
+            buy ? od->order_id : counterparty_id,   // 买方内部ID
+            buy ? counterparty_id : od->order_id,   // 卖方内部ID
             fill_price,
             od->volume
         );
@@ -39,9 +283,13 @@ void ConAuctionEngine::accept_virtual_order(std::shared_ptr<Order> od)
         bool can_trade = (buy && best_opp_price <= od->price) || 
                          (!buy && best_opp_price >= od->price);
         if (can_trade) {
+            diag_.active_order_count++;
+            // (DIAG-1 ACTIVE order 诊断日志已移除)
             // ========== 严格主动单模式检查 ==========
             // 如果开启了严格模式且有未还清的欠债，拒绝主动单
-            if (strict_active_order_mode_ && !debt_orders_.empty()) {
+            if (strict_active_order_mode_ && debt_volume_ > 0) {
+                diag_.debt_reject_count++;
+                // (DIAG-4 DEBT_REJECT 诊断日志已移除)
                 // 设置订单状态为 Rejected
                 od->status = OrderStatus::Rejected;
                 ob_._omap[od->order_id] = od;  // 添加到omap以便查询
@@ -65,33 +313,26 @@ void ConAuctionEngine::accept_virtual_order(std::shared_ptr<Order> od)
                 // 遍历对手方订单簿，计算虚拟主动单实际能吃掉多少量
                 auto& opp_side = buy ? ob_._sell : ob_._buy;
                 Quantity remaining = od->volume;
-                Quantity total_available = 0;  // 市场能提供的总量
+                Quantity total_available = 0;
                 int current_idx = best_opp;
-                Price fill_price = best_opp_price;  // 成交价（取第一个价位）
-                uint64_t counterparty_id = 0;      // 第一个对手方订单ID
-                const size_t debt_before = debt_orders_.size();
+                Price fill_price = best_opp_price;
+                uint64_t counterparty_id = 0;
                 
-                // 计算可成交量并记录欠债
+                // 计算可成交量（扫描对手方，不再逐单记录 debt）
                 while (remaining > 0 && current_idx != -1) {
                     Price px = ob_._lower + current_idx * ob_._tick;
-                    // 检查价格是否满足成交条件
                     if ((buy && px > od->price) || (!buy && px < od->price)) {
                         break;
                     }
                     
                     auto& bkt = opp_side[current_idx];
                     for (auto& hist_order : bkt.orders) {
-                        if (!hist_order->is_historical) continue;  // 跳过虚拟订单
+                        if (!hist_order->is_historical) continue;
                         
-                        // 记录第一个对手方订单ID
                         if (counterparty_id == 0) {
                             counterparty_id = hist_order->order_id;
                         }
                         
-                        // 记录这个历史订单到欠债集合
-                        debt_orders_.insert(hist_order->order_id);
-                        
-                        // 计算能吃掉多少量
                         Quantity q = std::min(remaining, hist_order->remaining_volume());
                         total_available += q;
                         remaining -= q;
@@ -99,14 +340,21 @@ void ConAuctionEngine::accept_virtual_order(std::shared_ptr<Order> od)
                         if (remaining == 0) break;
                     }
                     
-                    // 移动到下一个价位（使用桶链表的 next 字段）
                     current_idx = buy ? bkt.next : bkt.prev;
                 }
-                // 计算实际成交量（市场能提供的量）
                 Quantity actual_fill = total_available;
                 Quantity unfilled = od->volume - actual_fill;
                 
+                // 按量记录 debt：虚拟消耗了多少就欠多少
+                uint64_t debt_before = debt_volume_;
+                debt_volume_ += actual_fill;
+                diag_.debt_create_total += actual_fill;
+
+                // (DIAG-5 DEBT_CREATE 诊断日志已移除)
+                
                 if (actual_fill > 0) {
+                    diag_.active_fill_count++;
+                    diag_.active_fill_volume += actual_fill;
                     // 部分成交或全部成交
                     od->traded_volume = actual_fill;
                     
@@ -116,10 +364,9 @@ void ConAuctionEngine::accept_virtual_order(std::shared_ptr<Order> od)
                         
                         // 发送成交回调
                         if (ob_._on_exec) {
-                            uint64_t cp_input_id = ob_.getInputId(counterparty_id);
-                            Execution ex(
-                                buy ? od->order_id : cp_input_id,
-                                buy ? cp_input_id : od->order_id,
+                            Execution ex = Execution::userAggregated(
+                                buy ? od->order_id : 0,
+                                buy ? 0 : od->order_id,
                                 fill_price,
                                 actual_fill
                             );
@@ -137,10 +384,9 @@ void ConAuctionEngine::accept_virtual_order(std::shared_ptr<Order> od)
                         
                         // 发送成交回调
                         if (ob_._on_exec) {
-                            uint64_t cp_input_id = ob_.getInputId(counterparty_id);
-                            Execution ex(
-                                buy ? od->order_id : cp_input_id,
-                                buy ? cp_input_id : od->order_id,
+                            Execution ex = Execution::userAggregated(
+                                buy ? od->order_id : 0,
+                                buy ? 0 : od->order_id,
                                 fill_price,
                                 actual_fill
                             );
@@ -176,7 +422,16 @@ void ConAuctionEngine::accept_virtual_order(std::shared_ptr<Order> od)
         }
     }
     
-    // ========== 第二步：找同侧同价位最后一个历史订单 ==========
+    // ========== 第二步：被动单处理 ==========
+    diag_.passive_order_count++;
+    // (DIAG-1 PASSIVE order 诊断日志已移除)
+    // 如果启用了真实成交替代模式，走RT虚拟订单队列
+    if (real_trade_match_mode_) {
+        accept_rt_virtual_order(od);
+        return;
+    }
+    
+    // ========== 默认模式：找同侧同价位最后一个历史订单 ==========
     int idx = ob_.pxToIdx(od->price);
     auto& same_side = buy ? ob_._buy : ob_._sell;  // 同侧订单簿
     auto& bkt = same_side[idx];
@@ -221,10 +476,16 @@ void ConAuctionEngine::on_historical_order_removing(
     bool is_buy,
     bool is_filled)
 {
-    // ========== 严格主动单模式：清除欠债 ==========
-    // 当历史订单被真实市场成交时，从欠债集合中移除
-    if (strict_active_order_mode_ && is_filled) {
-        debt_orders_.erase(removing_order->order_id);
+    // ========== 严格主动单模式：按量清除欠债 ==========
+    // debt 的按量扣减在 match_sh/match_sz 每次成交时完成，此处不再处理
+    
+    // ========== 真实成交替代模式：撤单时调整队列位置 ==========
+    // 只有撤单（非成交）才需要调整，因为成交会通过 feedRealTrade 增加真实成交池
+    if (real_trade_match_mode_ && !is_filled) {
+        Quantity cancel_vol = removing_order->remaining_volume();
+        if (cancel_vol > 0) {
+            on_historical_order_cancel_rt(bucket_idx, is_buy, removing_order->order_id, cancel_vol);
+        }
     }
     
     // 检查是否有虚拟订单以它为标签
@@ -387,6 +648,7 @@ void ConAuctionEngine::accept_sh(std::shared_ptr<Order> od)
     try_match_virtual_orders(od);
     
     if (od->remaining_volume() == 0) {
+        ob_.eraseActiveMarketOrder(od->order_id);
         return;
     }
 
@@ -421,7 +683,8 @@ void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
         Price px = 0;
         if (orig == OrderType::Market) {
             // 先看历史成交价格
-            if (auto it = ob_.first_trade_px_.find(ext_id); it != ob_.first_trade_px_.end())
+            MarketOrderKey market_key{od->market_channel_no, ext_id};
+            if (auto it = ob_.first_trade_px_.find(market_key); it != ob_.first_trade_px_.end())
                 px = it->second;
             // 无成交 → 对手最优
             if (px == 0) px = buy ? ob_.bestAsk() : ob_.bestBid();
@@ -452,7 +715,10 @@ void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
     // 撮合完后，检查虚拟订单是否可成交
     try_match_virtual_orders(od);
     
-    if (od->remaining_volume() == 0) return;
+    if (od->remaining_volume() == 0) {
+        ob_.eraseActiveMarketOrder(od->order_id);
+        return;
+    }
 
     // 剩余挂簿
     int idx = ob_.pxToIdx(od->price);  // ← 现在才算 idx，确保用最终价
@@ -502,6 +768,7 @@ void ConAuctionEngine::match_sh(std::shared_ptr<Order>& inc)
                 bkt.orders.pop_front();
                 ob_._loc.erase(oppo->order_id);
                 ob_._omap.erase(oppo->order_id);
+                ob_.eraseActiveMarketOrder(oppo->order_id);
                 continue;
             }
 
@@ -516,11 +783,24 @@ void ConAuctionEngine::match_sh(std::shared_ptr<Order>& inc)
 
             // 成交回调
             if (ob_._on_exec) {
-                Execution ex(
-                    ob_.getInputId(buy ? inc->order_id : oppo->order_id),
-                    ob_.getInputId(buy ? oppo->order_id : inc->order_id),
+                Execution ex = Execution::historical(
+                    buy ? inc->order_id : oppo->order_id,
+                    buy ? oppo->order_id : inc->order_id,
                     px, q);
                 ob_._on_exec(ex);
+            }
+
+            // RT模式：历史单撮合即"真实成交"，喂入真实成交池
+            // inc=主动方, oppo=被动方; buy=inc方向 → 被动侧=!buy
+            if (real_trade_match_mode_) {
+                feedRealTrade(px, q, !buy);
+            }
+
+            // 严格模式：每次真实成交按量扣减 debt
+            if (strict_active_order_mode_ && debt_volume_ > 0) {
+                uint64_t reduce = std::min(static_cast<uint64_t>(q), debt_volume_);
+                debt_volume_ -= reduce;
+                diag_.debt_clear_total += reduce;
             }
 
             // 对手方订单完全成交，移出订单簿
@@ -532,6 +812,7 @@ void ConAuctionEngine::match_sh(std::shared_ptr<Order>& inc)
                 bkt.orders.pop_front();
                 ob_._loc.erase(oppo->order_id);
                 ob_._omap.erase(oppo->order_id);
+                ob_.eraseActiveMarketOrder(oppo->order_id);
             } else {
                 oppo->status = OrderStatus::PartFilled;
             }
@@ -573,6 +854,7 @@ void ConAuctionEngine::match_sz(std::shared_ptr<Order>& inc)
                 bkt.orders.pop_front();
                 ob_._loc.erase(oppo->order_id);
                 ob_._omap.erase(oppo->order_id);
+                ob_.eraseActiveMarketOrder(oppo->order_id);
                 continue;
             }
 
@@ -587,11 +869,23 @@ void ConAuctionEngine::match_sz(std::shared_ptr<Order>& inc)
 
             // 成交回调
             if (ob_._on_exec) {
-                Execution ex(
-                    ob_.getInputId(buy ? inc->order_id : oppo->order_id),
-                    ob_.getInputId(buy ? oppo->order_id : inc->order_id),
+                Execution ex = Execution::historical(
+                    buy ? inc->order_id : oppo->order_id,
+                    buy ? oppo->order_id : inc->order_id,
                     px, q);
                 ob_._on_exec(ex);
+            }
+
+            // RT模式：历史单撮合即"真实成交"，喂入真实成交池
+            if (real_trade_match_mode_) {
+                feedRealTrade(px, q, !buy);
+            }
+
+            // 严格模式：每次真实成交按量扣减 debt
+            if (strict_active_order_mode_ && debt_volume_ > 0) {
+                uint64_t reduce = std::min(static_cast<uint64_t>(q), debt_volume_);
+                debt_volume_ -= reduce;
+                diag_.debt_clear_total += reduce;
             }
 
             // 对手方订单完全成交，移出订单簿
@@ -603,6 +897,7 @@ void ConAuctionEngine::match_sz(std::shared_ptr<Order>& inc)
                 bkt.orders.pop_front();
                 ob_._loc.erase(oppo->order_id);
                 ob_._omap.erase(oppo->order_id);
+                ob_.eraseActiveMarketOrder(oppo->order_id);
             } else {
                 oppo->status = OrderStatus::PartFilled;
             }
@@ -626,6 +921,11 @@ bool ConAuctionEngine::cancel(uint64_t oid)
     if (it == ob_._loc.end()) {
         // 不在历史订单簿中，尝试撤销虚拟订单
         if (cancel_virtual_order(oid)) {
+            return true;
+        }
+        
+        // 尝试撤销RT模式虚拟订单
+        if (real_trade_match_mode_ && cancel_rt_virtual_order(oid)) {
             return true;
         }
         
@@ -670,18 +970,19 @@ bool ConAuctionEngine::cancel(uint64_t oid)
     return true;
 }
 
-// 撤单（通过输入订单ID）
-bool ConAuctionEngine::cancel_by_input_id(uint64_t input_id)
+// 撤单（通过市场订单ID和通道号）
+bool ConAuctionEngine::cancel_by_input_id(uint64_t input_id, int channel_no)
 {
-    auto it = ob_.input2sys_.find(input_id);
-    if (it != ob_.input2sys_.end()) {
-        uint64_t sys_id = it->second;
+    auto system_id = ob_.findSystemOrderId(input_id, channel_no);
+    if (system_id.has_value()) {
+        uint64_t sys_id = *system_id;
         bool result = cancel(sys_id);
-        ob_.input2sys_.erase(it);  // 从映射中移除
+        ob_.eraseActiveMarketOrder(sys_id);
         return result;
     } else {
-        // 输入订单ID不存在（未在input2sys_映射中找到）
-        std::cerr << "❌ [连续竞价撤单失败] 输入订单ID=" << input_id << " -> input2sys_映射中不存在" << std::endl;
+        // 输入订单ID不存在（未在活跃市场身份映射中找到）
+        std::cerr << "❌ [连续竞价撤单失败] channel=" << channel_no
+                  << " 输入订单ID=" << input_id << " -> 市场身份映射中不存在" << std::endl;
         if (on_cancel_) on_cancel_(input_id, false, "输入订单ID不存在", nullptr);
         return false;
     }
@@ -890,4 +1191,4 @@ void ConAuctionEngine::addToDormant(std::shared_ptr<Order> od)
 //     }
 // }
 
-} // namespace wangcai 
+} // namespace wangcai

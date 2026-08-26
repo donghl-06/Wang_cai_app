@@ -23,7 +23,6 @@ namespace wangcai {
 // 在文件开头添加静态变量定义
 std::vector<Event> OrderBook::whole_events;
 std::vector<Event> OrderBook::tick_events;
-bool Event::is_SZ = false;
 
 // 构造函数
 OrderBook::OrderBook(double hi, double lo, bool is_etf, ExecCallback cb)
@@ -45,6 +44,79 @@ OrderBook::OrderBook(double hi, double lo, bool is_etf, ExecCallback cb)
 
     _best_bid = _best_ask = -1; //最优价索引
     _prev_close_price = 0; // 前收盘价
+}
+
+void OrderBook::registerHistoricalOrder(const std::shared_ptr<Order>& order,
+                                        uint64_t market_order_id,
+                                        int channel_no,
+                                        int trading_day) {
+    if (!order || market_order_id == 0 || channel_no < 0) {
+        throw MarketIdentityError("历史订单身份缺少 market_order_id 或 channel_no");
+    }
+
+    MarketOrderIdentity identity{
+        trading_day, order->instrument, channel_no, market_order_id, order->direction
+    };
+    MarketOrderKey key{channel_no, market_order_id};
+
+    auto [identity_it, identity_inserted] =
+        market_identity_by_system_id_.emplace(order->order_id, identity);
+    if (!identity_inserted) {
+        throw MarketIdentityError("重复注册历史 system-id=" + std::to_string(order->order_id));
+    }
+
+    auto [active_it, active_inserted] = market_system_id_by_key_.emplace(key, order->order_id);
+    if (!active_inserted && active_it->second != order->order_id) {
+        market_identity_by_system_id_.erase(identity_it);
+        throw MarketIdentityError(
+            "同一通道存在重复的活跃市场订单: channel=" + std::to_string(channel_no) +
+            ", order_id=" + std::to_string(market_order_id));
+    }
+
+    order->is_historical = true;
+    order->input_id = market_order_id;
+    order->market_channel_no = channel_no;
+    order->market_trading_day = trading_day;
+}
+
+const MarketOrderIdentity& OrderBook::requireMarketIdentity(uint64_t system_id) const {
+    auto it = market_identity_by_system_id_.find(system_id);
+    if (it == market_identity_by_system_id_.end()) {
+        throw MarketIdentityError("无法把内部 system-id 还原为市场订单 ID: " +
+                                  std::to_string(system_id));
+    }
+    return it->second;
+}
+
+std::optional<uint64_t> OrderBook::findSystemOrderId(uint64_t market_order_id,
+                                                     int channel_no) const {
+    if (market_order_id == 0) return std::nullopt;
+    if (channel_no >= 0) {
+        auto it = market_system_id_by_key_.find({channel_no, market_order_id});
+        if (it == market_system_id_by_key_.end()) return std::nullopt;
+        return it->second;
+    }
+
+    std::optional<uint64_t> result;
+    for (const auto& [key, system_id] : market_system_id_by_key_) {
+        if (key.market_order_id != market_order_id) continue;
+        if (result.has_value() && *result != system_id) {
+            throw MarketIdentityError("裸市场订单 ID 在多个通道中有歧义: " +
+                                      std::to_string(market_order_id));
+        }
+        result = system_id;
+    }
+    return result;
+}
+
+void OrderBook::eraseActiveMarketOrder(uint64_t system_id) {
+    auto identity_it = market_identity_by_system_id_.find(system_id);
+    if (identity_it == market_identity_by_system_id_.end()) return;
+    MarketOrderKey key{identity_it->second.channel_no, identity_it->second.market_order_id};
+    auto active_it = market_system_id_by_key_.find(key);
+    if (active_it != market_system_id_by_key_.end() && active_it->second == system_id) {
+        market_system_id_by_key_.erase(active_it);
+    }
 }
 
 // 插入事件到有序列表

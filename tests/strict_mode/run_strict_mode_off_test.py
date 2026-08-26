@@ -61,7 +61,8 @@ def main():
         SYMBOL: (cstick, csord, cstra, csbar1d)
     }
     
-    strategy = ComprehensiveStrictModeTest(account="strict_off_test")
+    strategy = ComprehensiveStrictModeTest(account="strict_off_test",
+                                           strict_mode_expected=ENABLE_STRICT_MODE)
     
     print(f"\n🚀 开始回测...")
     
@@ -72,31 +73,20 @@ def main():
         strict_active_order_mode=ENABLE_STRICT_MODE
     )
     
-    if success:
-        print(f"\n✅ 回测完成!")
-        
-        # 检查结果
-        print(f"\n{'='*70}")
-        print(f"📊 对比测试结果（严格模式关闭）")
-        print(f"{'='*70}")
-        
-        # 关闭模式时，测试2和测试3应该成交而不是被拒绝
-        test2_should_fill = not strategy.results['test2_active_buy_rejected']
-        test3_should_fill = not strategy.results['test3_active_sell_rejected']
-        
-        if test2_should_fill and test3_should_fill:
-            print(f"  ✅ 严格模式关闭时，主动单没有被拦截（符合预期）")
-        else:
-            print(f"  ⚠️  有主动单被拦截，请检查")
-            print(f"      test2_rejected: {strategy.results['test2_active_buy_rejected']}")
-            print(f"      test3_rejected: {strategy.results['test3_active_sell_rejected']}")
-        
-        print(f"  最终持仓: {strategy.position}")
-        print(f"{'='*70}")
-    else:
+    if not success:
         print(f"\n❌ 回测失败")
         return 1
     
+    print(f"\n✅ 回测完成!")
+    strategy.print_summary()
+    
+    if not strategy.passed():
+        print(f"\n❌ 核心断言未全部通过：严格模式关闭时主动单应正常成交")
+        print(f"    test2 rejected={strategy.results['test2_active_buy_rejected']} "
+              f"filled={strategy.results['test2_active_buy_filled']}")
+        print(f"    test3 rejected={strategy.results['test3_active_sell_rejected']} "
+              f"filled={strategy.results['test3_active_sell_filled']}")
+        return 1
     return 0
 
 

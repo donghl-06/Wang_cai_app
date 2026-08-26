@@ -29,7 +29,9 @@ struct Order {
     std::string instrument;         ///< 代码
     std::string order_local_id;     ///< 本地编号
     uint64_t    order_id{};         ///< 系统 ID
-    uint64_t    input_id{};         ///< 原始数字ID（如果order_local_id是纯数字）
+    uint64_t    input_id{};         ///< 历史委托的原始市场订单 ID；用户单始终为 0
+    int         market_channel_no{-1}; ///< 历史委托所属行情通道
+    int         market_trading_day{-1}; ///< 历史委托交易日 YYYYMMDD
     int64_t    bizindex{};         ///< 业务编号
 
     OrderType   order_type{OrderType::Limit}; // 订单类型
@@ -97,6 +99,15 @@ struct PriceLevel {
     [[nodiscard]] bool isEmpty() const noexcept { return orders.empty(); } // 判断该价格档位是否为空
 };
 
+// Execution 中的订单号始终属于内部 system-id 命名空间（0 表示合成流动性）。
+// 原始市场订单号只能在 BacktestEngine 的输出边界通过 MarketOrderIdentity 解析。
+enum class ExecutionOrigin : uint8_t {
+    HistoricalHistorical,
+    UserHistorical,
+    UserSyntheticLiquidity,
+    UserAggregatedLiquidity
+};
+
 //成交记录
 struct Execution {
     uint64_t  execution_id; // 成交ID
@@ -105,14 +116,33 @@ struct Execution {
     Price     price; // 成交价格
     Quantity  volume; // 成交数量
     Timestamp timestamp; // 成交时间
+    ExecutionOrigin origin;
 
-    Execution(uint64_t buy_id, uint64_t sell_id, Price px, Quantity vol) // 构造函数
+    static Execution historical(uint64_t buy_id, uint64_t sell_id, Price px, Quantity vol) {
+        return Execution(buy_id, sell_id, px, vol, ExecutionOrigin::HistoricalHistorical);
+    }
+
+    static Execution userHistorical(uint64_t buy_id, uint64_t sell_id, Price px, Quantity vol) {
+        return Execution(buy_id, sell_id, px, vol, ExecutionOrigin::UserHistorical);
+    }
+
+    static Execution userSynthetic(uint64_t buy_id, uint64_t sell_id, Price px, Quantity vol) {
+        return Execution(buy_id, sell_id, px, vol, ExecutionOrigin::UserSyntheticLiquidity);
+    }
+
+    static Execution userAggregated(uint64_t buy_id, uint64_t sell_id, Price px, Quantity vol) {
+        return Execution(buy_id, sell_id, px, vol, ExecutionOrigin::UserAggregatedLiquidity);
+    }
+
+private:
+    Execution(uint64_t buy_id, uint64_t sell_id, Price px, Quantity vol, ExecutionOrigin origin_)
         : execution_id(generate_execution_id()), // 生成成交ID
           buy_order_id(buy_id), // 买方订单ID
           sell_order_id(sell_id), // 卖方订单ID
           price(px), // 成交价格
           volume(vol), // 成交数量
-          timestamp(std::chrono::system_clock::now()) {} // 当前时间
+          timestamp(std::chrono::system_clock::now()), // 当前时间
+          origin(origin_) {}
 };
 
 //价格统计（集合竞价用）

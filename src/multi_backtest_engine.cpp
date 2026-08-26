@@ -12,18 +12,24 @@
 
 namespace wangcai {
 
-MultiBacktestEngine::MultiBacktestEngine(const std::vector<SymbolData>& symbol_data_list)
+MultiBacktestEngine::MultiBacktestEngine(std::vector<SymbolData> symbol_data_list)
 {
     // 自动重置全局订单ID计数器（支持多次回测）
     reset_order_id_counter();
     
     engines_.reserve(symbol_data_list.size());
 
-    for (const auto& data : symbol_data_list) {
+    for (auto& data : symbol_data_list) {
         EngineManager se;
         se.symbol = data.symbol;
 
         se.engine = std::make_unique<BacktestEngine>(data.symbol, data.cstick_csv, data.order_csv, data.trade_csv, data.csbar1d_csv, data.is_etf);
+
+        // BacktestEngine 已完成解析，立即释放 CSV 字符串节省内存
+        data.cstick_csv.clear();  data.cstick_csv.shrink_to_fit();
+        data.order_csv.clear();   data.order_csv.shrink_to_fit();
+        data.trade_csv.clear();   data.trade_csv.shrink_to_fit();
+        data.csbar1d_csv.clear(); data.csbar1d_csv.shrink_to_fit();
 
         // 合并所有事件到一个数组
         std::vector<Event> merged;
@@ -39,36 +45,7 @@ MultiBacktestEngine::MultiBacktestEngine(const std::vector<SymbolData>& symbol_d
         //   - 相同时间时，ord/tra 优先于 tick
         //   - 相同时间且都是 ord/tra 时，按 orderid（SZ）或 bizindex（SH）排序
         //   - 相同时间且都是 tick 时，保持原顺序
-        std::sort(merged.begin(), merged.end(), [](const Event& a, const Event& b) {
-            // 1. 主排序键：datetime
-            if (a.datetime != b.datetime) {
-                return a.datetime < b.datetime;
-            }
-            
-            // 2. datetime 相同时的次排序键
-            bool a_is_tick = (a.source == "tick");
-            bool b_is_tick = (b.source == "tick");
-            
-            // 2.1 ord/tra 优先于 tick
-            if (!a_is_tick && b_is_tick) {
-                return true;  // a(ord/tra) 排在 b(tick) 前面
-            }
-            if (a_is_tick && !b_is_tick) {
-                return false; // a(tick) 排在 b(ord/tra) 后面
-            }
-            
-            // 2.2 都是 tick：保持原顺序（返回 false 以保持稳定排序）
-            if (a_is_tick && b_is_tick) {
-                return false;
-            }
-            
-            // 2.3 都是 ord/tra：按 orderid（SZ）或 bizindex（SH）排序
-            if (Event::is_SZ) {
-                return a.orderid < b.orderid;
-            } else {
-                return a.bizindex < b.bizindex;
-            }
-        });
+        std::stable_sort(merged.begin(), merged.end(), marketEventLess);
         
         se.events = std::move(merged);
         se.idx = 0;
@@ -173,23 +150,66 @@ void MultiBacktestEngine::run() {
         for (const auto& [engine_idx, events] : engine_events) {
             auto events_copy = events;
             
-            taskflow.emplace([this, engine_idx, events_copy]() mutable {
-                auto& eng_ref = *engines_[engine_idx].engine;
+            // === 价格笼子预扫描（仅SZ市场）===
+            // 收集同一时间戳内会成交的订单ID
+            std::unordered_set<int64_t> will_trade_ids;
+            if (!events_copy.empty() && events_copy.front().isSZ()) {
                 for (const auto& ev : events_copy) {
-                    try {
-                    eng_ref.processEvent(ev);
-                    } catch (const std::exception& e) {
-                        std::cerr << "❌ [processEvent失败] bizindex=" << ev.bizindex 
-                                  << " datetime=" << ev.datetime 
-                                  << " error=" << e.what() << std::endl;
-                        // 不重新抛出异常，让其他事件继续处理
+                    if (ev.source == "tra" && ev.exectype == "1") {
+                        // exectype="1" 表示成交，收集买卖双方订单ID
+                        if (ev.bidorderid > 0) will_trade_ids.insert(ev.bidorderid);
+                        if (ev.askorderid > 0) will_trade_ids.insert(ev.askorderid);
                     }
                 }
+            }
+            
+            taskflow.emplace([this, engine_idx, events_copy, will_trade_ids]() mutable {
+                auto& eng_ref = *engines_[engine_idx].engine;
+                for (const auto& ev : events_copy) eng_ref.processEvent(ev, will_trade_ids);
             });
         }
         // 执行当前时间戳的所有任务并阻塞等待完成
-        executor.run(taskflow).wait();
-        
+        executor.run(taskflow).get();
+
+        // === 跨标的用户事件汇总与路由 ===
+        // 策略在本轮任意引擎的回调里返回了归属其它标的的订单/撤单，
+        // 已经暂存在各子引擎的 cross_symbol_events_，这里 join 之后串行按 symbol 路由。
+        {
+            std::vector<UserEvent> cross_events;
+            for (auto& se : engines_) {
+                auto v = se.engine->drainCrossSymbolEvents();
+                cross_events.insert(cross_events.end(),
+                                    std::make_move_iterator(v.begin()),
+                                    std::make_move_iterator(v.end()));
+            }
+            for (const auto& ue : cross_events) {
+                if (ue.type == UserEvent::ORDER) {
+                    auto it = symbol_to_engine.find(ue.order.symbol);
+                    if (it != symbol_to_engine.end()) {
+                        engines_[it->second].engine->setCurrentDatetimeForCustomEvent(current_time);
+                        engines_[it->second].engine->submitUserEvent(ue);
+                    } else {
+                        std::cerr << "[跨标的下单失败] 未找到合约: "
+                                  << ue.order.symbol << std::endl;
+                    }
+                } else { // CANCEL
+                    bool handled = false;
+                    for (auto& se : engines_) {
+                        if (se.engine->hasUserOrder(ue.cancel.order_id)) {
+                            se.engine->setCurrentDatetimeForCustomEvent(current_time);
+                            se.engine->submitUserEvent(ue);
+                            handled = true;
+                            break;
+                        }
+                    }
+                    if (!handled) {
+                        std::cerr << "[跨标的撤单失败] 找不到订单: "
+                                  << ue.cancel.order_id << std::endl;
+                    }
+                }
+            }
+        }
+
         // === 用户自定义数据推送 ===
         // 在当前时间戳的市场事件处理完成后，检查是否有需要推送的自定义事件
         if (custom_data_enabled_ && !custom_events_.empty()) {
@@ -289,6 +309,34 @@ bool MultiBacktestEngine::hasDebt() const {
         }
     }
     return false;
+}
+
+// === 真实成交替代模式 ===
+void MultiBacktestEngine::setRealTradeMatchMode(bool enabled) {
+    for (auto& se : engines_) {
+        se.engine->setRealTradeMatchMode(enabled);
+    }
+}
+
+bool MultiBacktestEngine::isRealTradeMatchMode() const {
+    if (!engines_.empty()) {
+        return engines_[0].engine->isRealTradeMatchMode();
+    }
+    return false;
+}
+
+void MultiBacktestEngine::setQueueInfoEnabled(bool enabled) {
+    queue_info_enabled_ = enabled;
+    for (auto& se : engines_) {
+        se.engine->setQueueInfoEnabled(enabled);
+    }
+}
+
+bool MultiBacktestEngine::isQueueInfoEnabled() const {
+    if (!engines_.empty()) {
+        return engines_[0].engine->isQueueInfoEnabled();
+    }
+    return queue_info_enabled_;
 }
 
 // === 用户自定义数据推送功能 ===

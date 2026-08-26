@@ -17,6 +17,27 @@ namespace wangcai {
 // 获取 tick 大小（ETF=10厘=0.001元，股票=100厘=0.01元）
 inline Price get_tick(bool is_etf) { return is_etf ? 10 : 100; }
 
+// pandas/CSV 中 object 列可能保留为 "b'1'"、"b'B'" 等字面量。
+// 在 C++ 边界再次规范化，避免方向/成交类型被首字符 'b' 误判。
+inline std::string normalize_encoded_scalar(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    const auto last = value.find_last_not_of(" \t\r\n");
+    value = value.substr(first, last - first + 1);
+
+    if (value.size() >= 3 && (value[0] == 'b' || value[0] == 'B') &&
+        ((value[1] == '\'' && value.back() == '\'') ||
+         (value[1] == '"' && value.back() == '"'))) {
+        return value.substr(2, value.size() - 3);
+    }
+    if (value.size() >= 2 &&
+        ((value.front() == '\'' && value.back() == '\'') ||
+         (value.front() == '"' && value.back() == '"'))) {
+        return value.substr(1, value.size() - 2);
+    }
+    return value;
+}
+
 // 工具函数：将价格字符串转为int64_t，*10000并四舍五入到tick
 // tick: ETF=10, 股票=100
 inline uint64_t parse_price(const std::string& price_str, Price tick = 100) {
@@ -81,6 +102,9 @@ void InfoLoader::load_sh_info(const std::string& order_csv_content, const std::s
             std::getline(ss, bizindex_str, ',');
             std::getline(ss, updatetime_str, ',');
 
+            side_str = normalize_encoded_scalar(side_str);
+            ordertype_str = normalize_encoded_scalar(ordertype_str);
+
             // 统一时间格式为 "YYYY-MM-DD HH:MM:SS.fff"
             std::string time_part = format_time_to_milliseconds(time);
             std::string datetime = date + " " + time_part;
@@ -91,9 +115,9 @@ void InfoLoader::load_sh_info(const std::string& order_csv_content, const std::s
             int64_t size = size_str.empty() ? 0 : std::stod(size_str);
             int64_t side = side_str.empty() ? 0 : std::stoi(side_str);
             int64_t ordertype = ordertype_str.empty() ? 0 : std::stoi(ordertype_str);
-            int64_t orderid = orderid_str.empty() ? 0 : std::stoi(orderid_str);
+            int64_t orderid = orderid_str.empty() ? 0 : std::stoll(orderid_str);
             int64_t channelno = channelno_str.empty() ? 0 : std::stoi(channelno_str);
-            int64_t seqno = (seqno_str == "-9223372036854775808") ? 0 : std::stoi(seqno_str);
+            int64_t seqno = (seqno_str == "-9223372036854775808") ? 0 : std::stoll(seqno_str);
             int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoll(bizindex_str);
             
             // 解析时间字段用于填充time_raw
@@ -131,21 +155,6 @@ void InfoLoader::load_sh_info(const std::string& order_csv_content, const std::s
             OrderBook::insertEvent(order_event);
             inserted_events++;
 
-            // 创建订单对象用于引擎处理
-            auto order = order_book.createOrder(
-                "EXCHANGE",  // broker
-                "EXCHANGE", // account
-                sym.substr(sym.size() - 2), // exchange (取代码后两位作为交易所)
-                sym,              // instrument
-                orderid_str,      // order_local_id (使用原始字符串)
-                wangcai::OrderType::Limit, // 沪市全部为限价
-                // 根据方向判断Direction
-                side == 1 ? wangcai::Direction::Buy : wangcai::Direction::Sell,
-                price,           // price
-                size,            // volume
-                bizindex
-            );
-
         } catch (const std::exception& e) {
             std::cerr << "处理订单时发生错误: " << e.what() << std::endl;
             // 输出是哪笔订单的错误
@@ -182,6 +191,9 @@ void InfoLoader::load_sz_info(const std::string& order_csv_content, const std::s
             std::getline(ss, bizindex_str, ',');
             std::getline(ss, updatetime_str, ',');
 
+            side_str = normalize_encoded_scalar(side_str);
+            ordertype_str = normalize_encoded_scalar(ordertype_str);
+
             // 统一时间格式为 "YYYY-MM-DD HH:MM:SS.fff"
             std::string time_part = format_time_to_milliseconds(time);
             std::string datetime = date + " " + time_part;
@@ -192,9 +204,9 @@ void InfoLoader::load_sz_info(const std::string& order_csv_content, const std::s
             int64_t size = size_str.empty() ? 0 : std::stod(size_str);
             int64_t side = side_str.empty() ? 0 : std::stoi(side_str);
             int64_t ordertype = ordertype_str.empty() ? 0 : std::stoi(ordertype_str);
-            int64_t orderid = orderid_str.empty() ? 0 : std::stoi(orderid_str);
+            int64_t orderid = orderid_str.empty() ? 0 : std::stoll(orderid_str);
             int64_t channelno = channelno_str.empty() ? 0 : std::stoi(channelno_str);
-            int64_t seqno = (seqno_str == "-9223372036854775808") ? 0 : std::stoi(seqno_str);
+            int64_t seqno = (seqno_str == "-9223372036854775808") ? 0 : std::stoll(seqno_str);
             int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoll(bizindex_str);
             
             bool is_sz_mkt = (sym.size() >= 2 &&
@@ -202,7 +214,8 @@ void InfoLoader::load_sz_info(const std::string& order_csv_content, const std::s
                               ordertype != 2 && ordertype != 0);              // 非限价视为市价
 
             if (is_sz_mkt) {
-                order_book.first_trade_px_[orderid] = 0;    // 只缓存，先不插事件
+                order_book.first_trade_px_[{static_cast<int>(channelno),
+                                            static_cast<uint64_t>(orderid)}] = 0;
             }
 
             // 解析时间字段用于填充time_raw
@@ -238,27 +251,6 @@ void InfoLoader::load_sz_info(const std::string& order_csv_content, const std::s
                             time_raw                        // time_raw (HHMMSSsss格式)
             );
             OrderBook::insertEvent(order_event);
-
-            // 创建订单对象用于引擎处理
-            auto order = order_book.createOrder(
-                "EXCHANGE",  // broker
-                "EXCHANGE", // account
-                sym.substr(sym.size() - 2), // exchange (取代码后两位作为交易所)
-                sym,              // instrument
-                orderid_str,      // order_local_id (使用原始字符串)
-                // 根据委托价格类型和交易所判断OrderType
-                (sym.substr(sym.size() - 2) == "SZ"
-                    ? (ordertype == 1 ? wangcai::OrderType::Market
-                        : (ordertype == 2 ? wangcai::OrderType::Limit
-                            : (ordertype == 3 ? wangcai::OrderType::BestOwn
-                                : wangcai::OrderType::Limit)))
-                    : wangcai::OrderType::Limit), // 沪市全部为限价
-                // 根据方向判断Direction
-                side == 1 ? wangcai::Direction::Buy : wangcai::Direction::Sell,
-                price,           // price
-                size,            // volume
-                bizindex
-            );
 
         } catch (const std::exception& e) {
             std::cerr << "处理订单时发生错误: " << e.what() << std::endl;
@@ -299,21 +291,21 @@ void InfoLoader::load_traders(const std::string& csv_content, wangcai::OrderBook
             std::getline(ss, channelno_str, ',');
             std::getline(ss, bizindex_str, ',');
             std::getline(ss, updatetime_str, ',');
+
+            exectype = normalize_encoded_scalar(exectype);
+            tradebsflag = normalize_encoded_scalar(tradebsflag);
             
             // 统一时间格式为 "YYYY-MM-DD HH:MM:SS.fff"
             std::string time_part = format_time_to_milliseconds(time);
             std::string datetime = date + " " + time_part;
             
-            // 去除空格
-            tradebsflag.erase(std::remove(tradebsflag.begin(), tradebsflag.end(), ' '), tradebsflag.end());
-
             // 使用 order_book 的 tick 值（根据 is_etf 设置：ETF=10，股票=100）
             Price tick = order_book.getTick();
             int64_t price = parse_price(price_str, tick);
             int64_t size = size_str.empty() ? 0 : std::stod(size_str);
-            int64_t bidorderid = bidorderid_str.empty() ? 0 : std::stoi(bidorderid_str);
-            int64_t askorderid = askorderid_str.empty() ? 0 : std::stoi(askorderid_str);
-            int64_t tradeid = tradeid_str.empty() ? 0 : std::stoi(tradeid_str);
+            int64_t bidorderid = bidorderid_str.empty() ? 0 : std::stoll(bidorderid_str);
+            int64_t askorderid = askorderid_str.empty() ? 0 : std::stoll(askorderid_str);
+            int64_t tradeid = tradeid_str.empty() ? 0 : std::stoll(tradeid_str);
             int64_t channelno = channelno_str.empty() ? 0 : std::stoi(channelno_str);
             int64_t bizindex = (bizindex_str == "-9223372036854775808") ? 0 : std::stoll(bizindex_str);
             
@@ -328,7 +320,8 @@ void InfoLoader::load_traders(const std::string& csv_content, wangcai::OrderBook
 
             // 记录最优成交价（买方记录最高价，卖方记录最低价）
             if (bidorderid != 0) {
-                auto it = order_book.first_trade_px_.find(bidorderid);
+                auto it = order_book.first_trade_px_.find(
+                    {static_cast<int>(channelno), static_cast<uint64_t>(bidorderid)});
                 if (it != order_book.first_trade_px_.end()) {
                     if (it->second == 0 || price > it->second) {  // 买方：记录最高价
                         it->second = price;
@@ -337,7 +330,8 @@ void InfoLoader::load_traders(const std::string& csv_content, wangcai::OrderBook
             }
 
             if (askorderid != 0 && askorderid != bidorderid) {     // 避免同 ID 重复写
-                auto it = order_book.first_trade_px_.find(askorderid);
+                auto it = order_book.first_trade_px_.find(
+                    {static_cast<int>(channelno), static_cast<uint64_t>(askorderid)});
                 if (it != order_book.first_trade_px_.end()) {
                     if ((it->second == 0 || price < it->second) && price != 0) {  // 卖方：记录最低价
                         it->second = price;
@@ -345,16 +339,20 @@ void InfoLoader::load_traders(const std::string& csv_content, wangcai::OrderBook
                 }
             }
 
-            // 兼容Python bytes格式：b'2' -> 2, b'1' -> 1
-            if (exectype == "b'2'") exectype = "2";
-            if (exectype == "b'1'") exectype = "1";
+            int trading_day = 0;
+            if (date.size() >= 10) {
+                std::string date_part = date.substr(0, 10);
+                date_part.erase(std::remove(date_part.begin(), date_part.end(), '-'), date_part.end());
+                trading_day = std::stoi(date_part);
+            }
+            int exchange = sym.ends_with(".SZ") ? 1 : (sym.ends_with(".SH") ? 0 : -1);
 
             Event trade_event(datetime, sym, price, size, -1, -1, tradeid, channelno, -1, bizindex, 
                             bidorderid, askorderid, tradeid, exectype, tradebsflag, 
                             -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1,"tra",
-                            -1,              // exchange 未知
-                            0,               // trading_day 暂设0
-                            0,               // action_day
+                            exchange,
+                            trading_day,
+                            trading_day,
                             "",             // status
                             '\0',            // order_kind
                             tradeid,         // trade_index
@@ -367,6 +365,8 @@ void InfoLoader::load_traders(const std::string& csv_content, wangcai::OrderBook
             }
         } catch (const std::exception& e) {
             std::cerr << "处理撤单时发生错误: " << e.what() << std::endl;
+            std::cerr << "错误成交信息: " << line << std::endl;
+            std::throw_with_nested(std::runtime_error("加载成交/撤单数据时发生错误"));
         }
     }
 
@@ -539,10 +539,18 @@ void InfoLoader::load_cstick(const std::string& csv_content, wangcai::OrderBook&
                 time_raw = std::stoi(time_part + ms_part);                                           // 拼接并转为int
             }
 
-            Event tick_event(datetime, sym, -1, -1, -1, -1, -1, -1, -1, -1, 
+            int trading_day = 0;
+            if (date.size() >= 10) {
+                std::string date_part = date.substr(0, 10);
+                date_part.erase(std::remove(date_part.begin(), date_part.end(), '-'), date_part.end());
+                trading_day = std::stoi(date_part);
+            }
+            int exchange = sym.ends_with(".SZ") ? 1 : (sym.ends_with(".SH") ? 0 : -1);
+
+            Event tick_event(datetime, sym, -1, -1, -1, -1, -1, -1, -1, -1,
                             -1, -1, -1, "", "", 
                             prevclose, open, high, low, close, volume, turnover, tradecount, bids, bid_sizes, asks, ask_sizes, avgbid, avgask, totalbsize, totalasize, iopv, "tick" 
-                            , -1, -1, -1, "", '\0', -1, time_raw);
+                            , exchange, trading_day, trading_day, "", '\0', -1, time_raw);
                             
             OrderBook::insertTick(tick_event);
         } catch (const std::exception& e) {

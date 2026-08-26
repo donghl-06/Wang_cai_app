@@ -308,7 +308,10 @@ py::class_<OrderCallback>(m, "OrderCallback")
     .def_readwrite("price", &OrderCallback::price)
     .def_readwrite("volume", &OrderCallback::volume)
     .def_readwrite("direction", &OrderCallback::direction)
-    .def_readwrite("orderlocalid", &OrderCallback::orderlocalid);
+    .def_readwrite("orderlocalid", &OrderCallback::orderlocalid)
+    .def_readwrite("queue_ahead_count", &OrderCallback::queue_ahead_count)
+    .def_readwrite("queue_ahead_volume", &OrderCallback::queue_ahead_volume)
+    .def_readwrite("prev_order_ids", &OrderCallback::prev_order_ids);
 
 
     // Structs
@@ -369,11 +372,10 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def_readonly("ask_volume", &MarketData::ask_volume)
         .def_readonly("last_price", &MarketData::last_price);
 
-    // Execution (read-only)
+    // Execution 的买卖订单号是纯内核 system-id，禁止跨 Python 边界暴露。
+    // 用户可见的订单关联只通过 OrderDetail/TradeDetail 的原始市场 ID 表达。
     py::class_<Execution>(m, "Execution")
         .def_property_readonly("execution_id", [](const Execution& e){ return e.execution_id; })
-        .def_property_readonly("buy_order_id", [](const Execution& e){ return e.buy_order_id; })
-        .def_property_readonly("sell_order_id", [](const Execution& e){ return e.sell_order_id; })
         .def_property_readonly("price", [](const Execution& e){ return e.price; })
         .def_property_readonly("volume", [](const Execution& e){ return e.volume; });
 
@@ -443,7 +445,9 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("getTotalPnL", &BacktestEngine::getTotalPnL)
         .def("setMarketDataCallback", &set_md_callback, py::arg("callback"),
              "Set a Python callable to receive MarketData during backtest")
-        .def("processEvent", &BacktestEngine::processEvent, py::arg("event"),
+        .def("processEvent", [](BacktestEngine& eng, const Event& ev) {
+                 eng.processEvent(ev);
+             }, py::arg("event"),
              "Process a single event (for manual event feeding)")
         .def("finish", &BacktestEngine::finish,
              "Finalize backtest and write results")
@@ -453,7 +457,17 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("isStrictActiveOrderMode", &BacktestEngine::isStrictActiveOrderMode,
              "检查是否开启了严格主动单模式")
         .def("hasDebt", &BacktestEngine::hasDebt,
-             "检查是否有未还清的欠债（被虚拟吃掉但未被真实市场消耗的历史订单）");
+             "检查是否有未还清的欠债（被虚拟吃掉但未被真实市场消耗的历史订单）")
+        // === 真实成交替代模式 ===
+        .def("setRealTradeMatchMode", &BacktestEngine::setRealTradeMatchMode, py::arg("enabled"),
+             "开启/关闭真实成交替代模式：主动单自动使用严格模式，被动单使用队列位置+真实成交池匹配")
+        .def("isRealTradeMatchMode", &BacktestEngine::isRealTradeMatchMode,
+             "检查是否开启了真实成交替代模式")
+        // === 用户下单队列回报 ===
+        .def("setQueueInfoEnabled", &BacktestEngine::setQueueInfoEnabled, py::arg("enabled"),
+             "开启/关闭下单回调中的队列信息字段")
+        .def("isQueueInfoEnabled", &BacktestEngine::isQueueInfoEnabled,
+             "检查是否开启了下单回调中的队列信息字段");
     
     // InfoLoader - 从CSV字符串加载数据
     py::class_<InfoLoader>(m, "InfoLoader")
@@ -528,9 +542,9 @@ py::class_<OrderCallback>(m, "OrderCallback")
     // MultiBacktestEngine - 从CSV字符串初始化
     auto mbacktest_cls = py::class_<MultiBacktestEngine>(m, "MultiBacktestEngine");
     mbacktest_cls
-        .def(py::init<const std::vector<SymbolData>&>(),
+        .def(py::init<std::vector<SymbolData>>(),
              py::arg("symbol_data_list"),
-             "从多个合约的CSV字符串初始化 (DataFrame.to_csv())")
+             "从多个合约的CSV字符串初始化，处理完每只后自动释放其CSV字符串")
         .def("registerStrategy",
              [](MultiBacktestEngine& eng, std::shared_ptr<Strategy> s) {
                  eng.registerStrategy(std::move(s));
@@ -548,6 +562,16 @@ py::class_<OrderCallback>(m, "OrderCallback")
              "检查是否开启了严格主动单模式")
         .def("hasDebt", &MultiBacktestEngine::hasDebt,
              "检查是否有未还清的欠债（被虚拟吃掉但未被真实市场消耗的历史订单）")
+        // === 真实成交替代模式 ===
+        .def("setRealTradeMatchMode", &MultiBacktestEngine::setRealTradeMatchMode, py::arg("enabled"),
+             "开启/关闭真实成交替代模式：主动单自动使用严格模式，被动单使用队列位置+真实成交池匹配")
+        .def("isRealTradeMatchMode", &MultiBacktestEngine::isRealTradeMatchMode,
+             "检查是否开启了真实成交替代模式")
+        // === 用户下单队列回报 ===
+        .def("setQueueInfoEnabled", &MultiBacktestEngine::setQueueInfoEnabled, py::arg("enabled"),
+             "开启/关闭下单回调中的队列信息字段")
+        .def("isQueueInfoEnabled", &MultiBacktestEngine::isQueueInfoEnabled,
+             "检查是否开启了下单回调中的队列信息字段")
         // === 用户自定义数据推送功能 ===
         .def("loadCustomEventTimes", &MultiBacktestEngine::loadCustomEventTimes, py::arg("datetimes"),
              "加载自定义事件时间戳列表（格式如 '2025-11-17 09:35:00'）")

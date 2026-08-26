@@ -77,14 +77,17 @@ def main():
         strict_active_order_mode=ENABLE_STRICT_MODE
     )
     
-    if success:
-        print(f"\n✅ 回测完成!")
-        # 打印测试结果
-        strategy.print_summary()
-    else:
+    if not success:
         print(f"\n❌ 回测失败")
         return 1
     
+    print(f"\n✅ 回测完成!")
+    # 打印测试结果
+    strategy.print_summary()
+    
+    if not strategy.passed():
+        print(f"\n❌ 核心断言未全部通过")
+        return 1
     return 0
 
 

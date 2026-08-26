@@ -104,7 +104,7 @@ struct OrderDetail {
  ///ChannelNo
  int ChannelNo;
  ///委托序号
- int OrderNo;
+ std::uint64_t OrderNo;
  ///委托价格（为原始值*10000）
  std::uint64_t Price;
  ///委托数量
@@ -143,9 +143,9 @@ struct TradeDetail {
  ///成交类别  '1':成交 '2': 撤销 'N':未知 （仅深交所有效，上交所始终未知）
  char ExecType;
  ///买方委托序号
- long long BuyNo;
+ std::uint64_t BuyNo;
  ///卖方委托序号
- long long SellNo;
+ std::uint64_t SellNo;
  ///SH: 内外盘标识('B':主动买; 'S':主动卖; 'N':未知) | SZ: 成交标识('4':撤; 'F':成交)
  char TradeBSFlag;
  ///业务编号
