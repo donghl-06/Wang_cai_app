@@ -113,6 +113,7 @@ run_backtest(
     real_trade_match_mode=False,        # 真实成交替代模式
     custom_data=None,                   # 自定义数据 DataFrame
     enable_custom_data=False,           # 是否启用自定义数据推送
+    realtime_tick_interval_ms=0,        # 实时合成 Tick 间隔（毫秒），0=关闭
 )
 ```
 
@@ -125,6 +126,7 @@ run_backtest(
 | `real_trade_match_mode` | bool | False | 开启后被动单只用真实成交量匹配，详见第 9 节 |
 | `custom_data` | DataFrame | None | 自定义数据，必须含 `datetime` 列，详见第 10 节 |
 | `enable_custom_data` | bool | False | 是否启用自定义数据推送 |
+| `realtime_tick_interval_ms` | int | 0 | 实时合成 Tick 推送间隔（毫秒），0=关闭，详见第 13 节 |
 
 ### data_dict 格式
 
@@ -154,6 +156,7 @@ data = {
 | `onOrderEvent(order)` | 收到逐笔委托 | 可用于观察市场委托流 |
 | `onTradeEvent(trade)` | 收到逐笔成交 | 可用于观察市场成交流 |
 | `onCustomEvent(data)` | 收到自定义数据推送 | 需开启 `enable_custom_data` |
+| `onRealTimeTickEvent(snapshot)` | 收到实时合成 Tick | 需开启 `realtime_tick_interval_ms`，详见第 13 节 |
 
 ### 回调函数（无返回值）
 
@@ -386,7 +389,48 @@ def onCustomEvent(self, data: dict):
 
 ---
 
-## 13. 完整示例
+## 13. 实时合成 Tick（onRealTimeTickEvent）
+
+真实 Tick 快照约 3 秒一条。开启本功能后，引擎按设定的毫秒间隔（如 10/50/100ms）
+从内部维护的订单簿合成十档快照，推送给策略的 `onRealTimeTickEvent` 回调，
+可以在两条真实 Tick 之间以更细的粒度观察盘口。
+
+```python
+class MyStrategy(Strategy):
+    def onRealTimeTickEvent(self, snapshot):
+        # snapshot 字段与 onTickEvent 的真实 Tick 完全一致
+        bid1, ask1 = snapshot.bids[0], snapshot.asks[0]
+        return []  # 同样可以返回下单/撤单事件
+
+run_backtest(data, strategy, realtime_tick_interval_ms=100)  # 每 100ms 最多推一次
+```
+
+字段口径：
+
+| 字段 | 来源 |
+|------|------|
+| 十档 `bids/asks/bid_sizes/ask_sizes` | 内部订单簿实时状态（只含历史订单，不含你的虚拟单） |
+| `last_price` / `UpperLimit` / `LowerLimit` | 订单簿 |
+| `TotalBidVol` / `TotalAskVol` | 订单簿全簿挂单总量 |
+| `Volume` / `Turnover` / `NumTrades` / `High` / `Low` | 引擎按重建的历史成交逐笔累计，单调不减 |
+| `Open` / `PreClose` / `Iopv` 等 | 承接最近一条真实 Tick |
+| `AuctionPrice` / `AuctionQty` | 集合竞价阶段填预测价/预测量 |
+
+注意事项：
+
+- 本功能默认关闭，必须显式传入 `realtime_tick_interval_ms` 才启用，间隔由你指定。
+- 回测时间只随市场事件前进：跨过间隔网格边界后的第一条市场事件处理完即推送，
+  无事件的空白区间（如午休）不补发，同一网格不重复推送。
+- 集合竞价阶段（09:15-09:25、14:57-15:00）盘口是未交叉的原始挂单分布，
+  买一可能高于卖一，与连续竞价的十档语义不同。
+- 累计字段是引擎重建口径，与官方 3 秒快照的数值出入来自时间戳口径不同
+  （官方 tick 有独立时间戳），属正常现象，引擎不做对齐；合成 tick 内部
+  各字段（盘口、最新价、累计量）彼此严格自洽。
+- 10ms 间隔全天推送量可达数十万次，回调内请只做轻量计算。
+
+---
+
+## 14. 完整示例
 
 参考 `user_example/` 目录：
 
@@ -400,7 +444,7 @@ user_example/
 
 ---
 
-## 14. 常见问题
+## 15. 常见问题
 
 **Q: 价格为什么是很大的整数？**
 A: 为了避免浮点误差，系统使用厘作为价格单位，1 元 = 10000 厘

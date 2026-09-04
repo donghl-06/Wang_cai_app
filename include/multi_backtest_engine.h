@@ -74,6 +74,11 @@ public:
     // === 用户下单队列回报开关 ===
     void setQueueInfoEnabled(bool enabled);
     bool isQueueInfoEnabled() const;
+
+    // === 实时合成 Tick（onRealTimeTickEvent）===
+    // interval_ms > 0 时启用，扇出到所有子引擎；0 = 关闭（默认）
+    void setRealTimeTickInterval(int interval_ms);
+    int getRealTimeTickInterval() const;
     
     // === 用户自定义数据推送功能 ===
     // 设置自定义事件时间戳列表（由 Python 层传入）
@@ -93,6 +98,7 @@ private:
     
     // === 用户自定义数据相关 ===
     bool queue_info_enabled_ = false;                    // 队列回报开关（默认关闭）
+    int realtime_tick_interval_ms_ = 0;                  // 实时合成 tick 间隔（毫秒，0=关闭）
     bool custom_data_enabled_ = false;                    // 功能开关，默认关闭
     std::vector<CustomEventTime> custom_events_;         // 自定义事件时间戳列表
     size_t custom_event_idx_ = 0;                        // 当前处理的自定义事件索引

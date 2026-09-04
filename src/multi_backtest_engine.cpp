@@ -339,6 +339,20 @@ bool MultiBacktestEngine::isQueueInfoEnabled() const {
     return queue_info_enabled_;
 }
 
+void MultiBacktestEngine::setRealTimeTickInterval(int interval_ms) {
+    realtime_tick_interval_ms_ = interval_ms > 0 ? interval_ms : 0;
+    for (auto& se : engines_) {
+        se.engine->setRealTimeTickInterval(realtime_tick_interval_ms_);
+    }
+}
+
+int MultiBacktestEngine::getRealTimeTickInterval() const {
+    if (!engines_.empty()) {
+        return engines_[0].engine->getRealTimeTickInterval();
+    }
+    return realtime_tick_interval_ms_;
+}
+
 // === 用户自定义数据推送功能 ===
 void MultiBacktestEngine::loadCustomEventTimes(const std::vector<std::string>& datetimes) {
     custom_events_.clear();

@@ -300,7 +300,8 @@ def run_backtest(data_dict,
                  custom_data: pd.DataFrame = None,
                  enable_custom_data: bool = False,
                  n_workers: int = None,
-                 release_input: bool = False) -> bool:
+                 release_input: bool = False,
+                 realtime_tick_interval_ms: int = 0) -> bool:
     """
     运行回测（支持单合约/多合约，单策略，股票/ETF）
     
@@ -332,6 +333,15 @@ def run_backtest(data_dict,
             开启后会**清空传入的 data_dict**，让 Python DataFrame 不与 C++ SymbolData
             同时占用内存（几十个标的可省数 GB）；代价是回测结束后 data_dict 为空，
             同一份数据无法再跑第二次。仅在数据用完即弃的大批量场景下开启。
+        realtime_tick_interval_ms: 实时合成 Tick 推送间隔（毫秒，默认 0=关闭）
+            需显式传入间隔（如 10/50/100）才开启。开启后，引擎每跨过一个间隔
+            网格边界，在当前市场事件处理完成后从内部订单簿合成一个十档 Snapshot，
+            触发策略的 onRealTimeTickEvent 回调。字段结构与真实 3 秒 Tick 一致：
+            - 十档/最新价/涨跌停/委托总量来自订单簿实时状态
+            - Volume/Turnover/NumTrades/High/Low 由引擎按重建的历史成交逐笔累计，
+              单调不减；与官方快照的数值出入来自时间戳口径不同（官方 tick 有
+              独立时间戳），属正常现象，不做对齐
+            注意：回测时间只随市场事件前进，无事件的空白区间（如午休）不补发。
     
     Returns:
         bool: 回测是否成功
@@ -394,6 +404,9 @@ def run_backtest(data_dict,
         if enable_custom_data:
             print(f"   ⚙️ 自定义数据推送: {'✅ 开启' if enable_custom_data else '❌ 关闭'}")
         
+        if realtime_tick_interval_ms and realtime_tick_interval_ms > 0:
+            print(f"   ⚙️ 实时合成Tick: ✅ 开启（间隔 {realtime_tick_interval_ms}ms，触发 onRealTimeTickEvent）")
+        
         # 创建 SymbolData 列表
         worker_label = f"（{n_workers} 进程）" if n_workers and n_workers > 1 else ""
         print(f"\n🔄 转换数据格式{worker_label}...")
@@ -434,6 +447,12 @@ def run_backtest(data_dict,
                 print(f"   ✅ 队列信息回调已启用，当前状态: {engine.isQueueInfoEnabled()}")
             else:
                 print(f"   ✅ 队列信息回调已启用")
+        
+        # 设置实时合成 Tick 间隔（可选）
+        if realtime_tick_interval_ms and realtime_tick_interval_ms > 0 \
+                and hasattr(engine, 'setRealTimeTickInterval'):
+            engine.setRealTimeTickInterval(int(realtime_tick_interval_ms))
+            print(f"   ✅ 实时合成Tick已启用，间隔 {engine.getRealTimeTickInterval()}ms")
         
         # 设置自定义数据推送功能（如果启用）
         if enable_custom_data:

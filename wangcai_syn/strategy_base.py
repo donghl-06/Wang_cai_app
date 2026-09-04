@@ -62,6 +62,7 @@ class InterfaceTestStrategy(Strategy):
         self.tick_events = []          # Tick事件记录 (onTickEvent)
         self.order_events = []         # 订单事件记录 (onOrderEvent)  
         self.execution_events = []     # 成交事件记录 (onTradeEvent)
+        self.realtime_tick_events = []  # 实时合成Tick记录 (onRealTimeTickEvent)
         
         # 当前持仓
         self.current_position = 0
@@ -219,6 +220,30 @@ class InterfaceTestStrategy(Strategy):
         
         return self._process_event('cstick', snapshot.datetime, snapshot.Instrument, ref_price)
     
+    def onRealTimeTickEvent(self, snapshot: Snapshot) -> List[UserEvent]:
+        """处理实时合成Tick推送（由内部订单簿合成，需 realtime_tick_interval_ms 开启）
+
+        字段与真实 3 秒 Tick 一致；默认只做轻量记录不下单。
+        未开启实时合成Tick时此方法不会被调用。
+        """
+        try:
+            self.realtime_tick_events.append({
+                'Instrument': snapshot.Instrument,
+                'Time': snapshot.Time,
+                'datetime': snapshot.datetime,
+                'Last': snapshot.last_price,
+                'BidPrice': list(snapshot.bids),
+                'BidVolume': list(snapshot.bid_sizes),
+                'AskPrice': list(snapshot.asks),
+                'AskVolume': list(snapshot.ask_sizes),
+                'Volume': snapshot.Volume,
+                'Turnover': snapshot.Turnover,
+                'NumTrades': snapshot.NumTrades,
+            })
+        except Exception as e:
+            print(f"⚠️ [实时Tick记录] 异常: {e}")
+        return []
+
     def _process_event(self, event_type: str, datetime: str, symbol: str, ref_price: int) -> List[UserEvent]:
         """统一的事件处理逻辑"""
         events = []

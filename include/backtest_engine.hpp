@@ -42,6 +42,13 @@ public:
     // 参数 index 对应 Python 层自定义数据列表的索引，实际数据由 Python 绑定层传入
     // 默认返回空事件，避免影响未实现该接口的策略
     virtual std::vector<UserEvent> onCustomEvent(size_t index) { return {}; }
+
+    // 接收由内部订单簿合成的高频实时 Tick（按 setRealTimeTickInterval 设定的间隔推送）
+    // 快照字段与真实 3 秒 Tick 一致：十档/最新价来自订单簿实时状态，
+    // Volume/Turnover/NumTrades/High/Low 由引擎按重建的历史成交逐笔累计。
+    // 与官方快照的数值差异来自时间戳口径不同（官方 tick 有独立时间戳），属正常现象。
+    // 默认返回空事件，避免影响未实现该接口的策略
+    virtual std::vector<UserEvent> onRealTimeTickEvent(const Snapshot& snapshot) { return {}; }
     
     // 新的统一交易回调接口（包含持仓管理）
     virtual void onTradeCallback(const TradeCallback& callback) = 0;
@@ -140,6 +147,13 @@ public:
     // === 用户下单队列回报开关 ===
     void setQueueInfoEnabled(bool enabled);
     bool isQueueInfoEnabled() const;
+
+    // === 实时合成 Tick（onRealTimeTickEvent）===
+    // interval_ms > 0 时启用：每跨过一个 interval_ms 网格边界，在当前市场事件
+    // 处理完成后用内部订单簿合成一个十档 Snapshot 推给策略；0 = 关闭（默认）。
+    // 时间只随市场事件前进，无事件的空白区间不补发。
+    void setRealTimeTickInterval(int interval_ms);
+    int getRealTimeTickInterval() const;
 
     // === 用户自定义事件支持 ===
     // 提交用户事件（用于外部驱动，例如自定义数据推送）
@@ -278,6 +292,26 @@ private:
     bool queue_info_enabled_ = false;
     // 判断真实成交中被消耗的一侧（买方被动 or 卖方被动）
     bool determineBuyPassive(const Event& ev) const;
+
+    // === 实时合成 Tick（onRealTimeTickEvent）===
+    int realtime_tick_interval_ms_ = 0;      // 推送间隔（毫秒），0=关闭
+    int64_t realtime_tick_last_bucket_ = -1; // 已推送的间隔网格编号（当日毫秒 / 间隔）
+    bool has_real_tick_ = false;             // 是否已收到过真实 tick（决定快照承接来源）
+    // 日累计器：随内部撮合的历史成交（HistoricalHistorical Execution）递增。
+    // 完全由引擎重建口径驱动，不与官方 tick 对齐 —— 官方快照有独立时间戳，
+    // 两者数值出入属于口径差异；本累计器与订单簿状态严格自洽且单调不减。
+    // 注意：不能挂在 CSV tra 事件上 —— load_traders 只把撤单记录插入事件流，
+    // 连续时段的成交记录进入 continuous_trades_ 后不再消费；引擎重建的成交
+    // 全部经由 OrderBook 的 exec 回调（连续竞价撮合 + 开/收盘集合竞价 settle）。
+    uint64_t rt_volume_ = 0;                 // 累计成交量（股）
+    double rt_turnover_ = 0.0;               // 累计成交额（元，双精度累加避免整除截断）
+    uint64_t rt_num_trades_ = 0;             // 累计成交笔数
+    uint64_t rt_high_ = 0;                   // 当日最高成交价（厘，0=尚无成交）
+    uint64_t rt_low_ = 0;                    // 当日最低成交价（厘，0=尚无成交）
+
+    void accumulateInternalTrade(Price price, Quantity volume); // 历史撮合成交递增累计器
+    Snapshot buildRealTimeSnapshot(const Event& ev) const; // 从订单簿合成十档快照
+    void maybeEmitRealTimeTick(const Event& ev);    // 跨过网格边界时推送
 };
 
 } // namespace wangcai

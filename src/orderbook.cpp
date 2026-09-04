@@ -219,6 +219,7 @@ void OrderBook::bucketAdd(int idx, bool is_buy, Quantity q)
     Bucket& b  = side[idx];                  // 获取目标桶
     bool was0 = (b.vol_sum == 0);            // 记录增量前是否为空桶
     b.vol_sum += q;                          // 增加桶内总量
+    (is_buy ? _total_bid_vol : _total_ask_vol) += q;  // 全簿总量同步增
     if (was0) attachBucket(idx, is_buy);     // 若原本为空，则挂入链表
 }
 
@@ -228,11 +229,31 @@ void OrderBook::bucketSub(int idx, bool is_buy, Quantity q)
     auto& side = is_buy ? _buy : _sell;      // 选择买方或卖方桶数组
     Bucket& b  = side[idx];                  // 获取目标桶
     b.vol_sum -= q;                          // 减少桶内总量
+    (is_buy ? _total_bid_vol : _total_ask_vol) -= q;  // 全簿总量同步减
     if (b.vol_sum == 0) detachBucket(idx, is_buy); // 若减至0，则从链表摘除
 }
 
 //查询最优价
 Price OrderBook::bestBid() const { return _best_bid == -1 ? 0 : idxToPx(_best_bid); }
 Price OrderBook::bestAsk() const { return _best_ask == -1 ? 0 : idxToPx(_best_ask); }
+
+// 沿非空桶链表填充前 10 档价量（合成实时快照用）
+// 与 bestBid()/bestAsk() 同源：买盘链表按价格降序、卖盘按升序，
+// 桶的 vol_sum 只含历史订单，用户虚拟单不进桶，因此结果是纯市场盘口。
+void OrderBook::fillDepth(std::array<std::uint64_t, 10>& px,
+                          std::array<Quantity, 10>& sz,
+                          bool is_buy) const
+{
+    px.fill(0);
+    sz.fill(0);
+    const auto& side = is_buy ? _buy : _sell;
+    int cur = is_buy ? _best_bid : _best_ask;
+    for (std::size_t lvl = 0; lvl < px.size() && cur != -1; ++lvl) {
+        const Bucket& b = side[cur];
+        px[lvl] = idxToPx(cur);
+        sz[lvl] = b.vol_sum;
+        cur = b.next;
+    }
+}
 
 } // namespace wangcai

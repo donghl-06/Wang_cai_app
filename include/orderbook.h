@@ -193,6 +193,22 @@ public:
     
     // 获取 tick 大小（ETF=10, 股票=100）
     Price getTick() const { return _tick; }
+
+    // 涨跌停 / 前收盘只读接口（合成实时快照用）
+    Price getUpperLimit() const { return _upper; }
+    Price getLowerLimit() const { return _lower; }
+    Price getPrevClose()  const { return _prev_close_price; }
+
+    // 全簿历史挂单总量（买/卖），bucketAdd/bucketSub 增量维护，O(1) 读取
+    Quantity getTotalBidVol() const { return _total_bid_vol; }
+    Quantity getTotalAskVol() const { return _total_ask_vol; }
+
+    // 沿非空桶链表填充前 10 档价量（只含历史订单，不含用户虚拟单）。
+    // 买盘从 _best_bid 沿 next 价格递减，卖盘从 _best_ask 沿 next 价格递增；
+    // 不足 10 档的位置清零。直接写入定长数组，避免高频调用时的堆分配。
+    void fillDepth(std::array<std::uint64_t, 10>& px,
+                   std::array<Quantity, 10>& sz,
+                   bool is_buy) const;
     
     // 兼容内部诊断：只有已注册的历史 system-id 才会转换；禁止用于输出边界。
     uint64_t getInputId(uint64_t system_id) const {
@@ -277,6 +293,8 @@ private:
     std::vector<Bucket> _buy;   // 买盘桶（价格低→高）
     std::vector<Bucket> _sell;  // 卖盘桶（价格低→高）
     int _best_bid{-1}, _best_ask{-1};  //最优价索引
+    Quantity _total_bid_vol{0};  // 全簿历史买单挂单总量（随 bucketAdd/bucketSub 维护）
+    Quantity _total_ask_vol{0};  // 全簿历史卖单挂单总量
     Price _prev_close_price{0};  // 前收盘价
     Price _last_trade_price{0};  // 最新成交价（全局）
     std::string _exchange;    // 交易所标识

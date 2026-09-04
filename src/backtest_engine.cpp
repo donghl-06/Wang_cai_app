@@ -143,7 +143,10 @@ void BacktestEngine::initialize() {
                     throw MarketIdentityError("历史成交中出现了用户 system-id");
                 }
                 // 历史订单成交：正常处理并记录到CSV
-                
+
+                // 实时合成 tick 的日累计器：历史成交在此唯一入口计入
+                accumulateInternalTrade(ex.price, ex.volume);
+
                 // 1. 推送成交事件给所有策略，收集新事件（暂存到pending队列）
                 // 将Execution转换为TradeDetail
                 TradeDetail trade = normalizeHistoricalExecution(ex, trade_datetime);
@@ -528,6 +531,124 @@ void BacktestEngine::setQueueInfoEnabled(bool enabled) {
 
 bool BacktestEngine::isQueueInfoEnabled() const {
     return queue_info_enabled_;
+}
+
+void BacktestEngine::setRealTimeTickInterval(int interval_ms) {
+    realtime_tick_interval_ms_ = interval_ms > 0 ? interval_ms : 0;
+}
+
+int BacktestEngine::getRealTimeTickInterval() const {
+    return realtime_tick_interval_ms_;
+}
+
+namespace {
+// "YYYY-MM-DD HH:MM:SS.mmm" -> 当日毫秒数；格式不足时返回 -1
+inline int64_t msOfDayFromDatetime(const std::string& dt) {
+    if (dt.size() < 23) return -1;
+    auto d2 = [&dt](std::size_t pos) {
+        return (dt[pos] - '0') * 10 + (dt[pos + 1] - '0');
+    };
+    const int64_t sec = static_cast<int64_t>(d2(11)) * 3600 +
+                        static_cast<int64_t>(d2(14)) * 60 +
+                        static_cast<int64_t>(d2(17));
+    const int64_t ms = (dt[20] - '0') * 100 + (dt[21] - '0') * 10 + (dt[22] - '0');
+    return sec * 1000 + ms;
+}
+
+// 当日毫秒数 -> HHMMSSsss 整数（与真实 tick 的 Snapshot.Time 同格式）
+inline int timeRawFromMsOfDay(int64_t ms_of_day) {
+    const int h = static_cast<int>(ms_of_day / 3600000);
+    const int m = static_cast<int>((ms_of_day / 60000) % 60);
+    const int s = static_cast<int>((ms_of_day / 1000) % 60);
+    const int ms = static_cast<int>(ms_of_day % 1000);
+    return h * 10000000 + m * 100000 + s * 1000 + ms;
+}
+
+// 真实 tick 从 09:15:00 起才有效（insertTick 同款过滤），合成 tick 保持一致
+constexpr int64_t kRealTimeTickStartMs = (9 * 3600 + 15 * 60) * 1000LL;
+} // namespace
+
+// 历史撮合成交递增日累计器（exec 回调的 HistoricalHistorical 分支调用）。
+// 覆盖连续竞价内部撮合与开/收盘集合竞价 settle；用户虚拟成交不计入，
+// 因为官方行情的累计量只包含真实市场成交。
+void BacktestEngine::accumulateInternalTrade(Price price, Quantity volume) {
+    if (price <= 0 || volume <= 0) return;
+    rt_volume_ += volume;
+    rt_turnover_ += static_cast<double>(price) / 10000.0 * static_cast<double>(volume);
+    rt_num_trades_ += 1;
+    if (rt_high_ == 0 || price > rt_high_) rt_high_ = price;
+    if (rt_low_ == 0 || price < rt_low_) rt_low_ = price;
+}
+
+// 从内部订单簿合成十档快照，字段结构与真实 tick 的 Snapshot 一致：
+// - 十档/最新价/涨跌停/委托总量：订单簿实时状态
+// - Volume/Turnover/NumTrades/High/Low：日累计器（引擎重建口径，不与官方对齐）
+// - Open/PreClose/Close/Iopv 等无法从订单簿推导的字段：承接上一个真实 tick
+// - 集合竞价阶段额外填 AuctionPrice/AuctionQty（预测价/预测量）
+Snapshot BacktestEngine::buildRealTimeSnapshot(const Event& ev) const {
+    Snapshot s{};  // 值初始化兜底：首个真实 tick 之前 DataManager 的快照字段未定义
+    if (has_real_tick_) {
+        s = data_manager_->getSnapshot();
+    }
+
+    s.Exchange = ev.exchange != -1 ? ev.exchange : (ev.isSZ() ? 1 : 0);
+    s.Instrument = symbol_;
+    if (ev.trading_day > 0) s.TradingDay = ev.trading_day;
+    if (ev.action_day > 0) s.ActionDay = ev.action_day;
+    else if (ev.trading_day > 0) s.ActionDay = ev.trading_day;
+
+    const int64_t ms_of_day = msOfDayFromDatetime(ev.datetime);
+    s.Time = ms_of_day >= 0 ? timeRawFromMsOfDay(ms_of_day)
+                            : (ev.time_raw != -1 ? ev.time_raw : 0);
+    s.datetime = ev.datetime;
+
+    // 盘口：只含历史订单的纯市场十档
+    orderbook_->fillDepth(s.bids, s.bid_sizes, /*is_buy=*/true);
+    orderbook_->fillDepth(s.asks, s.ask_sizes, /*is_buy=*/false);
+    s.last_price = orderbook_->getLastTradePrice();
+    s.UpperLimit = orderbook_->getUpperLimit();
+    s.LowerLimit = orderbook_->getLowerLimit();
+    if (orderbook_->getPrevClose() > 0) s.PreClose = orderbook_->getPrevClose();
+    s.TotalBidVol = orderbook_->getTotalBidVol();
+    s.TotalAskVol = orderbook_->getTotalAskVol();
+
+    // 累计字段
+    s.Volume = rt_volume_;
+    s.Turnover = static_cast<uint64_t>(rt_turnover_);
+    s.NumTrades = rt_num_trades_;
+    if (rt_high_ > 0) s.High = rt_high_;
+    if (rt_low_ > 0) s.Low = rt_low_;
+
+    // 集合竞价阶段盘口未交叉，十档语义与连续竞价不同；补充预测价/量供策略参考
+    if (!continuous_mode_) {
+        s.AuctionPrice = call_engine_->getPredictPrice();
+        s.AuctionQty = call_engine_->getPredictVolume();
+    } else if (closing_mode_) {
+        s.AuctionPrice = close_engine_->getPredictPrice();
+        s.AuctionQty = close_engine_->getPredictVolume();
+    }
+    return s;
+}
+
+// 跨过间隔网格边界时推送合成 tick。
+// 网格对齐（当日毫秒 / 间隔）保证推送落点确定、可复现；
+// 同一网格内的后续事件不再推送，即"每个市场事件时间戳最多推一次"。
+// 在当前事件撮合完成后调用，快照反映事件处理后的盘口。
+void BacktestEngine::maybeEmitRealTimeTick(const Event& ev) {
+    if (realtime_tick_interval_ms_ <= 0 || strategies_.empty()) return;
+    const int64_t now_ms = msOfDayFromDatetime(ev.datetime);
+    if (now_ms < kRealTimeTickStartMs) return;
+    const int64_t bucket = now_ms / realtime_tick_interval_ms_;
+    if (bucket <= realtime_tick_last_bucket_) return;
+    realtime_tick_last_bucket_ = bucket;
+
+    const Snapshot snapshot = buildRealTimeSnapshot(ev);
+    for (auto& strategy : strategies_) {
+        auto user_events = strategy->onRealTimeTickEvent(snapshot);
+        for (const auto& ue : user_events) {
+            pending_trade_events_.push_back(ue);
+        }
+    }
 }
 
 // 判断真实成交中买方是否为被动方
@@ -1166,6 +1287,7 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
         } else {
             // tick 推送
             data_manager_->updateSnapshot(ev);
+            has_real_tick_ = true;
             auto snapshot = data_manager_->getSnapshot();
             for (auto& strategy : strategies_) {
                 auto user_events = strategy->onTickEvent(snapshot);
@@ -1236,6 +1358,7 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                 }
             } else {
                 data_manager_->updateSnapshot(ev);
+                has_real_tick_ = true;
                 auto snapshot = data_manager_->getSnapshot();
                 for (auto& strategy : strategies_) {
                     auto user_events = strategy->onTickEvent(snapshot);
@@ -1262,6 +1385,7 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                 close_engine_->cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
             } else {
                 data_manager_->updateSnapshot(ev);
+                has_real_tick_ = true;
                 auto snapshot = data_manager_->getSnapshot();
                 for (auto& strategy : strategies_) {
                     auto user_events = strategy->onTickEvent(snapshot);
@@ -1272,6 +1396,10 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             }
         }
     }
+
+    // 实时合成 tick：当前事件撮合完成后，若跨过间隔网格边界则推送
+    // 返回的用户事件进 pending_trade_events_，与 onTickEvent 走同一条 dispatch 链路
+    maybeEmitRealTimeTick(ev);
 
     // 统一分发：按 symbol 过滤，跨标的订单暂存到 cross_symbol_events_
     // 由上层 MultiBacktestEngine 在 Taskflow join 之后串行路由到正确的子引擎

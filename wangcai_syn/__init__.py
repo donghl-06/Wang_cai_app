@@ -74,7 +74,7 @@ from wangcai_syn.utils import (
 from wangcai_syn.strategy_base import InterfaceTestStrategy
 
 # 版本信息
-__version__ = "1.3.7"
+__version__ = "1.4.0"
 __author__ = "aitopia"
 
 # 导出所有公共接口
