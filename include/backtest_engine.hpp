@@ -49,6 +49,15 @@ public:
     // 与官方快照的数值差异来自时间戳口径不同（官方 tick 有独立时间戳），属正常现象。
     // 默认返回空事件，避免影响未实现该接口的策略
     virtual std::vector<UserEvent> onRealTimeTickEvent(const Snapshot& snapshot) { return {}; }
+
+    // 接收事件驱动快照（setEventSnapshotEnabled 开启后，每个市场事件
+    // ——逐笔委托/逐笔成交（含撤单）——的全部处理（撮合 + 策略响应产生的
+    // 下单/撤单）结束后，从内部订单簿合成一个十档 Snapshot 推送一次）
+    // 快照口径与 onRealTimeTickEvent 一致：十档只含历史订单（公开订单簿，
+    // 不含策略虚拟单挂单）；Volume 等累计器为引擎重建口径。
+    // 推送次数 == 市场事件数（ord/tra），tick 事件不触发。
+    // 默认返回空事件，避免影响未实现该接口的策略
+    virtual std::vector<UserEvent> onEventSnapshot(const Snapshot& snapshot) { return {};}
     
     // 新的统一交易回调接口（包含持仓管理）
     virtual void onTradeCallback(const TradeCallback& callback) = 0;
@@ -154,6 +163,13 @@ public:
     // 时间只随市场事件前进，无事件的空白区间不补发。
     void setRealTimeTickInterval(int interval_ms);
     int getRealTimeTickInterval() const;
+
+    // === 事件驱动快照（onEventSnapshot）===
+    // 开启后每个市场事件（ord/tra）的全部处理（含策略响应的下单/撤单）结束后，
+    // 从内部订单簿合成一个十档 Snapshot 推给策略一次；默认关闭。
+    // 与 setRealTimeTickInterval 的网格模式相互独立，可并存。
+    void setEventSnapshotEnabled(bool enabled);
+    bool isEventSnapshotEnabled() const;
 
     // === 用户自定义事件支持 ===
     // 提交用户事件（用于外部驱动，例如自定义数据推送）
@@ -297,6 +313,7 @@ private:
     int realtime_tick_interval_ms_ = 0;      // 推送间隔（毫秒），0=关闭
     int64_t realtime_tick_last_bucket_ = -1; // 已推送的间隔网格编号（当日毫秒 / 间隔）
     bool has_real_tick_ = false;             // 是否已收到过真实 tick（决定快照承接来源）
+    bool event_snapshot_enabled_ = false;    // 事件驱动快照开关（每个 ord/tra 事件推一次）
     // 日累计器：随内部撮合的历史成交（HistoricalHistorical Execution）递增。
     // 完全由引擎重建口径驱动，不与官方 tick 对齐 —— 官方快照有独立时间戳，
     // 两者数值出入属于口径差异；本累计器与订单簿状态严格自洽且单调不减。

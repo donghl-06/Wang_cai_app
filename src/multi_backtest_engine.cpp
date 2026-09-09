@@ -353,6 +353,20 @@ int MultiBacktestEngine::getRealTimeTickInterval() const {
     return realtime_tick_interval_ms_;
 }
 
+void MultiBacktestEngine::setEventSnapshotEnabled(bool enabled) {
+    event_snapshot_enabled_ = enabled;
+    for (auto& se : engines_) {
+        se.engine->setEventSnapshotEnabled(enabled);
+    }
+}
+
+bool MultiBacktestEngine::isEventSnapshotEnabled() const {
+    if (!engines_.empty()) {
+        return engines_[0].engine->isEventSnapshotEnabled();
+    }
+    return event_snapshot_enabled_;
+}
+
 // === 用户自定义数据推送功能 ===
 void MultiBacktestEngine::loadCustomEventTimes(const std::vector<std::string>& datetimes) {
     custom_events_.clear();

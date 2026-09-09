@@ -315,7 +315,8 @@ def run_backtest(data_dict,
                  enable_custom_data: bool = False,
                  n_workers: int = None,
                  release_input: bool = False,
-                 realtime_tick_interval_ms: int = 0) -> bool:
+                 realtime_tick_interval_ms: int = 0,
+                 event_snapshot_enabled: bool = False) -> bool:
     """
     运行回测（支持单合约/多合约，单策略，股票/ETF）
     
@@ -356,6 +357,12 @@ def run_backtest(data_dict,
               单调不减；与官方快照的数值出入来自时间戳口径不同（官方 tick 有
               独立时间戳），属正常现象，不做对齐
             注意：回测时间只随市场事件前进，无事件的空白区间（如午休）不补发。
+        event_snapshot_enabled: 事件驱动快照开关（默认 False）
+            开启后每个市场事件（逐笔委托/逐笔成交含撤单）的全部处理
+            ——撮合 + 策略响应产生的下单/撤单——结束后，从内部订单簿合成
+            一个十档 Snapshot 推送策略一次（触发 onEventSnapshot 回调），
+            推送次数 == 市场事件数；tick 事件不触发。快照口径与
+            onRealTimeTickEvent 一致（十档只含历史订单/公开订单簿）。
     
     Returns:
         bool: 回测是否成功
@@ -420,6 +427,9 @@ def run_backtest(data_dict,
         
         if realtime_tick_interval_ms and realtime_tick_interval_ms > 0:
             print(f"   ⚙️ 实时合成Tick: ✅ 开启（间隔 {realtime_tick_interval_ms}ms，触发 onRealTimeTickEvent）")
+
+        if event_snapshot_enabled:
+            print(f"   ⚙️ 事件驱动快照: ✅ 开启（每个市场事件推送一次，触发 onEventSnapshot）")
         
         # 创建 SymbolData 列表
         worker_label = f"（{n_workers} 进程）" if n_workers and n_workers > 1 else ""
@@ -467,6 +477,11 @@ def run_backtest(data_dict,
                 and hasattr(engine, 'setRealTimeTickInterval'):
             engine.setRealTimeTickInterval(int(realtime_tick_interval_ms))
             print(f"   ✅ 实时合成Tick已启用，间隔 {engine.getRealTimeTickInterval()}ms")
+
+        # 设置事件驱动快照（可选）
+        if event_snapshot_enabled and hasattr(engine, 'setEventSnapshotEnabled'):
+            engine.setEventSnapshotEnabled(True)
+            print(f"   ✅ 事件驱动快照已启用")
         
         # 设置自定义数据推送功能（如果启用）
         if enable_custom_data:

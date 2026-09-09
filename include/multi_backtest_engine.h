@@ -79,6 +79,11 @@ public:
     // interval_ms > 0 时启用，扇出到所有子引擎；0 = 关闭（默认）
     void setRealTimeTickInterval(int interval_ms);
     int getRealTimeTickInterval() const;
+
+    // === 事件驱动快照（onEventSnapshot）===
+    // 开启后每个市场事件（ord/tra）处理完成（含策略响应）后推送一次，扇出到所有子引擎
+    void setEventSnapshotEnabled(bool enabled);
+    bool isEventSnapshotEnabled() const;
     
     // === 用户自定义数据推送功能 ===
     // 设置自定义事件时间戳列表（由 Python 层传入）
@@ -99,6 +104,7 @@ private:
     // === 用户自定义数据相关 ===
     bool queue_info_enabled_ = false;                    // 队列回报开关（默认关闭）
     int realtime_tick_interval_ms_ = 0;                  // 实时合成 tick 间隔（毫秒，0=关闭）
+    bool event_snapshot_enabled_ = false;                // 事件驱动快照开关（默认关闭）
     bool custom_data_enabled_ = false;                    // 功能开关，默认关闭
     std::vector<CustomEventTime> custom_events_;         // 自定义事件时间戳列表
     size_t custom_event_idx_ = 0;                        // 当前处理的自定义事件索引

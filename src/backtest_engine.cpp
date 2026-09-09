@@ -541,6 +541,14 @@ int BacktestEngine::getRealTimeTickInterval() const {
     return realtime_tick_interval_ms_;
 }
 
+void BacktestEngine::setEventSnapshotEnabled(bool enabled) {
+    event_snapshot_enabled_ = enabled;
+}
+
+bool BacktestEngine::isEventSnapshotEnabled() const {
+    return event_snapshot_enabled_;
+}
+
 namespace {
 // "YYYY-MM-DD HH:MM:SS.mmm" -> 当日毫秒数；格式不足时返回 -1
 inline int64_t msOfDayFromDatetime(const std::string& dt) {
@@ -1423,6 +1431,20 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
     for (const auto& ue : strategy_events)       dispatch(ue);
     for (const auto& ue : pending_trade_events_) dispatch(ue);
     pending_trade_events_.clear();
+
+    // 事件驱动快照：每个市场事件（ord/tra）的全部处理（含上面 dispatch 的
+    // 策略响应下单/撤单）结束后，从当前订单簿合成快照推送一次。
+    // 策略在回调里返回的新事件立即 dispatch（撮合发生在本事件内，
+    // 其对盘口的影响反映在下一次事件快照中）。tick 事件不触发
+    // （真实 tick 已有 onTickEvent 官方口径推送）。
+    if (event_snapshot_enabled_ && (ev.source == "ord" || ev.source == "tra")
+        && !strategies_.empty()) {
+        const Snapshot snapshot = buildRealTimeSnapshot(ev);
+        for (auto& strategy : strategies_) {
+            auto user_events = strategy->onEventSnapshot(snapshot);
+            for (const auto& ue : user_events) dispatch(ue);
+        }
+    }
 }
 
 /*

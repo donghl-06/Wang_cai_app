@@ -33,6 +33,9 @@ private:
     // onRealTimeTickEvent 覆盖探测缓存：-1=未知, 0=Python 子类未覆盖, 1=已覆盖
     // 实时 tick 频率可达每标的每日数十万次，未覆盖时避免反复拿 GIL
     mutable std::atomic<int> rt_tick_override_state_{-1};
+
+    // onEventSnapshot 覆盖探测缓存（同上，事件快照频率与市场事件同量级）
+    mutable std::atomic<int> event_snap_override_state_{-1};
     
     // RAII辅助类：自动管理处理计数器
     class ProcessingGuard {
@@ -109,6 +112,28 @@ public:
             return ret.cast<std::vector<UserEvent>>();
         } catch (const py::error_already_set& e) {
             py::print("[Strategy.onRealTimeTickEvent] exception:", e.what());
+        }
+        return {};
+    }
+
+    // 事件驱动快照回调：探测缓存模式同 onRealTimeTickEvent
+    std::vector<UserEvent> onEventSnapshot(const Snapshot& snapshot) override {
+        if (event_snap_override_state_.load(std::memory_order_relaxed) == 0) {
+            return {};
+        }
+        py::gil_scoped_acquire gil;
+        py::function f = py::get_override(this, "onEventSnapshot");
+        if (!f) {
+            event_snap_override_state_.store(0, std::memory_order_relaxed);
+            return {};
+        }
+        event_snap_override_state_.store(1, std::memory_order_relaxed);
+        ProcessingGuard guard(processing_count_);
+        try {
+            py::object ret = f(snapshot);
+            return ret.cast<std::vector<UserEvent>>();
+        } catch (const py::error_already_set& e) {
+            py::print("[Strategy.onEventSnapshot] exception:", e.what());
         }
         return {};
     }
@@ -438,6 +463,9 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("onTickEvent", &Strategy::onTickEvent)
         .def("onRealTimeTickEvent", &Strategy::onRealTimeTickEvent,
              "接收由内部订单簿合成的高频实时 Tick（需 setRealTimeTickInterval 开启）")
+        .def("onEventSnapshot", &Strategy::onEventSnapshot,
+             "接收事件驱动快照（需 setEventSnapshotEnabled 开启）：每个市场事件（ord/tra）"
+             "全部处理（含策略响应下单/撤单）结束后从内部订单簿合成推送一次")
         .def("onCustomEvent", &Strategy::onCustomEvent,
              "接收用户自定义事件（参数为 index，PyStrategy 会自动转换为 dict）")
         .def("onOrderFilled", &Strategy::onOrderFilled)
@@ -501,7 +529,12 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("setRealTimeTickInterval", &BacktestEngine::setRealTimeTickInterval, py::arg("interval_ms"),
              "设置实时合成 Tick 推送间隔（毫秒），0=关闭；开启后按间隔触发 onRealTimeTickEvent")
         .def("getRealTimeTickInterval", &BacktestEngine::getRealTimeTickInterval,
-             "获取实时合成 Tick 推送间隔（毫秒，0=关闭）");
+             "获取实时合成 Tick 推送间隔（毫秒，0=关闭）")
+        // === 事件驱动快照 ===
+        .def("setEventSnapshotEnabled", &BacktestEngine::setEventSnapshotEnabled, py::arg("enabled"),
+             "开启/关闭事件驱动快照：开启后每个市场事件（ord/tra）处理完成后触发 onEventSnapshot")
+        .def("isEventSnapshotEnabled", &BacktestEngine::isEventSnapshotEnabled,
+             "检查事件驱动快照是否开启");
     
     // InfoLoader - 从CSV字符串加载数据
     py::class_<InfoLoader>(m, "InfoLoader")
@@ -611,6 +644,11 @@ py::class_<OrderCallback>(m, "OrderCallback")
              "设置实时合成 Tick 推送间隔（毫秒），0=关闭；扇出到所有子引擎")
         .def("getRealTimeTickInterval", &MultiBacktestEngine::getRealTimeTickInterval,
              "获取实时合成 Tick 推送间隔（毫秒，0=关闭）")
+        // === 事件驱动快照 ===
+        .def("setEventSnapshotEnabled", &MultiBacktestEngine::setEventSnapshotEnabled, py::arg("enabled"),
+             "开启/关闭事件驱动快照，扇出到所有子引擎；开启后每个市场事件处理完成后触发 onEventSnapshot")
+        .def("isEventSnapshotEnabled", &MultiBacktestEngine::isEventSnapshotEnabled,
+             "检查事件驱动快照是否开启")
         // === 用户自定义数据推送功能 ===
         .def("loadCustomEventTimes", &MultiBacktestEngine::loadCustomEventTimes, py::arg("datetimes"),
              "加载自定义事件时间戳列表（格式如 '2025-11-17 09:35:00'）")
