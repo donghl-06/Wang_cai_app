@@ -53,3 +53,6 @@ user_example/output/
 
 # 其他
 *.bak
+
+# 设计/讨论/修复记录文档（本地留存，不入库）
+docs/

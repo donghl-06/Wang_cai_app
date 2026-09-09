@@ -61,10 +61,24 @@ def revert_sh_order(order_df: pd.DataFrame, trade_df: pd.DataFrame, symbol: str)
     time_text = trade_df['time'].astype(str)
 
     # 只用真实成交还原，覆盖连续竞价和收盘集合竞价 (09:30 - 15:00)。
-    df_cstrad_filtered = trade_df[
-        (time_text >= '0 days 09:30:00') &
-        (time_text <= '0 days 15:00:00.999999') &
-        (trade_df['exectype'] == '1')
+    # D0诊断修复：收盘集合竞价是单一价格撮合、无主动方概念，成交双方通常已揭示在 csord；
+    # 无差别还原会与原始委托聚合导致量虚增（600050 收盘段偏差根因）。
+    # 因此 14:57 后的收盘成交只还原 csord 中缺失的一方（数据覆盖不全的标的，如 ETF）。
+    time_text = time_text.reset_index(drop=True)
+    trade_reset = trade_df.reset_index(drop=True)
+    close_mask = (time_text >= '0 days 14:57:00').values
+    orig_ids = set(order_df['orderid'].values.astype('int64')) if len(order_df) else set()
+    bid_ids = pd.to_numeric(trade_reset['bidorderid'], errors='coerce').fillna(0).astype('int64')
+    ask_ids = pd.to_numeric(trade_reset['askorderid'], errors='coerce').fillna(0).astype('int64')
+    active_is_new = (bid_ids > ask_ids).values
+    active_ids = pd.Series(np.where(active_is_new, bid_ids, ask_ids))
+    close_skip = close_mask & active_ids.isin(orig_ids).values
+    keep = (~close_mask) | (~close_skip)
+    df_cstrad_filtered = trade_reset[
+        (time_text.values >= '0 days 09:30:00') &
+        (time_text.values <= '0 days 15:00:00.999999') &
+        (trade_reset['exectype'] == '1') &
+        keep
     ]
     
     # bidorderid > askorderid：买方编号较新，需还原主动买单 bidorderid。
