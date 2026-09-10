@@ -49,7 +49,10 @@ _skbuild/
 new_log/
 data/
 adata_logs/
+logs/
+recoverSH/
 user_example/output/
+user_example/*.csv
 
 # 其他
 *.bak
