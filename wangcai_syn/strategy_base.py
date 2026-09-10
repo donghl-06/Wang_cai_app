@@ -60,6 +60,7 @@ class InterfaceTestStrategy(Strategy):
         
         # 3个原始行情数据记录文件
         self.tick_events = []          # Tick事件记录 (onTickEvent)
+        self.event_snapshots = []      # 事件驱动快照记录 (onEventSnapshot)
         self.order_events = []         # 订单事件记录 (onOrderEvent)  
         self.execution_events = []     # 成交事件记录 (onTradeEvent)
         self.realtime_tick_events = []  # 实时合成Tick记录 (onRealTimeTickEvent)
@@ -242,6 +243,32 @@ class InterfaceTestStrategy(Strategy):
             })
         except Exception as e:
             print(f"⚠️ [实时Tick记录] 异常: {e}")
+        return []
+
+    def onEventSnapshot(self, snapshot: Snapshot) -> List[UserEvent]:
+        """处理事件驱动快照推送（需 event_snapshot_enabled 开启）
+
+        每个市场事件（ord/tra，含撤单）的全部处理——撮合+策略响应产生的
+        下单/撤单——结束后推送一次，推送次数 == 市场事件数；tick 不触发。
+        快照口径与 onRealTimeTickEvent 一致（十档只含历史订单/公开订单簿）。
+        默认只做轻量记录不下单；返回的下单事件会在本事件内立即执行。
+        未开启事件快照时此方法不会被调用。
+        """
+        try:
+            self.event_snapshots.append({
+                'Instrument': snapshot.Instrument,
+                'datetime': snapshot.datetime,
+                'Last': snapshot.last_price,
+                'BidPrice': list(snapshot.bids),
+                'BidVolume': list(snapshot.bid_sizes),
+                'AskPrice': list(snapshot.asks),
+                'AskVolume': list(snapshot.ask_sizes),
+                'Volume': snapshot.Volume,
+                'Turnover': snapshot.Turnover,
+                'NumTrades': snapshot.NumTrades,
+            })
+        except Exception as e:
+            print(f"⚠️ [事件快照记录] 异常: {e}")
         return []
 
     def _process_event(self, event_type: str, datetime: str, symbol: str, ref_price: int) -> List[UserEvent]:
