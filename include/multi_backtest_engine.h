@@ -84,6 +84,10 @@ public:
     // 开启后每个市场事件（ord/tra）处理完成（含策略响应）后推送一次，扇出到所有子引擎
     void setEventSnapshotEnabled(bool enabled);
     bool isEventSnapshotEnabled() const;
+
+    // === 价格笼子（策略单数值判定开关；规则按数据日期×板块自动判定） ===
+    void setUserCageEnabled(bool enabled);
+    bool isUserCageEnabled() const;
     
     // === 用户自定义数据推送功能 ===
     // 设置自定义事件时间戳列表（由 Python 层传入）

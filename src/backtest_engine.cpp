@@ -42,6 +42,28 @@ void BacktestEngine::initialize() {
     actual_open_ = loader.loadOpenPrice(cstick_csv_, is_etf_);
     const bool is_sz = symbol_.ends_with(".SZ");
 
+    // 1.5 价格笼子规则判定：从 cstick 首个数据行解析交易日，按 板块×日期 查规则矩阵
+    {
+        // cstick 列序：date,time,sym,prevclose,...（首个数据行的第一个字段）
+        size_t pos = cstick_csv_.find('\n');
+        std::string first_data = cstick_csv_.substr(pos + 1, cstick_csv_.find('\n', pos + 1) - pos - 1);
+        const size_t comma = first_data.find(',');
+        trading_date_ = (comma != std::string::npos) ? first_data.substr(0, comma) : "";
+        cage_rule_ = priceCageRuleFor(boardOf(symbol_), trading_date_);
+        cage_inference_active_ = needsHistoricalCageInference(symbol_, trading_date_);
+        if (cage_rule_.enabled) {
+            const char* action = cage_rule_.action == CageAction::Reject ? "废单" : "暂存";
+            std::cout << "[价格笼子] " << symbol_ << " " << trading_date_
+                      << " 规则: ±" << cage_rule_.pct_num / 100.0 << "%"
+                      << (cage_rule_.min_abs > 0 ? " 与 0.1 元孰高" : "")
+                      << "，超范围=" << action << std::endl;
+            if (cage_inference_active_) {
+                std::cout << "[价格笼子] 深市创业板暂存窗口：历史单启用消息流反推状态机"
+                          << "（真实成交事件进流用于判定）" << std::endl;
+            }
+        }
+    }
+
     if (prev_close_ == 0) {
         // 如果前收盘价读取失败，抛出异常
         throw std::runtime_error("无法读取前收盘价");
@@ -356,6 +378,33 @@ void BacktestEngine::processUserOrder(const UserOrder& user_order) {
         notifyStrategyOrderCallback(user_order.strategy_id, order_callback);
 
         if (continuous_mode_ && !closing_mode_) {
+            // 连续竞价阶段：策略限价单依次通过 涨跌停 → 价格笼子 校验
+            bool rejected = false;
+            if (order->order_type == OrderType::Limit &&
+                (order->price > orderbook_->getUpperLimit() ||
+                 order->price < orderbook_->getLowerLimit())) {
+                // 涨跌停前置校验（所有时代、所有板块；当前引擎此前缺失此校验）
+                con_engine_->rejectUserOrder(order, "涨跌停校验：申报价格超出涨跌停限制，废单");
+                rejected = true;
+            } else if (user_cage_enabled_ && cage_rule_.enabled
+                       && order->order_type == OrderType::Limit) {
+                // 价格笼子数值判定（策略单没有后续消息可反推，按规则数值模拟）
+                const auto bounds = ConAuctionEngine::userCageBounds(
+                    order->direction == Direction::Buy, cage_rule_, *orderbook_);
+                if (bounds.lo > 0 &&
+                    (order->price > bounds.hi || order->price < bounds.lo)) {
+                    if (cage_rule_.action == CageAction::Reject) {
+                        con_engine_->rejectUserOrder(order,
+                            "价格笼子：申报价格超出有效申报价格范围，废单");
+                        rejected = true;
+                    } else {  // CageAction::Dormant（创业板暂存窗口）
+                        con_engine_->suspendUserOrder(order);
+                        return;  // 入笼：不进簿、不可见、可撤单、待出笼
+                    }
+                }
+            }
+            if (rejected) return;
+
             // 连续竞价：原逻辑 —— 尝试立即成交，失败则送入撮合引擎
             if (!tryFillImmediately(order)) {
                 con_engine_->accept(order);
@@ -549,6 +598,14 @@ bool BacktestEngine::isEventSnapshotEnabled() const {
     return event_snapshot_enabled_;
 }
 
+size_t BacktestEngine::getSuspendedHistoricalCount() const {
+    return con_engine_ ? con_engine_->getSuspendedHistoricalCount() : 0;
+}
+
+size_t BacktestEngine::getUserCageCount() const {
+    return con_engine_ ? con_engine_->getUserCageCount() : 0;
+}
+
 namespace {
 // "YYYY-MM-DD HH:MM:SS.mmm" -> 当日毫秒数；格式不足时返回 -1
 inline int64_t msOfDayFromDatetime(const std::string& dt) {
@@ -659,8 +716,9 @@ void BacktestEngine::maybeEmitRealTimeTick(const Event& ev) {
     }
 }
 
-// 判断真实成交中买方是否为被动方
-// 返回 true = 买方被动（卖方主动），false = 卖方被动（买方主动）
+// 穿价放行改走自主撮合后，回放机制已移除：
+// 反推放行单在引擎簿上正常占位与排队，撮合对手/量由引擎自主重建（与真实一致），
+// 避免回放单不占簿导致的排队量缺失、后续撮合对手错位。
 bool BacktestEngine::determineBuyPassive(const Event& ev) const {
     // RT模式强约束：
     // - 必须同时有 bidorderid / askorderid
@@ -1175,6 +1233,28 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
     if (current_datetime_.substr(11, 8) > "15:00:00") {
         return;
     }
+
+    // 价格笼子反推确认：上一条挂起的穿价历史单，看紧挨的本条消息——
+    // 是它的成交（tra, exectype='1', 引用其市场 orderid）→ 放行：正常 accept
+    //   自主撮合。消息序=交易所处理序：真实里穿价单若立即成交，紧邻消息必是
+    //   它的成交；挂起仅延迟一拍（竞争单必在其后），FIFO 排队位置不变，
+    //   撮合对手与量由引擎簿自主重建（与真实一致）。
+    // 不是 → 入笼（不进簿、十档不可见，等待出笼条件或撤单或收盘竞价恢复）。
+    const bool is_real_trade_event = (ev.source == "tra" && !ev.exectype.empty()
+                                      && ev.exectype[0] == '1');
+    if (pending_crossing_hist_ && con_engine_) {
+        auto od = pending_crossing_hist_;
+        pending_crossing_hist_ = nullptr;
+        const bool next_is_my_trade = (ev.source == "tra" && !ev.exectype.empty()
+            && ev.exectype[0] == '1'
+            && (static_cast<uint64_t>(ev.bidorderid) == od->input_id
+                || static_cast<uint64_t>(ev.askorderid) == od->input_id));
+        if (next_is_my_trade) {
+            con_engine_->accept(od);
+        } else {
+            con_engine_->suspendHistoricalOrder(od);
+        }
+    }
     
     // ========== 价格笼子功能已禁用 ==========
     // // 首次事件时自动检测是否启用价格笼子（2023年3月1日前启用）
@@ -1214,7 +1294,10 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             }
         }
     } else if (ev.source == "tra") {
-        // 成交事件：将Event转换为TradeDetail
+        // 成交/撤单事件：将Event转换为TradeDetail。
+        // 注意：exectype='1' 的真实成交事件仅在价格笼子反推法激活时进流
+        //（OrderLoader 条件放行），仅用于 pending 穿价单确认（见函数开头），
+        // 不透传给策略（成交回报保持引擎重建口径），也不做任何簿操作。
         TradeDetail trade;
         trade.Exchange = ev.exchange != -1 ? ev.exchange : (ev.sym.find(".SZ") != std::string::npos ? 1 : 0);
         trade.Instrument = ev.sym;
@@ -1232,7 +1315,9 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
         trade.TradeBSFlag = ev.tradebsflag.empty() ? 'N' : ev.tradebsflag[0];
         trade.BizIndex = ev.bizindex;
 
-        if (trade.ExecType == '2') {
+        if (is_real_trade_event) {
+            // 真实成交事件：已完成 pending 确认（函数开头），其余 no-op。
+        } else if (trade.ExecType == '2') {
             if ((trade.BuyNo != 0) == (trade.SellNo != 0)) {
                 throw MarketIdentityError("撤单事件必须且只能有一个非零 BuyNo/SellNo");
             }
@@ -1264,10 +1349,13 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             }
         }
         
-        for (auto& strategy : strategies_) {
-            auto user_events = strategy->onTradeEvent(trade);
-            for (const auto& ue : user_events) {
-                strategy_events.push_back(ue);
+        if (!is_real_trade_event) {
+            // 仅撤单事件透传给策略（现状口径）；真实成交事件不透传
+            for (auto& strategy : strategies_) {
+                auto user_events = strategy->onTradeEvent(trade);
+                for (const auto& ue : user_events) {
+                    strategy_events.push_back(ue);
+                }
             }
         }
     }
@@ -1287,10 +1375,10 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             
             call_engine_->accept(ord);
             data_manager_->updateOrderDetail(ev, 'A');
-        } else if (ev.source == "tra") {
-            // 历史撤单推送
+        } else if (ev.source == "tra" && !is_real_trade_event) {
+            // 历史撤单推送（真实成交事件不进集合竞价段，防御性排除）
             uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
-            
+
             call_engine_->cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
         } else {
             // tick 推送
@@ -1329,6 +1417,17 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
         if (!closing_mode_ && tm_cur >= Call_Close_Time) {
             closing_mode_ = true;
             close_engine_->bootstrap_from_orderbook();
+            // 价格笼子：14:57 收盘集合竞价开始，笼中订单恢复参与竞价撮合
+            //（历史笼单作为收盘竞价委托；策略笼单转影子单走收盘竞价判定）
+            if (con_engine_) {
+                for (auto& od : con_engine_->takeAllSuspendedHistorical()) {
+                    close_engine_->accept(od);
+                }
+                for (auto& od : con_engine_->takeAllUserCageOrders()) {
+                    od->status = OrderStatus::Pending;
+                    pending_auction_orders_.push_back({od, /*is_close_auction=*/true});
+                }
+            }
             std::cout << "[" << tm_cur << "] 进入收盘集合竞价阶段" << std::endl;
         }
 
@@ -1340,30 +1439,32 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                     static_cast<uint64_t>(ev.orderid), static_cast<int>(ev.channelno), ev.trading_day,
                     "BRK", "AC", orderbook_->getExchange(), ev.sym, std::to_string(ev.orderid),
                     toOrderType(ev), dir, ev.price, ev.size, ev.bizindex);
-                
-                con_engine_->accept(ord);
+
+                // 价格笼子反推（仅深市创业板暂存窗口激活）：
+                // 穿价的限价历史单先挂起，等紧挨的下一条消息确认
+                //（是它的成交→放行；不是→入笼不可见，见函数开头的确认逻辑）。
+                // 市价单不适用笼子，直接进撮合（转换价来自盘口，天然合规）。
+                bool crossing_hist = false;
+                if (cage_inference_active_ && ord->order_type == OrderType::Limit) {
+                    const bool buy = ord->direction == Direction::Buy;
+                    const Price opp = buy ? orderbook_->bestAsk() : orderbook_->bestBid();
+                    crossing_hist = (opp > 0 && (buy ? ord->price >= opp : ord->price <= opp));
+                }
+                if (crossing_hist) {
+                    pending_crossing_hist_ = ord;  // 不进簿：十档暂不可见
+                } else {
+                    con_engine_->accept(ord);
+                }
                 data_manager_->updateOrderDetail(ev, 'A');
                 last_brk_datetime_ = ev.datetime;
-                
+
+            } else if (ev.source == "tra" && is_real_trade_event) {
+                // 真实成交事件（仅反推法激活时进流）：pending 确认已在函数开头完成。
+                // 历史成交重建由 ord 事件驱动的撮合完成（深市已验证逐笔精确一致），
+                // 此处不做任何簿操作、不推策略，避免双重处理。
             } else if (ev.source == "tra") {
                 uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
-
-                // RT模式先判定被动侧（按bid/ask orderid大小强约束判定），再撤单，再喂真实成交池
-                bool should_feed_rt = (real_trade_match_mode_ && !ev.exectype.empty() && ev.exectype[0] == '1'
-                                       && ev.price > 0 && ev.size > 0);
-                // (DIAG-TRA 诊断日志已移除)
-                bool buy_passive = false;
-                if (should_feed_rt) {
-                    buy_passive = determineBuyPassive(ev);
-                }
-
                 con_engine_->cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
-
-                if (should_feed_rt) {
-                    con_engine_->feedRealTrade(static_cast<Price>(ev.price),
-                                               static_cast<Quantity>(ev.size),
-                                               buy_passive);
-                }
             } else {
                 data_manager_->updateSnapshot(ev);
                 has_real_tick_ = true;
@@ -1431,6 +1532,19 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
     for (const auto& ue : strategy_events)       dispatch(ue);
     for (const auto& ue : pending_trade_events_) dispatch(ue);
     pending_trade_events_.clear();
+
+    // 价格笼子出笼扫描（连续竞价段，每条逐笔消息处理后）：
+    // 历史笼单按盘口判据（不再穿价/对手盘空），策略笼单按数值范围重查。
+    // 放在事件快照推送之前，出笼效果体现在本次快照中。
+    if (continuous_mode_ && !closing_mode_ && con_engine_) {
+        if (cage_inference_active_) {
+            con_engine_->activateEligibleSuspendedHistorical(cage_rule_);
+        }
+        if (user_cage_enabled_ && cage_rule_.enabled
+            && cage_rule_.action == CageAction::Dormant) {
+            con_engine_->activateEligibleUserCageOrders(cage_rule_);
+        }
+    }
 
     // 事件驱动快照：每个市场事件（ord/tra）的全部处理（含上面 dispatch 的
     // 策略响应下单/撤单）结束后，从当前订单簿合成快照推送一次。

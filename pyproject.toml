@@ -76,6 +76,9 @@ BUILD_PYTHON = "ON"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: 真实数据长耗时用例（tests/price_cage 等）",
+]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

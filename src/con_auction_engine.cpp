@@ -615,6 +615,122 @@ bool ConAuctionEngine::cancel_virtual_order(uint64_t order_id)
     return true;
 }
 
+// ============== 价格笼子功能实现 ==============
+
+// --- 历史单暂存（反推法，行情可见性重建） ---
+
+void ConAuctionEngine::suspendHistoricalOrder(std::shared_ptr<Order> od)
+{
+    od->status = OrderStatus::Pending;
+    ob_._omap[od->order_id] = od;  // 供身份/查询；不在 _loc（不进簿，十档不可见）
+    suspended_hist_[od->order_id] = od;
+}
+
+// 出笼判据（数值规则，创业板暂存窗口的制度语义："价格落回有效申报价格范围"）：
+// 申报价落回 [基准×(1-幅度), 基准×(1+幅度)] 即出笼——出笼时可以仍然穿价
+// （例：买 7.37 入笼后基准由 7.21 升至 7.23，7.37 ≤ 7.3746 出笼吃 7.23 卖单）。
+// 基准价链与策略笼共用 userCageBounds。map 有序迭代 = 按入笼序（即市场委托序）恢复。
+void ConAuctionEngine::activateEligibleSuspendedHistorical(const PriceCageRule& rule)
+{
+    if (suspended_hist_.empty() || !rule.enabled) return;
+    std::vector<uint64_t> to_activate;
+    for (const auto& [sid, od] : suspended_hist_) {
+        const CageBounds b = userCageBounds(od->direction == Direction::Buy, rule, ob_);
+        if (b.lo > 0 && od->price >= b.lo && od->price <= b.hi) to_activate.push_back(sid);
+    }
+    for (uint64_t sid : to_activate) {
+        auto od = suspended_hist_[sid];
+        suspended_hist_.erase(sid);
+        accept(od);  // 出笼即正常参与撮合（穿价则立即吃对手，与真实一致）
+    }
+}
+
+std::vector<std::shared_ptr<Order>> ConAuctionEngine::takeAllSuspendedHistorical()
+{
+    std::vector<std::shared_ptr<Order>> out;
+    out.reserve(suspended_hist_.size());
+    for (auto& [sid, od] : suspended_hist_) out.push_back(od);
+    suspended_hist_.clear();
+    return out;
+}
+
+// --- 策略单数值判定 ---
+
+ConAuctionEngine::CageBounds
+ConAuctionEngine::userCageBounds(bool is_buy, const PriceCageRule& rule, const OrderBook& ob)
+{
+    // 基准价链：对手方最优价 → 本方最优价 → 最新成交价 → 昨收价
+    Price base = is_buy ? ob.bestAsk() : ob.bestBid();
+    if (base == 0) base = is_buy ? ob.bestBid() : ob.bestAsk();
+    if (base == 0) base = ob.getLastTradePrice();
+    if (base == 0) base = ob.getPrevClose();
+    if (base == 0) return {0, 0};  // 无任何基准（极端空市，不应发生）
+
+    // 幅度 = max(基准 × pct%, 兜底额)；整数运算防浮点误差
+    Price band = base * rule.pct_num / 10000;
+    if (band < rule.min_abs) band = rule.min_abs;
+
+    // 有效申报范围 = 基准 ± 幅度，计算结果四舍五入至最小变动价位
+    //（真实案例 300026 2022-06-30 三个边界单共同锁定此语义：
+    //   基准 7.49→上限 7.6398≈7.64，申报 7.64 恰合规立即成交；
+    //   基准 7.72→上限 7.8744≈7.87，申报 7.88 超范围入笼；
+    //   基准 7.23→上限 7.3746≈7.37，申报 7.37 恰合规出笼）
+    const Price tick = ob.getTick();
+    Price hi = base + band;
+    Price lo = base > band ? base - band : 0;
+    if (tick > 0) {
+        hi = (hi + tick / 2) / tick * tick;
+        lo = (lo + tick / 2) / tick * tick;
+    }
+
+    // 夹在涨跌停内
+    if (hi > ob.getUpperLimit()) hi = ob.getUpperLimit();
+    if (lo < ob.getLowerLimit()) lo = ob.getLowerLimit();
+    return {lo, hi};
+}
+
+void ConAuctionEngine::suspendUserOrder(std::shared_ptr<Order> od)
+{
+    od->status = OrderStatus::Pending;
+    ob_._omap[od->order_id] = od;
+    user_cage_[od->order_id] = od;
+}
+
+// 策略笼单出笼：数值范围重查（暂存单的恢复条件 = 价格落回有效申报范围）
+void ConAuctionEngine::activateEligibleUserCageOrders(const PriceCageRule& rule)
+{
+    if (user_cage_.empty() || !rule.enabled) return;
+    std::vector<uint64_t> to_activate;
+    for (const auto& [sid, od] : user_cage_) {
+        const CageBounds b = userCageBounds(od->direction == Direction::Buy, rule, ob_);
+        if (b.lo > 0 && od->price >= b.lo && od->price <= b.hi) to_activate.push_back(sid);
+    }
+    for (uint64_t sid : to_activate) {
+        auto od = user_cage_[sid];
+        user_cage_.erase(sid);
+        ob_._omap.erase(sid);  // accept_virtual_order 会重新登记
+        accept(od);            // 虚拟单路径（默认/RT 模式自动分流）
+    }
+}
+
+std::vector<std::shared_ptr<Order>> ConAuctionEngine::takeAllUserCageOrders()
+{
+    std::vector<std::shared_ptr<Order>> out;
+    out.reserve(user_cage_.size());
+    for (auto& [sid, od] : user_cage_) out.push_back(od);
+    user_cage_.clear();
+    return out;
+}
+
+// 策略单废单：涨跌停/价格笼子拒单，走与严格模式拒单相同的回调链路
+// （success=true + reason，由 BacktestEngine 的 on_cancel_ 转成 'D' 回调通知策略）
+void ConAuctionEngine::rejectUserOrder(std::shared_ptr<Order> od, const std::string& reason)
+{
+    od->status = OrderStatus::Rejected;
+    ob_._omap[od->order_id] = od;  // 添加到omap以便查询
+    if (on_cancel_) on_cancel_(od->order_id, true, reason, od);
+}
+
 // ============== 连续竞价主函数 ==============
 
 // 连续竞价订单接收函数
@@ -917,6 +1033,26 @@ void ConAuctionEngine::match_sz(std::shared_ptr<Order>& inc)
 // 撤单（通过系统订单ID）
 bool ConAuctionEngine::cancel(uint64_t oid)
 {
+    // 价格笼子：笼中历史单可直接撤（暂存期间投资者可撤单）
+    if (auto sit = suspended_hist_.find(oid); sit != suspended_hist_.end()) {
+        auto od = sit->second;
+        suspended_hist_.erase(sit);
+        od->status = OrderStatus::Cancelled;
+        ob_._omap.erase(oid);
+        ob_.eraseActiveMarketOrder(oid);
+        if (on_cancel_) on_cancel_(oid, true, "撤单成功", od);
+        return true;
+    }
+    // 价格笼子：策略笼单可直接撤
+    if (auto uit = user_cage_.find(oid); uit != user_cage_.end()) {
+        auto od = uit->second;
+        user_cage_.erase(uit);
+        od->status = OrderStatus::Cancelled;
+        ob_._omap.erase(oid);
+        if (on_cancel_) on_cancel_(oid, true, "撤单成功", od);
+        return true;
+    }
+
     auto it = ob_._loc.find(oid);
     if (it == ob_._loc.end()) {
         // 不在历史订单簿中，尝试撤销虚拟订单

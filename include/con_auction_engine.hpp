@@ -5,6 +5,7 @@
 #pragma once
 #include "orderbook.h"
 #include "types.h"
+#include "price_cage.h"
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
@@ -132,6 +133,28 @@ public:
         return count;
     }
 
+    // === 价格笼子：历史单暂存（消息流反推法，行情可见性重建） ===
+    // 仅"深市创业板暂存窗口(2020.8-2023.4)"由 BacktestEngine 激活。
+    // 笼中单不进主订单簿（fillDepth 十档天然不可见），可被撤单，可出笼恢复。
+    void suspendHistoricalOrder(std::shared_ptr<Order> od);       // 入笼
+    // 出笼扫描（数值判据：价格落回有效申报范围，按入笼序恢复）
+    void activateEligibleSuspendedHistorical(const PriceCageRule& rule);
+    std::vector<std::shared_ptr<Order>> takeAllSuspendedHistorical(); // 14:57 收盘竞价开始时全部恢复
+    size_t getSuspendedHistoricalCount() const { return suspended_hist_.size(); }
+
+    // === 价格笼子：策略单数值判定 ===
+    struct CageBounds { Price lo; Price hi; };                     // 有效申报范围（含边界）
+    // 计算策略单的有效申报价格范围：基准价链（对手一档→本方一档→最新成交→昨收）
+    // + max(基准×幅度%, 兜底额)，上限向上/下限向下取整到 tick，并夹在涨跌停内
+    static CageBounds userCageBounds(bool is_buy, const PriceCageRule& rule,
+                                     const OrderBook& ob);
+    void suspendUserOrder(std::shared_ptr<Order> od);             // 暂存时代：策略单入笼
+    void activateEligibleUserCageOrders(const PriceCageRule& rule); // 出笼扫描（数值范围重查）
+    std::vector<std::shared_ptr<Order>> takeAllUserCageOrders();  // 收盘竞价恢复
+    size_t getUserCageCount() const { return user_cage_.size(); }
+    // 策略单废单（涨跌停/价格笼子拒单）：Rejected + on_cancel_ 回调链路
+    void rejectUserOrder(std::shared_ptr<Order> od, const std::string& reason);
+
 private:
     void match(std::shared_ptr<Order>&);
     void match_sh(std::shared_ptr<Order>&);  // 上海市场撮合逻辑（只处理历史订单）
@@ -212,6 +235,12 @@ private:
     std::unordered_map<Price, uint64_t> rt_pool_sell_;  // 卖侧被消耗的累积量
     // 用户下单回调队列信息开关（默认关闭）
     bool queue_info_enabled_ = false;
+
+    // === 价格笼子容器 ===
+    // 历史/策略笼单：system_id -> order。system_id 创建序 = 事件流序（=市场委托序），
+    // map 有序迭代即"按原始 orderid 升序恢复"（aqsnapshots 语义）
+    std::map<uint64_t, std::shared_ptr<Order>> suspended_hist_;
+    std::map<uint64_t, std::shared_ptr<Order>> user_cage_;
 
 public:
     // === 诊断计数器（仅用于日志，不影响业务逻辑）===

@@ -534,7 +534,20 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("setEventSnapshotEnabled", &BacktestEngine::setEventSnapshotEnabled, py::arg("enabled"),
              "开启/关闭事件驱动快照：开启后每个市场事件（ord/tra）处理完成后触发 onEventSnapshot")
         .def("isEventSnapshotEnabled", &BacktestEngine::isEventSnapshotEnabled,
-             "检查事件驱动快照是否开启");
+             "检查事件驱动快照是否开启")
+        // === 价格笼子 ===
+        .def("setUserCageEnabled", &BacktestEngine::setUserCageEnabled, py::arg("enabled"),
+             "开启/关闭策略单价格笼子数值判定（规则按数据日期×板块自动判定，默认开启）")
+        .def("isUserCageEnabled", &BacktestEngine::isUserCageEnabled,
+             "检查策略单价格笼子判定是否开启")
+        .def("isPriceCageEnabled", &BacktestEngine::isPriceCageEnabled,
+             "当前数据（日期×板块）规则矩阵是否启用价格笼子")
+        .def("isCageInferenceActive", &BacktestEngine::isCageInferenceActive,
+             "历史单消息流反推状态机是否激活（仅深市创业板 2020.8-2023.4 暂存窗口）")
+        .def("getSuspendedHistoricalCount", &BacktestEngine::getSuspendedHistoricalCount,
+             "当前历史笼单数量")
+        .def("getUserCageCount", &BacktestEngine::getUserCageCount,
+             "当前策略笼单数量");
     
     // InfoLoader - 从CSV字符串加载数据
     py::class_<InfoLoader>(m, "InfoLoader")
@@ -649,6 +662,11 @@ py::class_<OrderCallback>(m, "OrderCallback")
              "开启/关闭事件驱动快照，扇出到所有子引擎；开启后每个市场事件处理完成后触发 onEventSnapshot")
         .def("isEventSnapshotEnabled", &MultiBacktestEngine::isEventSnapshotEnabled,
              "检查事件驱动快照是否开启")
+        // === 价格笼子 ===
+        .def("setUserCageEnabled", &MultiBacktestEngine::setUserCageEnabled, py::arg("enabled"),
+             "开启/关闭策略单价格笼子数值判定，扇出到所有子引擎（默认开启）")
+        .def("isUserCageEnabled", &MultiBacktestEngine::isUserCageEnabled,
+             "检查策略单价格笼子判定是否开启")
         // === 用户自定义数据推送功能 ===
         .def("loadCustomEventTimes", &MultiBacktestEngine::loadCustomEventTimes, py::arg("datetimes"),
              "加载自定义事件时间戳列表（格式如 '2025-11-17 09:35:00'）")

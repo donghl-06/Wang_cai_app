@@ -367,6 +367,19 @@ bool MultiBacktestEngine::isEventSnapshotEnabled() const {
     return event_snapshot_enabled_;
 }
 
+void MultiBacktestEngine::setUserCageEnabled(bool enabled) {
+    for (auto& se : engines_) {
+        se.engine->setUserCageEnabled(enabled);
+    }
+}
+
+bool MultiBacktestEngine::isUserCageEnabled() const {
+    if (!engines_.empty()) {
+        return engines_[0].engine->isUserCageEnabled();
+    }
+    return true;
+}
+
 // === 用户自定义数据推送功能 ===
 void MultiBacktestEngine::loadCustomEventTimes(const std::vector<std::string>& datetimes) {
     custom_events_.clear();

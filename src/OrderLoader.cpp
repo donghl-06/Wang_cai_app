@@ -1,4 +1,5 @@
 #include "OrderLoader.h"
+#include "price_cage.h"
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -358,10 +359,18 @@ void InfoLoader::load_traders(const std::string& csv_content, wangcai::OrderBook
                             tradeid,         // trade_index
                             time_raw);       // time_raw
             // 创建并插入撤单事件
-           if (exectype == "2") {   
+           if (exectype == "2") {
                 OrderBook::insertEvent(trade_event);
             } else if (exectype != "2" && isContinuousTime(datetime)) {
-                continuous_trades_.emplace_back(std::move(trade_event));
+                // 价格笼子反推法（仅深市创业板暂存窗口）：真实成交事件进事件流，
+                // 供 BacktestEngine 做"穿价历史单的下一条消息确认"（不推策略、不动簿）。
+                // 连续竞价段限定（笼子不管集合竞价，收盘竞价段无反推需要）。
+                const bool in_continuous = datetime.substr(11, 8) < "14:57:00";
+                if (in_continuous && needsHistoricalCageInference(sym, date)) {
+                    OrderBook::insertEvent(trade_event);
+                } else {
+                    continuous_trades_.emplace_back(std::move(trade_event));
+                }
             }
         } catch (const std::exception& e) {
             std::cerr << "处理撤单时发生错误: " << e.what() << std::endl;

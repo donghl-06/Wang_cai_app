@@ -4,6 +4,7 @@
 #include "call_auction_engine.hpp"
 #include "con_auction_engine.hpp"
 #include "close_auction_engine.hpp"
+#include "price_cage.h"
 #include "data_manager.h"
 #include "OrderLoader.h"
 #include "market_info.h"
@@ -171,6 +172,17 @@ public:
     void setEventSnapshotEnabled(bool enabled);
     bool isEventSnapshotEnabled() const;
 
+    // === 价格笼子 ===
+    // 规则按数据日期×板块自动判定（price_cage.h 矩阵）。
+    // 历史单反推状态机仅在"深市创业板暂存窗口(2020.8-2023.4)"自动激活；
+    // 策略单数值判定默认启用（有笼子的时代/板块），可手动关闭（对照实验用）。
+    void setUserCageEnabled(bool enabled) { user_cage_enabled_ = enabled; }
+    bool isUserCageEnabled() const { return user_cage_enabled_; }
+    bool isPriceCageEnabled() const { return cage_rule_.enabled; }          // 规则矩阵是否有笼子
+    bool isCageInferenceActive() const { return cage_inference_active_; }   // 历史单反推是否激活
+    size_t getSuspendedHistoricalCount() const;                             // 历史笼单数
+    size_t getUserCageCount() const;                                        // 策略笼单数
+
     // === 用户自定义事件支持 ===
     // 提交用户事件（用于外部驱动，例如自定义数据推送）
     void submitUserEvent(const UserEvent& user_event);
@@ -329,6 +341,13 @@ private:
     void accumulateInternalTrade(Price price, Quantity volume); // 历史撮合成交递增累计器
     Snapshot buildRealTimeSnapshot(const Event& ev) const; // 从订单簿合成十档快照
     void maybeEmitRealTimeTick(const Event& ev);    // 跨过网格边界时推送
+
+    // === 价格笼子 ===
+    std::string trading_date_;                      // 交易日（从数据解析，YYYY-MM-DD）
+    PriceCageRule cage_rule_;                       // 规则矩阵判定结果
+    bool cage_inference_active_ = false;            // 历史单反推状态机是否激活
+    bool user_cage_enabled_ = true;                 // 策略单数值判定开关（默认开）
+    std::shared_ptr<Order> pending_crossing_hist_;  // 挂起待确认的穿价历史单（反推窗口）
 };
 
 } // namespace wangcai

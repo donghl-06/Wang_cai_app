@@ -316,7 +316,8 @@ def run_backtest(data_dict,
                  n_workers: int = None,
                  release_input: bool = False,
                  realtime_tick_interval_ms: int = 0,
-                 event_snapshot_enabled: bool = False) -> bool:
+                 event_snapshot_enabled: bool = False,
+                 user_cage_enabled: bool = True) -> bool:
     """
     运行回测（支持单合约/多合约，单策略，股票/ETF）
     
@@ -363,6 +364,18 @@ def run_backtest(data_dict,
             一个十档 Snapshot 推送策略一次（触发 onEventSnapshot 回调），
             推送次数 == 市场事件数；tick 事件不触发。快照口径与
             onRealTimeTickEvent 一致（十档只含历史订单/公开订单簿）。
+        user_cage_enabled: 策略单价格笼子数值判定开关（默认 True）
+            价格笼子规则按数据日期×板块自动判定：
+            - 主板：2023-04-10 起 ±2% 与 0.1 元孰高，超范围废单
+            - 创业板：2020-08-24 至 2023-04-10 暂存模式（超范围入笼，
+              价格落回范围自动恢复参与撮合）；之后与主板相同
+            - 科创板：2019-07-22 开市起拒单（纯 ±2%），2023-04-10 后加 0.1 元兜底
+            - 北交所/ETF/债券等：不适用
+            历史单侧：仅深市创业板暂存窗口启用消息流反推状态机
+            （穿价未成交→入笼不可见；价格落回有效申报范围→自动出笼），
+            自动激活。有效申报范围 = 基准价±2% 四舍五入至最小变动价位
+            （基准价链：对手一档→本方一档→最新成交→昨收）。
+            另：策略限价单新增涨跌停前置校验（超涨跌停废单，所有时代）。
     
     Returns:
         bool: 回测是否成功
@@ -482,6 +495,11 @@ def run_backtest(data_dict,
         if event_snapshot_enabled and hasattr(engine, 'setEventSnapshotEnabled'):
             engine.setEventSnapshotEnabled(True)
             print(f"   ✅ 事件驱动快照已启用")
+
+        # 策略单价格笼子开关（默认开启，可关闭做对照实验）
+        if not user_cage_enabled and hasattr(engine, 'setUserCageEnabled'):
+            engine.setUserCageEnabled(False)
+            print(f"   ⚙️ 策略单价格笼子: ❌ 关闭（对照模式）")
         
         # 设置自定义数据推送功能（如果启用）
         if enable_custom_data:
