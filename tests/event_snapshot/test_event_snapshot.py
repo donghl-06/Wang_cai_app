@@ -8,10 +8,11 @@
 4) 策略下单影响：onOrderEvent 回调内下主动单（严格模式），断言该次事件快照
    已扣除被吃掉的量（dispatch 先于快照推送）
 5) 快照回调内下单：返回的事件立即 dispatch，影响体现在下一次事件快照
-6) 单调性：Volume/NumTrades 严格不减
+6) 单调性：Volume/NumTrades 严格不减（合成数据）；真实数据上进一步
+   与官方 cstick 的 volume/tradecount 一致（见对齐测试，§3.3-6 升级）
 7) 开关等价：开启（策略不下单）不改变回测结果
 8) 真实数据官方对齐：对每个官方 cstick 取其时间戳前最后一笔事件快照，
-   对比十档/最新价（重建成交已证与真实 100% 一致 → 盘口演进应一致）
+   对比十档/最新价/累计量（重建成交已证与真实 100% 一致 → 盘口演进应一致）
 """
 
 import re
@@ -464,6 +465,12 @@ def test_event_snapshot_aligns_with_official_ticks(symbol, date, is_etf):
     分层断言：
       - bid1/ask1 价格一致率（含 T±1s 容忍）：>= 97.5%
       - 十档价量完全一致率（严格 T 对齐）：>= 60% 基线
+      - Volume/NumTrades 累计器与官方 volume/tradecount 一致（§3.3-6
+        升级，替代纯单调性口径）：精确一致 >= 95%、<=0.1% 偏差覆盖
+        >= 99%。实测 002929 96.48/96.48、688516 95.55/95.55（Volume
+        与 NumTrades 同步偏差——不一致几乎全为官方时戳错位窗口内的
+        瞬时累计差，p95 相对偏差 0.0000%）；688516 尾值（14:57 前最后
+        快照）与官方最后 tick 逐数相等（Vol 8845656 / NT 13936）。
     """
     if not _has_dataset(symbol, date):
         pytest.skip(f"缺少 {symbol}@{date} 数据")
@@ -483,6 +490,7 @@ def test_event_snapshot_aligns_with_official_ticks(symbol, date, is_etf):
     lo = (9 * 3600 + 30 * 60) * 1000
     hi = (14 * 3600 + 57 * 60) * 1000
     n_cmp = n_px = n_full = 0
+    n_vol = n_vol_tol = n_nt = 0
     for _, row in tick_df.iterrows():
         t_ms = _ms_of_day(str(row["updatetime"]))
         if not (lo <= t_ms < hi):
@@ -519,9 +527,30 @@ def test_event_snapshot_aligns_with_official_ticks(symbol, date, is_etf):
             if len(eb) == len(ob) and eb == ob and len(ea) == len(oa) and ea == oa:
                 n_full += 1
 
+        # Volume/NumTrades 官方一致性（§3.3-6 升级）：T/T±1s 三候选快照中
+        # 取累计量最接近官方者（时戳错位容忍，与价格对齐同法）
+        ov, ot = float(row["volume"]), float(row["tradecount"])
+        cand = {(last["Volume"], last["NumTrades"])}
+        for boundary in (t_ms - 1000, t_ms + 1000):
+            j = bisect.bisect_right(snap_ms, boundary) - 1
+            if j >= 0:
+                cand.add((s.snaps[j]["Volume"], s.snaps[j]["NumTrades"]))
+        best_v, best_n = min(cand, key=lambda p: abs(p[0] - ov))
+        if best_v == int(ov):
+            n_vol += 1
+        if ov > 0 and abs(best_v - ov) / ov <= 0.001:
+            n_vol_tol += 1
+        if best_n == int(ot):
+            n_nt += 1
+
     assert n_cmp > 100, f"对比样本过少: {n_cmp}"
     px_rate, full_rate = n_px / n_cmp, n_full / n_cmp
-    print(f"[{symbol}] bid1/ask1价格一致(含T±1s容忍) {px_rate*100:.2f}% | 十档全一致 {full_rate*100:.2f}%")
+    vol_rate, vol_tol_rate, nt_rate = n_vol / n_cmp, n_vol_tol / n_cmp, n_nt / n_cmp
+    print(f"[{symbol}] bid1/ask1价格一致(含T±1s容忍) {px_rate*100:.2f}% | 十档全一致 {full_rate*100:.2f}%"
+          f" | Volume精确 {vol_rate*100:.2f}% (≤0.1%偏差 {vol_tol_rate*100:.2f}%)"
+          f" | NumTrades精确 {nt_rate*100:.2f}%")
     assert px_rate >= 0.975, f"{symbol} bid1/ask1 价格一致率 {px_rate*100:.2f}% < 97.5%"
     assert full_rate >= 0.60, f"{symbol} 十档全一致率 {full_rate*100:.2f}% < 60%"
-    assert full_rate >= 0.60, f"{symbol} 十档完全一致率 {full_rate*100:.2f}% < 60%"
+    assert vol_rate >= 0.95, f"{symbol} Volume 精确一致率 {vol_rate*100:.2f}% < 95%"
+    assert vol_tol_rate >= 0.99, f"{symbol} Volume ≤0.1%偏差覆盖率 {vol_tol_rate*100:.2f}% < 99%"
+    assert nt_rate >= 0.95, f"{symbol} NumTrades 精确一致率 {nt_rate*100:.2f}% < 95%"

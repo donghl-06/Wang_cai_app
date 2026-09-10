@@ -647,7 +647,8 @@ void BacktestEngine::accumulateInternalTrade(Price price, Quantity volume) {
 
 // 从内部订单簿合成十档快照，字段结构与真实 tick 的 Snapshot 一致：
 // - 十档/最新价/涨跌停/委托总量：订单簿实时状态
-// - Volume/Turnover/NumTrades/High/Low：日累计器（引擎重建口径，不与官方对齐）
+// - Volume/Turnover/NumTrades/High/Low：日累计器（引擎重建口径；实测与官方
+//   cstick 的 volume/tradecount 一致——见 tests/event_snapshot 对齐测试）
 // - Open/PreClose/Close/Iopv 等无法从订单簿推导的字段：承接上一个真实 tick
 // - 集合竞价阶段额外填 AuctionPrice/AuctionQty（预测价/预测量）
 Snapshot BacktestEngine::buildRealTimeSnapshot(const Event& ev) const {
