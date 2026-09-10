@@ -452,19 +452,18 @@ def _ms_of_day(datetime_str: str) -> int:
 def test_event_snapshot_aligns_with_official_ticks(symbol, date, is_etf):
     """事件快照与官方 cstick 的分层对齐验证（连续竞价段 09:30-14:57）。
 
-    对齐方式：以 cstick 的 updatetime（微秒精度，比 time 列更接近快照
-    真实截止时刻）取其之前最后一笔事件快照，分层比对：
-      - bid1/ask1 价格一致率：硬断言 >= 90%
-      - 十档价量完全一致率：基线断言 >= 60%
-    实测基线（2026-09-09）：002929 95.8%/69.5%，688516 93.7%/80.1%。
-
-    不追求 100% 的原因（数据管道固有噪音，非引擎错误）：
-      1. 集合竞价段官方 tick 是"参考价口径"（买卖两侧同价），与引擎的
-         委托簿口径不同 → 本测试只对连续段；
-      2. 官方 tick 时间戳与其十档内容的截止时刻存在秒级偏差（updatetime
-         已显著优于 time，但不完全对应）；
-      3. 同价位量差：csord 委托揭示量与官方簿量存在口径差（如冰山单），
-         重建成交 100% 一致只保证消耗一致，不保证静态挂单构成一致。
+    对齐方式：以 cstick 的 updatetime（微秒精度）取其之前最后一笔事件
+    快照；一档价格不一致时在 T±1s 边界各取候选再试（时戳错位容忍，
+    双向——官方 tick 时戳相对其内容截止时刻存在双向偏移）。
+    分类诊断（2026-09-10）：不一致部分几乎全部为官方数据管道口径——
+      - 时戳错位 ~4-6%（±30 事件内可找到价格档完全匹配，med 1-2 事件）；
+      - 揭示量口径 ~14%（csord 揭示量 vs 官方簿量，如冰山单）；
+      - 真实偏差仅 0.16-0.22%（±30 事件内都找不到价格档匹配）。
+    实测（T±1s 容忍）：002929 99.13%，688516 97.80%（剩余为 >1s 的
+    错位长尾，稀疏时段 28 事件可跨数秒）。
+    分层断言：
+      - bid1/ask1 价格一致率（含 T±1s 容忍）：>= 97.5%
+      - 十档价量完全一致率（严格 T 对齐）：>= 60% 基线
     """
     if not _has_dataset(symbol, date):
         pytest.skip(f"缺少 {symbol}@{date} 数据")
@@ -476,6 +475,9 @@ def test_event_snapshot_aligns_with_official_ticks(symbol, date, is_etf):
                                   files["cstra"], files["csbar1d"], is_etf)},
                         s, event_snapshot_enabled=True)
     assert s.snaps, "未收到事件快照"
+
+    import bisect
+    snap_ms = [_ms_of_day(sn["datetime"]) for sn in s.snaps]
 
     tick_df = files["cstick"]
     lo = (9 * 3600 + 30 * 60) * 1000
@@ -489,24 +491,37 @@ def test_event_snapshot_aligns_with_official_ticks(symbol, date, is_etf):
               for i in range(1, 11) if float(row[f"bid{i}"]) > 0]
         oa = [(int(round(float(row[f"ask{i}"]) * 10000)), int(row[f"asize{i}"]))
               for i in range(1, 11) if float(row[f"ask{i}"]) > 0]
-        last = None
-        for sn in s.snaps:
-            if _ms_of_day(sn["datetime"]) <= t_ms:
-                last = sn
-            else:
-                break
-        if last is None or not ob or not oa:
+        if not ob or not oa:
             continue
+        idx = bisect.bisect_right(snap_ms, t_ms) - 1
+        if idx < 0:
+            continue
+        last = s.snaps[idx]
         eb = [(p, v) for p, v in zip(last["bids"], last["bid_sizes"]) if p > 0][:10]
         ea = [(p, v) for p, v in zip(last["asks"], last["ask_sizes"]) if p > 0][:10]
         n_cmp += 1
-        if eb and ea and eb[0][0] == ob[0][0] and ea[0][0] == oa[0][0]:
+        px_hit = eb and ea and eb[0][0] == ob[0][0] and ea[0][0] == oa[0][0]
+        if not px_hit:
+            # 时戳错位容忍：官方 tick 时戳与其内容截止时刻存在双向偏移，
+            # 在 T±1s 边界各取一个候选快照再试（诊断：错位占 ~4-6%）
+            for boundary in (t_ms - 1000, t_ms + 1000):
+                j = bisect.bisect_right(snap_ms, boundary) - 1
+                if j == idx or j < 0:
+                    continue
+                alt = s.snaps[j]
+                tb = [(p, v) for p, v in zip(alt["bids"], alt["bid_sizes"]) if p > 0][:10]
+                ta = [(p, v) for p, v in zip(alt["asks"], alt["ask_sizes"]) if p > 0][:10]
+                if tb and ta and tb[0][0] == ob[0][0] and ta[0][0] == oa[0][0]:
+                    px_hit = True
+                    break
+        if px_hit:
             n_px += 1
             if len(eb) == len(ob) and eb == ob and len(ea) == len(oa) and ea == oa:
                 n_full += 1
 
     assert n_cmp > 100, f"对比样本过少: {n_cmp}"
     px_rate, full_rate = n_px / n_cmp, n_full / n_cmp
-    print(f"[{symbol}] bid1/ask1价格一致 {px_rate*100:.2f}% | 十档全一致 {full_rate*100:.2f}%")
-    assert px_rate >= 0.90, f"{symbol} bid1/ask1 价格一致率 {px_rate*100:.2f}% < 90%"
+    print(f"[{symbol}] bid1/ask1价格一致(含T±1s容忍) {px_rate*100:.2f}% | 十档全一致 {full_rate*100:.2f}%")
+    assert px_rate >= 0.975, f"{symbol} bid1/ask1 价格一致率 {px_rate*100:.2f}% < 97.5%"
+    assert full_rate >= 0.60, f"{symbol} 十档全一致率 {full_rate*100:.2f}% < 60%"
     assert full_rate >= 0.60, f"{symbol} 十档完全一致率 {full_rate*100:.2f}% < 60%"

@@ -519,6 +519,12 @@ def test_real_300026_suspended_window():
     """300026.SZ 2022-06-30（创业板暂存窗口真实数据）：
     1) 反推状态机激活（真实成交事件进流做穿价确认）
     2) 重建成交（ExecType=1）与 cstra 连续段按订单对+量聚合一致
+    已知近似（不影响本断言的连续段口径，2026-09-10 定性）：
+    - 开盘集合竞价同价位对手配对与真实有 ~6800 股分配差（394748 案例，
+      总量两侧均闭合，连续段起点差异被连续撮合自然吸收）；
+    - 收盘集合竞价内部配对差 7 单（收盘价 7.7 与总量 2086600 均与真实
+      完全一致）。
+    均为既有集合竞价配对器行为，与价格笼子无关。
     """
     sym, date = "300026.SZ", "2022-06-30"
     if not (AQS_DIR / f"{sym}_{date}_cstra.csv").is_file():
@@ -551,6 +557,72 @@ def test_real_300026_suspended_window():
     rate = matched / max(len(real_pairs), 1)
     print(f"[300026] 连续段订单对匹配率(引擎量>=真实量): {matched}/{len(real_pairs)} = {rate*100:.2f}%")
     assert rate >= 0.95, f"暂存窗口重建成交一致性不足: {rate*100:.2f}%"
+
+
+@pytest.mark.slow
+def test_real_300026_snapshot_aligns_official_cstick():
+    """§3.3-5c：暂存窗口事件快照与官方 cstick 十档对齐。
+    aqsnapshots 版 cstick 的 time 列（整秒）标记的是快照窗口起点，
+    行内容 ≈ 引擎 T+1s 状态（实测 86.75% → 98.93%）；量列为揭示量口径
+    （价量全一致仅 ~3%），故只断言 bid1/ask1 价格。"""
+    import bisect
+    sym, date = "300026.SZ", "2022-06-30"
+    if not (AQS_DIR / f"{sym}_{date}_cstick.csv").is_file():
+        pytest.skip("缺少 300026 暂存窗口数据")
+    cstick = pd.read_csv(AQS_DIR / f"{sym}_{date}_cstick.csv")
+    csord = pd.read_csv(AQS_DIR / f"{sym}_{date}_csord.csv")
+    cstra = pd.read_csv(AQS_DIR / f"{sym}_{date}_cstra.csv")
+    csbar = _synth_csbar(AQS_DIR, sym, date)
+
+    class BidAskWatch(RealWatch):
+        def __init__(self):
+            super().__init__()
+            self.px_pairs = []   # (ms, bid1, ask1)
+
+        def onEventSnapshot(self, snap):
+            self.bids.append((snap.datetime, snap.bids[0] if snap.bids else 0,
+                              snap.bid_sizes[0] if snap.bid_sizes else 0))
+            self.px_pairs.append((snap.datetime,
+                                  snap.bids[0] if snap.bids else 0,
+                                  snap.asks[0] if snap.asks else 0))
+            return []
+
+    s = BidAskWatch()
+    assert run_backtest({sym: (cstick, csord, cstra, csbar, False)}, s,
+                        event_snapshot_enabled=True)
+    assert s.px_pairs, "未收到事件快照"
+
+    snap_ms = [_ms(str(t)) for t, _, _ in s.px_pairs]
+    lo, hi = (9 * 3600 + 30 * 60) * 1000, (14 * 3600 + 57 * 60) * 1000
+    n = px = 0
+    for _, row in cstick.iterrows():
+        t_ms = _ms(str(row["time"]))
+        if not (lo <= t_ms < hi):
+            continue
+        ob = float(row["bid1"])
+        oa = float(row["ask1"])
+        if ob <= 0 or oa <= 0:
+            continue
+        idx = bisect.bisect_right(snap_ms, t_ms + 1000) - 1   # T+1s 对齐
+        if idx < 0:
+            continue
+        _, eb, ea = s.px_pairs[idx]
+        n += 1
+        if eb == int(round(ob * 10000)) and ea == int(round(oa * 10000)):
+            px += 1
+    assert n > 100, f"对比样本过少: {n}"
+    rate = px / n
+    print(f"[300026] 官方 cstick 对齐(T+1s): bid1/ask1 价格一致 {rate*100:.2f}% ({px}/{n})")
+    assert rate >= 0.985, f"暂存窗口快照对齐率 {rate*100:.2f}% < 98.5%"
+
+
+def _ms(t):
+    """'0 days HH:MM:SS' / 'YYYY-MM-DD HH:MM:SS.mmm' → 当日毫秒"""
+    import re
+    m = re.search(r"(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?", str(t))
+    hh, mm, ss = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    ms = int(m.group(4).ljust(3, "0")) if m.group(4) else 0
+    return (hh * 3600 + mm * 60 + ss) * 1000 + ms
 
 
 @pytest.mark.slow
