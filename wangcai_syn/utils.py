@@ -38,6 +38,67 @@ def _normalize_adata_scalar(value) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# 数据表布局归一化：兼容 datetime 单列数据源（2026-09-11 新增 data/ 数据集）
+# ---------------------------------------------------------------------------
+
+# C++ OrderLoader 为位置式解析，列序必须精确（见 src/OrderLoader.cpp 各分支注释）
+_CSORD_COLS = ['date', 'time', 'sym', 'price', 'size', 'side', 'ordertype',
+               'orderid', 'channelno', 'seqno', 'bizindex', 'updatetime']
+_CSTRA_COLS = ['date', 'time', 'sym', 'price', 'size', 'bidorderid',
+               'askorderid', 'tradeid', 'exectype', 'tradebsflag',
+               'channelno', 'bizindex', 'updatetime']
+_CSTICK_LEAD = ['date', 'time', 'sym', 'prevclose', 'open', 'high', 'low',
+                'close', 'volume', 'turnover', 'tradecount']
+_CSTICK_TAIL = ['avgbid', 'avgask', 'totalbsize', 'totalasize', 'iopv']
+
+_INT64_MIN = -9223372036854775808
+
+
+def _normalize_table_layout(df: pd.DataFrame, kind: str) -> pd.DataFrame:
+    """把 datetime 单列、缺尾列、INT64_MIN 空值的数据表统一为标准布局。
+
+    已是标准格式（date/time 两列）的表原样返回（浅拷贝都不做）。
+    kind: 'csord' | 'cstra' | 'cstick'。
+    """
+    if 'datetime' not in df.columns or 'date' in df.columns:
+        return df
+    df = df.copy()
+    dt = df['datetime'].astype(str)
+    df['date'] = dt.str.slice(0, 10)
+    df['time'] = '0 days ' + dt.str.slice(11)
+    # INT64_MIN 空值清零（C++ 侧仅部分分支容忍，统一在入口规范化）
+    for col in ('seqno', 'bizindex', 'channelno'):
+        if col in df.columns:
+            vals = pd.to_numeric(df[col], errors='coerce')
+            df[col] = vals.mask(vals <= _INT64_MIN + 1000, 0)
+
+    if kind == 'csord':
+        template = _CSORD_COLS
+    elif kind == 'cstra':
+        template = _CSTRA_COLS
+    else:  # cstick：前导+尾部固定，中间十档保持原序，模板外列追加在最后
+        mid = [c for c in df.columns
+               if c not in _CSTICK_LEAD and c not in _CSTICK_TAIL
+               and c not in ('date', 'time')]
+        template = _CSTICK_LEAD + mid + _CSTICK_TAIL
+
+    out = {}
+    for col in template:
+        if col in df.columns:
+            out[col] = df[col]
+        elif col == 'seqno' and 'orderid' in df.columns:
+            out[col] = df['orderid']      # new_log 惯例 seqno == orderid
+        elif col == 'updatetime':
+            out[col] = dt                 # 保留原始 datetime 文本
+        else:
+            out[col] = 0
+    rest = [c for c in df.columns if c not in out and c != 'datetime']
+    for col in rest:
+        out[col] = df[col]
+    return pd.DataFrame(out)[list(out.keys())]
+
+
 def revert_sh_order(order_df: pd.DataFrame, trade_df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """
     上海股票订单还原函数（numpy 向量化版本，比 pandas groupby 快 100-200 倍）
@@ -175,6 +236,32 @@ def revert_sh_order(order_df: pd.DataFrame, trade_df: pd.DataFrame, symbol: str)
     return result
 
 
+def _restore_sh_orders(symbol: str, order_df: pd.DataFrame,
+                       trade_df: pd.DataFrame) -> pd.DataFrame:
+    """上海股票委托还原统一入口。
+
+    部分数据源（2026-09-11 新增 data/ 数据集）的沪市 csord 已含上游从成交
+    还原的委托（标志：channelno=0 的行，ordertype=0、orderid 为成交主动方）。
+    这类源若再走 revert_sh_order 会双重还原（同 orderid 聚合后量翻倍），
+    且还原单与原始单 channel 分裂会触发引擎
+    "历史成交双方 ChannelNo 不一致"。故：channelno=0 统一为主通道后
+    直接使用，不再二次还原。
+    """
+    ch = pd.to_numeric(order_df['channelno'], errors='coerce').fillna(0).astype('int64')
+    if (ch == 0).any():
+        nonzero = ch[ch > 0]
+        if not nonzero.empty:
+            main_ch = int(nonzero.mode().iloc[0])
+        else:  # 全 0：借用 cstra 的通道号
+            main_ch = int(pd.to_numeric(trade_df['channelno'], errors='coerce')
+                          .dropna().mode().iloc[0])
+        order_df = order_df.copy()
+        order_df['channelno'] = ch.replace(0, main_ch)
+        print(f"[{symbol}] 沪市源已含上游还原委托（channelno=0 → {main_ch}，跳过引擎侧还原）")
+        return order_df
+    return revert_sh_order(order_df, trade_df, symbol)
+
+
 def create_symbol_data(symbol: str, 
                        cstick_df: pd.DataFrame,
                        order_df: pd.DataFrame, 
@@ -206,18 +293,23 @@ def create_symbol_data(symbol: str,
     for column in ('side', 'ordertype'):
         if column in order_df.columns:
             order_df[column] = order_df[column].map(_normalize_adata_scalar)
-    
+
+    # 布局归一化（datetime 单列数据源 → date/time 标准两列，须在 SH 还原前）
+    cstick_df = _normalize_table_layout(cstick_df, 'cstick')
+    order_df = _normalize_table_layout(order_df, 'csord')
+    trade_df = _normalize_table_layout(trade_df, 'cstra')
+
     # 对于上海股票，进行订单还原
     if symbol.endswith('.SH'):
-        order_df = revert_sh_order(order_df, trade_df, symbol)
+        order_df = _restore_sh_orders(symbol, order_df, trade_df)
         print(f"[{symbol}] 上海股票订单还原完成，还原后订单数: {len(order_df)}")
-    
+
     # 转换为 CSV 字符串
     cstick_csv = cstick_df.to_csv(index=False)
     order_csv = order_df.to_csv(index=False)
     trade_csv = trade_df.to_csv(index=False)
     csbar1d_csv = csbar1d_df.to_csv(index=False)
-    
+
     return SymbolData(symbol, cstick_csv, order_csv, trade_csv, csbar1d_csv, is_etf)
 
 
@@ -241,8 +333,13 @@ def _prepare_symbol_csvs(symbol):
         if column in order_df.columns:
             order_df[column] = order_df[column].map(_normalize_adata_scalar)
 
+    # 布局归一化（datetime 单列数据源 → date/time 标准两列，须在 SH 还原前）
+    cstick_df = _normalize_table_layout(cstick_df, 'cstick')
+    order_df = _normalize_table_layout(order_df, 'csord')
+    trade_df = _normalize_table_layout(trade_df, 'cstra')
+
     if symbol.endswith('.SH'):
-        order_df = revert_sh_order(order_df, trade_df, symbol)
+        order_df = _restore_sh_orders(symbol, order_df, trade_df)
         print(f"[{symbol}] 上海股票订单还原完成，还原后订单数: {len(order_df)}")
 
     cstick_csv = cstick_df.to_csv(index=False)
