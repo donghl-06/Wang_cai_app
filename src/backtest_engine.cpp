@@ -1535,7 +1535,8 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
     pending_trade_events_.clear();
 
     // 价格笼子出笼扫描（连续竞价段，每条逐笔消息处理后）：
-    // 历史笼单按盘口判据（不再穿价/对手盘空），策略笼单按数值范围重查。
+    // 历史笼单与策略笼单均按数值规则重查（共用 userCageBounds，判据=价格落回
+    // 有效申报范围；非"不再穿价"——出笼时可仍穿价，300026 边界单实测锁定）。
     // 放在事件快照推送之前，出笼效果体现在本次快照中。
     if (continuous_mode_ && !closing_mode_ && con_engine_) {
         if (cage_inference_active_) {

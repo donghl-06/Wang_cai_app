@@ -41,6 +41,40 @@ AQS_DIR = next(
     Path("/tmp/aqsnapshots"),
 )  # 暂存窗口真实数据（aqsnapshots 参考仓库，后缀式命名 {sym}_{date}_{kind}.csv）
 
+ROOT = Path(__file__).resolve().parent.parent.parent   # 项目根（new_log/ 与 data/ 所在）
+
+
+def _real_data_dir(sym: str, date: str):
+    """在 new_log/ 与 data/ 两个前缀式数据目录中定位（cpp/data 出现后
+    DATA_DIR 目录优先级不再稳定，显式查找）。"""
+    for d in (ROOT / "new_log", ROOT / "data"):
+        if (d / f"csord_{sym}_{date}.csv").is_file():
+            return d
+    return None
+
+
+def _load_real_any(sym: str, date: str):
+    """读取任一前缀式数据目录的真实四件套（datetime 单列源自动归一化，
+    缺 csbar1d 用昨收合成 ±20% 涨跌停）。"""
+    from wangcai_syn.utils import _normalize_table_layout
+    base = _real_data_dir(sym, date)
+    assert base is not None, f"找不到 {sym} {date} 数据"
+    files = {k: pd.read_csv(base / f"{k}_{sym}_{date}.csv")
+             for k in ("cstick", "csord", "cstra")}
+    for k in files:
+        files[k] = _normalize_table_layout(files[k], k)
+    bar = base / f"csbar1d_{sym}_{date}.csv"
+    if bar.is_file():
+        files["csbar1d"] = pd.read_csv(bar)
+    else:
+        prev = float(files["cstick"]["prevclose"].dropna().iloc[-1])
+        files["csbar1d"] = pd.DataFrame([{
+            "sym": sym, "prevclose": prev, "open": prev, "high": prev,
+            "low": prev, "close": prev, "volume": 0, "turnover": 0,
+            "tradecount": 0, "af": 1.0,
+            "upperlimit": prev * 1.2, "lowerlimit": prev * 0.8}])
+    return files
+
 
 # ---------------------------------------------------------------------------
 # 合成数据构造
@@ -629,7 +663,7 @@ def _ms(t):
 def test_real_2025_user_cage_switch_equivalence():
     """2025 数据（拒单时代）：策略笼开关不影响历史重建——重建成交与真实一致"""
     sym, date = "002929.SZ", "2025-12-15"
-    if not (DATA_DIR / f"cstra_{sym}_{date}.csv").is_file():
+    if _real_data_dir(sym, date) is None:
         pytest.skip("缺少 002929 数据")
 
     class Collector(RealWatch):
@@ -641,7 +675,10 @@ def test_real_2025_user_cage_switch_equivalence():
                                         int(t.Price), int(t.Volume)))
             return []
 
-    files = _load_real(DATA_DIR, sym, date)
+    if _real_data_dir(sym, date) is None:
+        pytest.skip("缺少 002929 数据")
+
+    files = _load_real_any(sym, date)
 
     def run(tag, enabled):
         s = Collector()
@@ -669,3 +706,83 @@ def test_real_2025_user_cage_switch_equivalence():
              int(round(float(r["price"]) * 10000)))
         real_agg[k] = real_agg.get(k, 0) + int(r["size"])
     assert off == real_agg, "重建成交与真实不一致（回归失败）"
+
+
+# ---------------------------------------------------------------------------
+# 多真实股票参数化验证（2026-09-11 实测 9/9 完全一致后固化）
+# ---------------------------------------------------------------------------
+
+_REAL_MULTI = [
+    # (sym, date, is_etf) — 笼子板块：创业板暂存窗口/拒单两时代、科创板拒单；
+    # 基线：主板 2023.4.10 生效线两侧（无笼→拒单）、基金/ETF 全程无笼。
+    # 数据源：new_log/（2025 批次）与 data/（2021-2024 批次，datetime 单列格式）
+    ("300557.SZ", "2021-03-26", False),   # 创业板·暂存窗口
+    ("300557.SZ", "2024-10-16", False),   # 创业板·拒单时代
+    ("300432.SZ", "2025-11-17", False),
+    ("300502.SZ", "2025-12-15", False),
+    ("300827.SZ", "2025-11-17", False),
+    ("688503.SH", "2025-11-17", False),
+    ("688516.SH", "2025-11-17", False),
+    ("000027.SZ", "2022-01-07", False),   # 深主板·无笼时代
+    ("000027.SZ", "2025-08-01", False),   # 深主板·拒单时代
+    ("002156.SZ", "2023-04-06", False),   # 深主板·生效线前 4 天（无笼）
+    ("002156.SZ", "2023-07-27", False),   # 深主板·拒单时代
+    ("600373.SH", "2022-08-04", False),   # 沪主板·无笼时代
+    ("600373.SH", "2023-09-19", False),   # 沪主板·拒单时代
+    ("600500.SH", "2024-08-01", False),   # 沪主板·拒单时代
+    ("002929.SZ", "2025-12-15", False),
+    ("600105.SH", "2025-12-15", False),
+    ("588050.SH", "2021-03-08", True),    # 科创ETF·无笼
+    ("159998.SZ", "2024-08-30", True),    # 创业板ETF·无笼
+    ("510050.SH", "2025-11-17", True),
+]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("sym,date,is_etf", _REAL_MULTI,
+                         ids=[f"{s}-{d}" for s, d, _ in _REAL_MULTI])
+def test_real_multi_stocks_rebuild_exact(sym, date, is_etf):
+    """多只真实股票连续段(09:30-14:57)重建成交与 cstra **完全相等**
+    （订单对+价格聚合，双向 dict 相等，严于 300026 测试的子集 >=0.95 口径；
+    2026-09-11 实测 19/19 全部一致，含 datetime 单列 data/ 数据源）。
+    附带快照结论（2026-09-11 诊断，见 run_real_stocks.py）：
+    - 固定 T+1s 的 bid1/ask1 对齐率 60%-99% 不等，低值是 new_log cstick 时戳
+      与引擎事件时戳的固定错位（数据口径），非簿状态偏差；
+    - ±2s 容忍窗口下 300502/600105/300827 全部回升 100%。"""
+    if _real_data_dir(sym, date) is None:
+        pytest.skip(f"缺少 {sym} {date} 数据")
+    files = _load_real_any(sym, date)
+    cstra = files["cstra"]
+
+    class _ContCollector(RealWatch):
+        def onTradeEvent(self, t):
+            if t.ExecType == '1':
+                hhmmss = t.Time // 1000
+                if 93000 <= hhmmss < 145700:
+                    self.trades.append((int(t.ChannelNo), int(t.BuyNo),
+                                        int(t.SellNo), int(t.Price),
+                                        int(t.Volume)))
+            return []
+
+    s = _ContCollector()
+    assert run_backtest({sym: (files["cstick"], files["csord"], cstra,
+                               files["csbar1d"], is_etf)}, s,
+                        event_snapshot_enabled=True)
+
+    eng = {}
+    for ch, b, a, px, v in s.trades:
+        eng[(ch, b, a, px)] = eng.get((ch, b, a, px), 0) + v
+
+    ts = cstra["time"].astype(str)
+    ex = cstra["exectype"].map(_norm_bytes)
+    real = cstra[(ex == "1") & (ts >= "0 days 09:30:00") & (ts < "0 days 14:57:00")]
+    real_agg = {}
+    for _, r in real.iterrows():
+        k = (int(r["channelno"]), int(r["bidorderid"]), int(r["askorderid"]),
+             int(round(float(r["price"]) * 10000)))
+        real_agg[k] = real_agg.get(k, 0) + int(r["size"])
+
+    assert eng == real_agg, (
+        f"{sym} {date} 重建成交与真实不一致: "
+        f"缺 {sum(1 for k, v in real_agg.items() if eng.get(k, 0) < v)} 对, "
+        f"多 {sum(1 for k in eng if k not in real_agg)} 对")
