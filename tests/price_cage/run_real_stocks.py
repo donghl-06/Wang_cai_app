@@ -1,7 +1,8 @@
 """多只真实股票批量验证：价格笼子重建成交一致性 + 事件快照对齐率。
 
 用法（项目根目录）:
-    .venv/bin/python tests/price_cage/run_real_stocks.py            # 全部
+    .venv/bin/python tests/price_cage/run_real_stocks.py            # 手工清单
+    .venv/bin/python tests/price_cage/run_real_stocks.py --all      # 扫描全部数据目录
     .venv/bin/python tests/price_cage/run_real_stocks.py 688516.SH  # 指定
 
 指标（沿用 test_real_300026 / test_real_2025 两个既有口径）:
@@ -14,6 +15,7 @@
 import re
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -215,10 +217,61 @@ def run_one(sym, date, note, is_etf):
             "align": align, "n_snap": n_snap, "sec": dt}
 
 
+def _board_era_desc(code: str, mkt: str, date: str) -> str:
+    """按代码前缀+日期生成板块·时代说明（时代界线与 price_cage.h stageOf 一致）。"""
+    if (mkt == 'SH' and code.startswith('5')) or (mkt == 'SZ' and code.startswith('1')):
+        return '基金·全程无笼'
+    if code.startswith(('300', '301')):
+        board = '创业板'
+    elif code.startswith(('688', '689')):
+        board = '科创板'
+    elif mkt == 'SZ':
+        board = '深主板'
+    else:
+        board = '沪主板'
+    if board == '科创板' and date < '2019-07-22':
+        era = '开市前(不适用)'
+    elif board == '科创板' and date < '2023-04-10':
+        era = '纯2%拒单'
+    elif board == '创业板' and date < '2020-08-24':
+        era = '无笼时代'
+    elif board == '创业板' and date < '2023-04-10':
+        era = '暂存窗口(纯2%)'
+    elif date < '2023-04-10':
+        era = '无笼时代'
+    else:
+        era = '拒单时代(2%∨0.1)'
+    return f'{board}·{era}'
+
+
+def discover_all():
+    """扫描 new_log/ 与 data/ 全部 (sym, date) 组合，自动判定板块与基金。"""
+    pat = re.compile(r'csord_(\d{6})\.(SZ|SH)_(\d{4}-\d{2}-\d{2})\.csv')
+    combos = set()
+    for base in (NEW_LOG, DATA_DIR2):
+        if not base.is_dir():
+            continue
+        for f in base.iterdir():
+            m = pat.match(f.name)
+            if m:
+                code, mkt, date = m.groups()
+                sym = f'{code}.{mkt}'
+                combos.add((sym, date, code, mkt))
+    out = []
+    for sym, date, code, mkt in sorted(combos):
+        is_etf = (mkt == 'SH' and code.startswith('5')) or \
+                 (mkt == 'SZ' and code.startswith('1'))
+        out.append((sym, date, _board_era_desc(code, mkt, date), is_etf))
+    return out
+
+
 def main():
-    want = set(sys.argv[1:])
+    args = sys.argv[1:]
+    use_all = '--all' in args
+    want = {a for a in args if not a.startswith('--')}
+    stock_list = discover_all() if use_all else STOCKS
     rows = []
-    for sym, date, note, etf in STOCKS:
+    for sym, date, note, etf in stock_list:
         if want and sym not in want:
             continue
         try:
