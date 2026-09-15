@@ -43,21 +43,27 @@ for (( offset=0; offset<UNIVERSE; offset+=BLOCK_SIZE )); do
             sleep 60; continue
         fi
 
-        # 3. 本子波只次是否全部 pass(失败只次保留数据待查)
+        # 3. 本子波只次状态统计(同一 (sym,date) 取最后一次记录;
+        #    data_incomplete=源数据缺行,已如实登记,视为已处置)
         wave_stat=$($VENV_PY - "$chunk_start" "$chunk_end" "$RESULTS" <<'EOF'
 import csv, sys
 s, e = sys.argv[1], sys.argv[2]
-rows = [r for r in csv.DictReader(open(sys.argv[3])) if s <= r["date"] <= e]
-n = len(rows); p = sum(1 for r in rows if r["status"] == "pass")
-print(f"{p} {n}")
+best = {}
+for r in csv.DictReader(open(sys.argv[3])):
+    if s <= r["date"] <= e:
+        best[(r["sym"], r["date"])] = r["status"]
+n = len(best)
+p = sum(1 for v in best.values() if v == "pass")
+inc = sum(1 for v in best.values() if v == "data_incomplete")
+print(f"{p} {inc} {n}")
 EOF
 )
-        read -r n_pass n_done <<< "$wave_stat"
-        log "本子波结果:$n_pass/$n_done pass"
+        read -r n_pass n_inc n_done <<< "$wave_stat"
+        log "本子波结果:$n_pass pass + $n_inc data_incomplete / 共 $n_done"
 
-        # 4. 全部 pass 才删本子波原始数据(按日期范围匹配文件名;
+        # 4. 全部 pass/data_incomplete 才删本子波原始数据(其余保留待查;
         #    跳过 tools/protect_pairs.txt 里的回归基准只次)
-        if [[ "$n_done" -gt 0 && "$n_pass" == "$n_done" ]]; then
+        if [[ "$n_done" -gt 0 && $((n_pass + n_inc)) == "$n_done" ]]; then
             d=$chunk_start
             while [[ "$d" < "$chunk_end" || "$d" == "$chunk_end" ]]; do
                 for f in adata_logs/*_"$d".csv; do
@@ -69,7 +75,7 @@ EOF
             done
             log "已删除本子波原始 CSV(磁盘余量 $(df -h . | awk 'NR==2{print $4}'))"
         else
-            log "⚠️ 有 $((n_done - n_pass)) 只次未 pass,保留数据待查"
+            log "⚠️ 有 $((n_done - n_pass - n_inc)) 只次未通过,保留数据待查"
         fi
 
         # 5. 提交进度

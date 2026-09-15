@@ -51,6 +51,9 @@ def parse_args():
     p.add_argument("--date", default=None, help="只跑指定日期 YYYY-MM-DD")
     p.add_argument("--retry-failed", action="store_true",
                    help="重跑结果 CSV 中非 pass 的只次(默认跳过所有已记录只次)")
+    p.add_argument("--max-missing-rate", type=float, default=0.0001,
+                   help="源数据引用缺失率上限(默认 0.01%%;撤单引用缺失>0 或"
+                        "成交引用缺失超此值即判 data_incomplete,不跑引擎)")
     return p.parse_args()
 
 
@@ -142,6 +145,34 @@ def eng_agg(trade_list):
     return agg
 
 
+# ---------- 源数据质量前置检查 ----------
+
+def data_quality_check(csord, cstra):
+    """cstra 引用的 orderid 是否都存在于 csord。
+
+    极端行情日(如 2024-10-08 天量)adata 源数据会丢行:撤单引用不存在
+    的委托 → 引擎必抛"撤单引用未注册订单";成交引用缺失 → 无法重建,
+    必现假阴。这类只次不可能通过 100% 口径,直接判 data_incomplete,
+    不浪费引擎时间。返回 (missing_cancel, missing_trade, cancel_rate, trade_rate)。
+    """
+    ids = set(csord["orderid"].astype("int64"))
+    ex = cstra["exectype"].map(_norm_bytes)
+    n_miss_cancel = n_miss_trade = 0
+    n_cancel_ref = n_trade_ref = 0
+    for ex_val, is_trade in (("1", True), ("2", False)):
+        sub = cstra[ex == ex_val]
+        ref = pd.concat([sub["bidorderid"], sub["askorderid"]]).astype("int64")
+        ref = ref[ref > 0]
+        miss = int((~ref.isin(ids)).sum())
+        if is_trade:
+            n_miss_trade, n_trade_ref = miss, len(ref)
+        else:
+            n_miss_cancel, n_cancel_ref = miss, len(ref)
+    cr = n_miss_cancel / max(n_cancel_ref, 1)
+    tr = n_miss_trade / max(n_trade_ref, 1)
+    return n_miss_cancel, n_miss_trade, cr, tr
+
+
 # ---------- 结果 CSV(增量追加 + 续传) ----------
 
 def load_done(results_path: Path, retry_failed: bool):
@@ -214,6 +245,15 @@ def main():
                              "n_real_pairs": 0, "n_eng_pairs": 0, "subset_rate": 0,
                              "false_neg": 0, "false_pos": 0, "exact": 0,
                              "seconds": 0, "note": str(e)[:80]})
+                continue
+            # 源数据质量前置检查:引用缺失的只次不可能过 100% 口径,直接登记
+            nmc, nmt, cr, tr = data_quality_check(files["csord"], files["cstra"])
+            if nmc > 0 or tr > args.max_missing_rate:
+                rows.append({"sym": sym, "date": day, "status": "data_incomplete",
+                             "n_real_pairs": 0, "n_eng_pairs": 0, "subset_rate": 0,
+                             "false_neg": 0, "false_pos": 0, "exact": 0,
+                             "seconds": 0,
+                             "note": f"撤单引用缺失{nmc}({cr:.4%}) 成交引用缺失{nmt}({tr:.4%})"})
                 continue
             data_dict[sym] = (files["cstick"], files["csord"], files["cstra"],
                               files["csbar1d"], is_etf_sym(sym))
