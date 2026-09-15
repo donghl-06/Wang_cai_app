@@ -1270,7 +1270,11 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
     
     // 收集策略产生的用户事件
     std::vector<UserEvent> strategy_events;
-    
+
+    // 进场即撤单的真实撤单记录:身份校验后吸收为 no-op,不做簿操作
+    // (订单在入场时因定价基准侧空簿被交易所当场自动撤销,见 accept_sz)
+    bool entry_cancel_absorbed = false;
+
     // 根据事件类型调用不同的策略回调
     if (ev.source == "ord") {
         // 委托事件：将Event转换为OrderDetail
@@ -1326,19 +1330,37 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             const uint64_t market_order_id = trade.BuyNo != 0
                 ? static_cast<uint64_t>(trade.BuyNo)
                 : static_cast<uint64_t>(trade.SellNo);
+            const Direction expected_direction = trade.BuyNo != 0
+                ? Direction::Buy : Direction::Sell;
             const auto system_id = orderbook_->findSystemOrderId(
                 market_order_id, static_cast<int>(trade.ChannelNo));
             if (!system_id.has_value()) {
-                throw MarketIdentityError(
-                    "撤单引用了未注册或非活动市场订单: symbol=" + ev.sym +
-                    ", datetime=" + ev.datetime +
-                    ", channel=" + std::to_string(trade.ChannelNo) +
-                    ", order_id=" + std::to_string(market_order_id));
-            }
+                // 活跃表未命中 → 查进场即撤表:该订单入场时因定价基准侧空簿
+                // 被交易所当场自动撤销,这条撤单记录即自动撤销的回执,
+                // 身份校验后吸收为 no-op;不在表中才判定真异常。
+                const auto ec_id = orderbook_->findEntryCancelledSystemId(
+                    market_order_id, static_cast<int>(trade.ChannelNo));
+                if (!ec_id.has_value()) {
+                    throw MarketIdentityError(
+                        "撤单引用了未注册或非活动市场订单: symbol=" + ev.sym +
+                        ", datetime=" + ev.datetime +
+                        ", channel=" + std::to_string(trade.ChannelNo) +
+                        ", order_id=" + std::to_string(market_order_id));
+                }
+                const auto& ec_identity = orderbook_->requireMarketIdentity(*ec_id);
+                if (ec_identity.direction != expected_direction || ec_identity.instrument != ev.sym ||
+                    (ev.trading_day > 0 && ec_identity.trading_day > 0 &&
+                     ec_identity.trading_day != ev.trading_day)) {
+                    throw MarketIdentityError(
+                        "撤单市场身份与 BuyNo/SellNo 方向、标的或交易日不一致(进场即撤): symbol=" + ev.sym +
+                        ", datetime=" + ev.datetime +
+                        ", channel=" + std::to_string(trade.ChannelNo) +
+                        ", order_id=" + std::to_string(market_order_id));
+                }
+                entry_cancel_absorbed = true;
+            } else {
 
             const auto& identity = orderbook_->requireMarketIdentity(*system_id);
-            const Direction expected_direction = trade.BuyNo != 0
-                ? Direction::Buy : Direction::Sell;
             if (identity.direction != expected_direction || identity.instrument != ev.sym ||
                 (ev.trading_day > 0 && identity.trading_day > 0 &&
                  identity.trading_day != ev.trading_day)) {
@@ -1347,6 +1369,7 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                     ", datetime=" + ev.datetime +
                     ", channel=" + std::to_string(trade.ChannelNo) +
                     ", order_id=" + std::to_string(market_order_id));
+            }
             }
         }
         
@@ -1380,7 +1403,8 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             // 历史撤单推送（真实成交事件不进集合竞价段，防御性排除）
             uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
 
-            call_engine_->cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
+            if (!entry_cancel_absorbed)
+                call_engine_->cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
         } else {
             // tick 推送
             data_manager_->updateSnapshot(ev);
@@ -1465,7 +1489,8 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                 // 此处不做任何簿操作、不推策略，避免双重处理。
             } else if (ev.source == "tra") {
                 uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
-                con_engine_->cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
+                if (!entry_cancel_absorbed)
+                    con_engine_->cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
             } else {
                 data_manager_->updateSnapshot(ev);
                 has_real_tick_ = true;
@@ -1492,7 +1517,8 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                 data_manager_->updateOrderDetail(ev, 'A');
             } else if (ev.source == "tra") {
                 uint64_t oid_raw = ev.bidorderid ? ev.bidorderid : ev.askorderid;
-                close_engine_->cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
+                if (!entry_cancel_absorbed)
+                    close_engine_->cancel_by_input_id(oid_raw, static_cast<int>(ev.channelno));
             } else {
                 data_manager_->updateSnapshot(ev);
                 has_real_tick_ = true;

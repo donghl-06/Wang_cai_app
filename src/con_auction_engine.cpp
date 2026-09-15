@@ -791,30 +791,39 @@ void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
     // ========== 历史订单：正常处理 ==========
     bool buy = od->direction == Direction::Buy;
 
-    // 深市：市价 / 本方最优 保护价转换 
+    // 深市：市价 / 本方最优 保护价转换
     if (od->order_type == OrderType::Market || od->order_type == OrderType::BestOwn) {
-        
+
         uint64_t ext_id = std::stoull(od->order_local_id);
         OrderType orig = od->order_type;
         Price px = 0;
+        MarketOrderKey market_key{od->market_channel_no, ext_id};
         if (orig == OrderType::Market) {
             // 先看历史成交价格
-            MarketOrderKey market_key{od->market_channel_no, ext_id};
             if (auto it = ob_.first_trade_px_.find(market_key); it != ob_.first_trade_px_.end())
                 px = it->second;
             // 无成交 → 对手最优
             if (px == 0) px = buy ? ob_.bestAsk() : ob_.bestBid();
-            // 市场空簿 → 涨跌停兜底
-            if (px == 0) px = buy ? ob_._upper : ob_._lower;
         }
         else if (orig == OrderType::BestOwn) {
             // 己方最优
             px = buy ? ob_.bestBid() : ob_.bestAsk();
-            // 己方空簿 → 对手最优
-            if (px == 0) px = buy ? ob_.bestAsk() : ob_.bestBid();
-            if (px == 0) px = buy ? ob_._upper : ob_._lower;
+            // 己方空簿但真实有成交(簿发散):首成交价≈入场时本方价,是最佳重建
+            if (px == 0) {
+                if (auto it = ob_.first_trade_px_.find(market_key); it != ob_.first_trade_px_.end())
+                    px = it->second;
+            }
         }
-        
+
+        if (px == 0) {
+            // 空簿即撤:市价单对手方空簿 / 本方最优己方空簿且真实零成交 →
+            // 交易所当场自动撤销(零成交,撤单记录与委托同时间戳;
+            // adata 000006.SZ 2024-11-01 实证 7 笔本方最优 + 9 笔市价单)。
+            // 登记身份后不撮合、不挂簿,后续真实撤单记录由引擎吸收为 no-op。
+            ob_.markEntryCancelled(od->order_id);
+            return;
+        }
+
         // tick 对齐
         if (px < ob_._lower) px = ob_._lower;
         if (px > ob_._upper) px = ob_._upper;

@@ -119,6 +119,42 @@ void OrderBook::eraseActiveMarketOrder(uint64_t system_id) {
     }
 }
 
+void OrderBook::markEntryCancelled(uint64_t system_id) {
+    auto identity_it = market_identity_by_system_id_.find(system_id);
+    if (identity_it == market_identity_by_system_id_.end()) {
+        throw MarketIdentityError("进场即撤登记失败: 未注册的 system-id=" +
+                                  std::to_string(system_id));
+    }
+    MarketOrderKey key{identity_it->second.channel_no, identity_it->second.market_order_id};
+    auto active_it = market_system_id_by_key_.find(key);
+    if (active_it != market_system_id_by_key_.end() && active_it->second == system_id) {
+        market_system_id_by_key_.erase(active_it);
+    }
+    entry_cancelled_system_id_by_key_.emplace(key, system_id);
+}
+
+std::optional<uint64_t> OrderBook::findEntryCancelledSystemId(uint64_t market_order_id,
+                                                              int channel_no) const {
+    if (market_order_id == 0) return std::nullopt;
+    if (channel_no >= 0) {
+        auto it = entry_cancelled_system_id_by_key_.find({channel_no, market_order_id});
+        if (it == entry_cancelled_system_id_by_key_.end()) return std::nullopt;
+        return it->second;
+    }
+
+    // 裸 ID 扫描（与 findSystemOrderId 同口径）
+    std::optional<uint64_t> result;
+    for (const auto& [key, system_id] : entry_cancelled_system_id_by_key_) {
+        if (key.market_order_id != market_order_id) continue;
+        if (result.has_value() && *result != system_id) {
+            throw MarketIdentityError("进场即撤订单 ID 在多个通道中有歧义: " +
+                                      std::to_string(market_order_id));
+        }
+        result = system_id;
+    }
+    return result;
+}
+
 // 插入事件到有序列表
 void OrderBook::insertEvent(const Event& event) {
     // 时间过滤：只处理集合竞价时间段 09:15:00 到 09:25:00  

@@ -26,6 +26,7 @@ from wangcai_syn.utils import _normalize_table_layout
 ROOT = Path(__file__).resolve().parent.parent.parent
 NEW_LOG = ROOT / "new_log"                      # 前缀式: csord_{sym}_{date}.csv
 DATA_DIR2 = ROOT / "data"                       # 前缀式（2026-09-11 新增数据集）
+ADATA_LOG = ROOT / "adata_logs"                 # 前缀式（2026-09-15 adata 数据集）
 AQS_DIR = Path(__file__).resolve().parent / "data"   # 后缀式: {sym}_{date}_csord.csv
 
 # (sym, date, 板块·时代说明, 是否 ETF)   时代: B=2019.7科创板开市 C=2020.8创业板暂存
@@ -55,6 +56,7 @@ STOCKS = [
     ("600500.SH", "2024-08-01", "沪主板·拒单时代", False),
     ("002929.SZ", "2025-12-15", "深主板·拒单时代(基线)", False),
     ("600105.SH", "2025-12-15", "沪主板·拒单时代(基线)", False),
+    ("000001.SZ", "2024-11-01", "深主板·拒单时代(adata)", False),
     # --- 基金/ETF：全程无笼（对照） ---
     ("588050.SH", "2021-03-08", "科创ETF·无笼(基线)", True),
     ("588050.SH", "2023-08-07", "科创ETF·无笼(基线)", True),
@@ -78,7 +80,7 @@ def _ms(t):
 
 def load_files(sym, date):
     """new_log/data 前缀式优先,缺 csbar1d 用 cstick 合成;300026 走 aqsnapshots 后缀式。"""
-    base = next((d for d in (NEW_LOG, DATA_DIR2)
+    base = next((d for d in (NEW_LOG, DATA_DIR2, ADATA_LOG)
                  if (d / f"csord_{sym}_{date}.csv").is_file()), None)
     if base is not None:
         files = {k: pd.read_csv(base / f"{k}_{sym}_{date}.csv")

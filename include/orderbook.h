@@ -223,6 +223,10 @@ public:
     [[nodiscard]] std::optional<uint64_t> findSystemOrderId(
         uint64_t market_order_id, int channel_no = -1) const;
     void eraseActiveMarketOrder(uint64_t system_id);
+    // 进场即撤：将订单从活跃表移入进场即撤表（语义见成员声明）
+    void markEntryCancelled(uint64_t system_id);
+    [[nodiscard]] std::optional<uint64_t> findEntryCancelledSystemId(
+        uint64_t market_order_id, int channel_no = -1) const;
     
     // 获取订单信息
     std::shared_ptr<Order> getOrder(uint64_t order_id) const {
@@ -307,6 +311,10 @@ private:
     std::unordered_map<uint64_t, MarketOrderIdentity> market_identity_by_system_id_;
     // 活跃市场身份 → system-id，仅用于市场撤单反查。
     std::unordered_map<MarketOrderKey, uint64_t, MarketOrderKeyHash> market_system_id_by_key_;
+    // 进场即撤市场身份 → system-id：深市市价/本方最优单在定价基准侧空簿时
+    // 被交易所当场自动撤销（零成交、撤单记录与委托同时间戳），身份登记于此，
+    // 供后续真实撤单记录精确吸收（no-op），不复用活跃表以免掩盖真异常。
+    std::unordered_map<MarketOrderKey, uint64_t, MarketOrderKeyHash> entry_cancelled_system_id_by_key_;
 
     //订单价格转换为桶索引
     int  pxToIdx(Price p) const { 
