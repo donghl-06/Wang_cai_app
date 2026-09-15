@@ -36,6 +36,20 @@ public:
     // 接收成交事件，返回要处理的事件列表（下单或撤单）
     virtual std::vector<UserEvent> onTradeEvent(const TradeDetail& trade) = 0;
 
+    // 批量成交推送:同一市场事件撮合产生的全部历史成交一次性推送。
+    // 引擎默认走此入口;默认实现逐条回落到 onTradeEvent(完全兼容旧策略)。
+    // Python 策略覆写 onTradeEventsBatch 后,每市场事件只跨一次 Python 边界,
+    // 高频重建成交场景(数万笔/日)可省掉大量 GIL 往返。
+    virtual std::vector<UserEvent> onTradeEventsBatch(const std::vector<TradeDetail>& trades) {
+        std::vector<UserEvent> out;
+        for (const auto& t : trades) {
+            auto v = onTradeEvent(t);
+            out.insert(out.end(), std::make_move_iterator(v.begin()),
+                       std::make_move_iterator(v.end()));
+        }
+        return out;
+    }
+
     //  接受Tick事件，返回要处理的事件列表（下单或撤单）
     virtual std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) = 0;
     
@@ -131,6 +145,9 @@ public:
     
     // 注册策略
     void registerStrategy(std::shared_ptr<Strategy> strategy);
+
+    // 订单簿访问(供 MultiBacktestEngine 并行构建后搬运事件流)
+    OrderBook& orderbook() { return *orderbook_; }
     
     // 获取回测结果
     std::map<std::string, Position> getPositions() const;
@@ -277,6 +294,9 @@ private:
     
     // 成交事件产生的策略事件队列
     std::vector<UserEvent> pending_trade_events_;
+    // 当前市场事件内撮合产生的历史成交缓冲,在事件处理末尾
+    // 经 onTradeEventsBatch 一次性推送策略(批量跨界,见 Strategy 注释)
+    std::vector<TradeDetail> pending_trade_batch_;
 
     // 跨标的用户事件暂存：策略在本引擎回调里返回、但 symbol 不属于本引擎的订单/撤单
     // 仅在 Taskflow 并行阶段内写入，join 之后由上层串行 drain + 路由

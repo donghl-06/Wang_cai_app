@@ -292,17 +292,16 @@ public:
     // 设置前收盘价和交易所
     void setPrevClosePrice(Price price) { _prev_close_price = price; }
     void setExchange(const std::string& exchange) { _exchange = exchange; }
-    // 全局有序列表
-    // static std::map<uint64_t, std::vector<Event>> whole_events; // 全局事件列表
-    // const std::map<uint64_t, std::vector<Event>>& getEvents() const { return whole_events; }
-    static std::vector<Event> whole_events;
-    static std::vector<Event> tick_events;
-    static void clearTicks() { tick_events.clear(); }
-    static void insertTick(const Event& event);
+    // 本簿事件列表(2026-09-15 起从静态全局改为实例成员:
+    // 静态共享表使多合约初始化只能串行,实例化后 MultiBacktestEngine 可并行构建)
+    std::vector<Event> whole_events;
+    std::vector<Event> tick_events;
+    void clearTicks() { tick_events.clear(); }
+    void insertTick(const Event& event);
 
     const std::vector<Event>& getEvents() const { return whole_events; }
-    static void clearEvents() { whole_events.clear(); }
-    static void insertEvent(const Event& event);
+    void clearEvents() { whole_events.clear(); }
+    void insertEvent(const Event& event);
 
 private:
     //桶结构体

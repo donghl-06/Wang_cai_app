@@ -92,7 +92,12 @@ def load_one(base: Path, sym: str, day: str):
 # ---------- 成交收集与对账(口径沿用 run_real_stocks) ----------
 
 class Collector(Strategy):
-    """多合约版:按 Instrument 分桶收集连续段重建成交(ExecType=1)"""
+    """多合约版:按 Instrument 分桶收集连续段重建成交(ExecType=1)
+
+    性能要点:
+    - 用 onTradeEventsBatch 批量接收(每市场事件一次跨界,而非每笔成交一次)
+    - 不覆写 onOrderEvent/onTickEvent 等无关回调,交给 C++ 覆写探测缓存短路
+    """
 
     def __init__(self):
         super().__init__()
@@ -101,22 +106,15 @@ class Collector(Strategy):
     def getStrategyId(self):
         return "RW"
 
-    def onOrderEvent(self, o): return []
-
-    def onTradeEvent(self, t):
-        if t.ExecType == '1':
-            hhmmss = t.Time // 1000
-            if 93000 <= hhmmss < 145700:
-                self.trades[t.Instrument].append(
-                    (int(t.ChannelNo), int(t.BuyNo), int(t.SellNo),
-                     int(t.Price), int(t.Volume)))
+    def onTradeEventsBatch(self, ts):
+        for t in ts:
+            if t.ExecType == '1':
+                hhmmss = t.Time // 1000
+                if 93000 <= hhmmss < 145700:
+                    self.trades[t.Instrument].append(
+                        (int(t.ChannelNo), int(t.BuyNo), int(t.SellNo),
+                         int(t.Price), int(t.Volume)))
         return []
-
-    def onTickEvent(self, s): return []
-    def onOrderFilled(self, *a): pass
-    def onOrderCancelled(self, *a): pass
-    def onOrderCallback(self, cb): pass
-    def onTradeCallback(self, cb): pass
 
 
 def _norm_bytes(v):

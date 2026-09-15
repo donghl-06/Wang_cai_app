@@ -20,10 +20,6 @@
 
 namespace wangcai {
 
-// 在文件开头添加静态变量定义
-std::vector<Event> OrderBook::whole_events;
-std::vector<Event> OrderBook::tick_events;
-
 // 构造函数
 OrderBook::OrderBook(double hi, double lo, bool is_etf, ExecCallback cb)
     : _on_exec(std::move(cb))

@@ -15,47 +15,59 @@ namespace wangcai {
 MultiBacktestEngine::MultiBacktestEngine(std::vector<SymbolData> symbol_data_list)
 {
     // 自动重置全局订单ID计数器（支持多次回测）
+    // 注意:g_order_id_counter 是原子变量,下面的并行构建线程安全
     reset_order_id_counter();
-    
-    engines_.reserve(symbol_data_list.size());
 
-    for (auto& data : symbol_data_list) {
-        EngineManager se;
-        se.symbol = data.symbol;
+    const std::size_t n = symbol_data_list.size();
+    engines_.resize(n);
 
-        se.engine = std::make_unique<BacktestEngine>(data.symbol, data.cstick_csv, data.order_csv, data.trade_csv, data.csbar1d_csv, data.is_etf);
+    // 每个合约独立构建(解析 CSV → 建簿 → 合并排序),互相无共享状态
+    // (OrderBook 事件表已从静态全局改为实例成员),Taskflow 并行。
+    // 4 核机器上 6~8 只一批时初始化近线性加速。
+    tf::Taskflow taskflow;
+    for (std::size_t i = 0; i < n; ++i) {
+        taskflow.emplace([this, &symbol_data_list, i]() {
+            auto& data = symbol_data_list[i];
+            EngineManager se;
+            se.symbol = data.symbol;
 
-        // BacktestEngine 已完成解析，立即释放 CSV 字符串节省内存
-        data.cstick_csv.clear();  data.cstick_csv.shrink_to_fit();
-        data.order_csv.clear();   data.order_csv.shrink_to_fit();
-        data.trade_csv.clear();   data.trade_csv.shrink_to_fit();
-        data.csbar1d_csv.clear(); data.csbar1d_csv.shrink_to_fit();
+            se.engine = std::make_unique<BacktestEngine>(data.symbol, data.cstick_csv, data.order_csv, data.trade_csv, data.csbar1d_csv, data.is_etf);
 
-        // 合并所有事件到一个数组(移动语义,不再逐事件拷贝 ~700B 结构)
-        std::vector<Event> merged;
-        merged.reserve(OrderBook::whole_events.size() + OrderBook::tick_events.size());
+            // BacktestEngine 已完成解析，立即释放 CSV 字符串节省内存
+            data.cstick_csv.clear();  data.cstick_csv.shrink_to_fit();
+            data.order_csv.clear();   data.order_csv.shrink_to_fit();
+            data.trade_csv.clear();   data.trade_csv.shrink_to_fit();
+            data.csbar1d_csv.clear(); data.csbar1d_csv.shrink_to_fit();
 
-        merged.insert(merged.end(),
-                      std::make_move_iterator(OrderBook::whole_events.begin()),
-                      std::make_move_iterator(OrderBook::whole_events.end()));
-        merged.insert(merged.end(),
-                      std::make_move_iterator(OrderBook::tick_events.begin()),
-                      std::make_move_iterator(OrderBook::tick_events.end()));
-        
-        // 排序逻辑：
-        // 主排序键：datetime（所有事件先按时间排序）
-        // 次排序键：
-        //   - 相同时间时，ord/tra 优先于 tick
-        //   - 相同时间且都是 ord/tra 时，按 orderid（SZ）或 bizindex（SH）排序
-        //   - 相同时间且都是 tick 时，保持原顺序
-        std::stable_sort(merged.begin(), merged.end(), marketEventLess);
-        
-        se.events = std::move(merged);
-        se.idx = 0;
-        OrderBook::clearEvents();
-        OrderBook::clearTicks();
-        engines_.push_back(std::move(se));
+            // 合并所有事件到一个数组(移动语义,不再逐事件拷贝 ~700B 结构)
+            auto& ob = se.engine->orderbook();
+            std::vector<Event> merged;
+            merged.reserve(ob.whole_events.size() + ob.tick_events.size());
+
+            merged.insert(merged.end(),
+                          std::make_move_iterator(ob.whole_events.begin()),
+                          std::make_move_iterator(ob.whole_events.end()));
+            merged.insert(merged.end(),
+                          std::make_move_iterator(ob.tick_events.begin()),
+                          std::make_move_iterator(ob.tick_events.end()));
+
+            // 排序逻辑：
+            // 主排序键：datetime（所有事件先按时间排序）
+            // 次排序键：
+            //   - 相同时间时，ord/tra 优先于 tick
+            //   - 相同时间且都是 ord/tra 时，按 orderid（SZ）或 bizindex（SH）排序
+            //   - 相同时间且都是 tick 时，保持原顺序
+            std::stable_sort(merged.begin(), merged.end(), marketEventLess);
+
+            se.events = std::move(merged);
+            se.idx = 0;
+            ob.clearEvents();
+            ob.clearTicks();
+            engines_[i] = std::move(se);
+        });
     }
+    tf::Executor executor;
+    executor.run(taskflow).wait();
 }
 
 void MultiBacktestEngine::registerStrategy(std::shared_ptr<Strategy> strategy) {

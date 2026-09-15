@@ -38,7 +38,6 @@ public:
 private:
     void load_traders(const std::string& csv_content, wangcai::OrderBook& order_book);
     void insert_event(const Event& event);
-    void clear_events();
     
 private:
     std::vector<Event> call_auction_orders_;

@@ -68,28 +68,22 @@ class Empty(Strategy):
 
 
 class Collector(Strategy):
+    """真实负载:批量接收重建成交(onTradeEventsBatch)+ 不覆写无关回调"""
     def __init__(self):
         super().__init__()
         self.trades = defaultdict(list)
 
     def getStrategyId(self): return "RW"
 
-    def onOrderEvent(self, o): return []
-
-    def onTradeEvent(self, t):
-        if t.ExecType == '1':
-            hhmmss = t.Time // 1000
-            if 93000 <= hhmmss < 145700:
-                self.trades[t.Instrument].append(
-                    (int(t.ChannelNo), int(t.BuyNo), int(t.SellNo),
-                     int(t.Price), int(t.Volume)))
+    def onTradeEventsBatch(self, ts):
+        for t in ts:
+            if t.ExecType == '1':
+                hhmmss = t.Time // 1000
+                if 93000 <= hhmmss < 145700:
+                    self.trades[t.Instrument].append(
+                        (int(t.ChannelNo), int(t.BuyNo), int(t.SellNo),
+                         int(t.Price), int(t.Volume)))
         return []
-
-    def onTickEvent(self, s): return []
-    def onOrderFilled(self, *a): pass
-    def onOrderCancelled(self, *a): pass
-    def onOrderCallback(self, cb): pass
-    def onTradeCallback(self, cb): pass
 
 
 def bench(sym, day, base, strategy_factory, runs):

@@ -169,20 +169,14 @@ void BacktestEngine::initialize() {
                 // 实时合成 tick 的日累计器：历史成交在此唯一入口计入
                 accumulateInternalTrade(ex.price, ex.volume);
 
-                // 1. 推送成交事件给所有策略，收集新事件（暂存到pending队列）
+                // 1. 成交先计入批量缓冲,待本市场事件全部撮合完成后
+                // 经 onTradeEventsBatch 一次性推送策略(批量跨 Python 边界)
                 // 将Execution转换为TradeDetail
-                TradeDetail trade = normalizeHistoricalExecution(ex, trade_datetime);
-                
-                for (auto& strategy : strategies_) {
-                    auto user_events = strategy->onTradeEvent(trade);
-                    for (const auto& event : user_events) {
-                        pending_trade_events_.push_back(event);
-                    }
-                }
+                pending_trade_batch_.push_back(normalizeHistoricalExecution(ex, trade_datetime));
                 
                 // 2. 记录交易信息（如果启用了记录）- 只记录历史订单成交
                 if (recording_enabled_) {
-                    recordTrade(trade, trade_datetime);
+                    recordTrade(pending_trade_batch_.back(), trade_datetime);
                 }
             }
         });
@@ -263,17 +257,19 @@ void BacktestEngine::initialize() {
     data_manager_ = std::make_unique<DataManager>(orderbook_.get(), call_engine_.get(), con_engine_.get(), close_engine_.get());
 
     // 7. 从CSV字符串加载历史订单和成交数据，合并为事件流
-    OrderBook::clearEvents(); // 清空事件
-    OrderBook::clearTicks(); // 清空tick事件
-    
+    orderbook_->clearEvents(); // 清空事件
+    orderbook_->clearTicks(); // 清空tick事件
+
     if (is_sz) {
         loader.load_sz_info(order_csv_, trade_csv_, *orderbook_);
-        std::sort(std::execution::par_unseq, OrderBook::whole_events.begin(), OrderBook::whole_events.end(), [&](auto a, auto b) {
+        // 比较器必须按 const 引用:原先按值传参,每次比较复制两个 ~700B Event,
+        // 数十万事件排序仅此一项就是数亿字节的堆分配
+        std::sort(std::execution::par_unseq, orderbook_->whole_events.begin(), orderbook_->whole_events.end(), [&](const auto& a, const auto& b) {
             return a.orderid < b.orderid; // SZ
         });
     } else {
         loader.load_sh_info(order_csv_, trade_csv_, *orderbook_);
-        std::sort(std::execution::par_unseq, OrderBook::whole_events.begin(), OrderBook::whole_events.end(), [&](auto a, auto b) {
+        std::sort(std::execution::par_unseq, orderbook_->whole_events.begin(), orderbook_->whole_events.end(), [&](const auto& a, const auto& b) {
             return a.bizindex < b.bizindex; // SH
         });
     }
@@ -1556,6 +1552,18 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
         processUserEvent(ue);
     };
 
+    // 批量成交推送:本市场事件撮合产生的全部历史成交一次跨边界。
+    // 策略返回的用户事件进 pending_trade_events_,与原先逐笔推送同序分发
+    if (!pending_trade_batch_.empty()) {
+        for (auto& strategy : strategies_) {
+            auto user_events = strategy->onTradeEventsBatch(pending_trade_batch_);
+            for (const auto& event : user_events) {
+                pending_trade_events_.push_back(event);
+            }
+        }
+        pending_trade_batch_.clear();
+    }
+
     for (const auto& ue : strategy_events)       dispatch(ue);
     for (const auto& ue : pending_trade_events_) dispatch(ue);
     pending_trade_events_.clear();
@@ -1603,6 +1611,17 @@ void BacktestEngine::finish() {
         close_engine_->settle();
         // 收盘集合竞价 settle 之后，对暂存的用户影子单做成交判定；未成交直接撤单
         settleAuctionUserOrders(/*is_close=*/true);
+        // 批量成交推送 flush:finish() 在 processEvent 之外,收盘竞价成交在此
+        // 一次性推送策略(返回的用户事件维持原语义:进 pending 队列,不补 dispatch)
+        if (!pending_trade_batch_.empty()) {
+            for (auto& strategy : strategies_) {
+                auto user_events = strategy->onTradeEventsBatch(pending_trade_batch_);
+                for (const auto& event : user_events) {
+                    pending_trade_events_.push_back(event);
+                }
+            }
+            pending_trade_batch_.clear();
+        }
         std::cout << "[收盘集合竞价] 成交价=" << close_engine_->getPredictPrice() / 10000.0
                   << " 成交量=" << close_engine_->getPredictVolume() << std::endl;
     }

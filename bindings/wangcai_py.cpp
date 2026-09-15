@@ -42,6 +42,7 @@ private:
     mutable std::atomic<int> order_event_override_state_{-1};
     mutable std::atomic<int> trade_event_override_state_{-1};
     mutable std::atomic<int> tick_event_override_state_{-1};
+    mutable std::atomic<int> trade_batch_override_state_{-1};
     
     // RAII辅助类：自动管理处理计数器
     class ProcessingGuard {
@@ -95,6 +96,29 @@ public:
             return ret.cast<std::vector<UserEvent>>();
         } catch (const py::error_already_set& e) {
             py::print("[Strategy.onTradeEvent] exception:", e.what());
+        }
+        return {};
+    }
+
+    // 批量成交推送:Python 子类覆写了 onTradeEventsBatch 时整批一次跨边界;
+    // 未覆写时回落基类默认实现(逐条 onTradeEvent,可再被 P0 缓存短路)
+    std::vector<UserEvent> onTradeEventsBatch(const std::vector<TradeDetail>& trades) override {
+        if (trade_batch_override_state_.load(std::memory_order_relaxed) == 0) {
+            return Strategy::onTradeEventsBatch(trades);
+        }
+        py::gil_scoped_acquire gil;
+        py::function f = py::get_override(this, "onTradeEventsBatch");
+        if (!f) {
+            trade_batch_override_state_.store(0, std::memory_order_relaxed);
+            return Strategy::onTradeEventsBatch(trades);
+        }
+        trade_batch_override_state_.store(1, std::memory_order_relaxed);
+        ProcessingGuard guard(processing_count_);
+        try {
+            py::object ret = f(trades);
+            return ret.cast<std::vector<UserEvent>>();
+        } catch (const py::error_already_set& e) {
+            py::print("[Strategy.onTradeEventsBatch] exception:", e.what());
         }
         return {};
     }
@@ -651,6 +675,9 @@ py::class_<OrderCallback>(m, "OrderCallback")
     mbacktest_cls
         .def(py::init<std::vector<SymbolData>>(),
              py::arg("symbol_data_list"),
+             // 构造函数逐只解析 CSV(纯 C++ 计算),释放 GIL 让 Python 侧
+             // 可以继续做下一批数据的 to_csv 转换
+             py::call_guard<py::gil_scoped_release>(),
              "从多个合约的CSV字符串初始化，处理完每只后自动释放其CSV字符串")
         .def("registerStrategy",
              [](MultiBacktestEngine& eng, std::shared_ptr<Strategy> s) {

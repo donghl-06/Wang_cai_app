@@ -153,7 +153,7 @@ void InfoLoader::load_sh_info(const std::string& order_csv_content, const std::s
                             -1,                             // trade_index (订单数据中无此字段)
                             time_raw                        // time_raw (HHMMSSsss格式)
             );
-            OrderBook::insertEvent(order_event);
+            order_book.insertEvent(order_event);
             inserted_events++;
 
         } catch (const std::exception& e) {
@@ -251,7 +251,7 @@ void InfoLoader::load_sz_info(const std::string& order_csv_content, const std::s
                             -1,                             // trade_index (订单数据中无此字段)
                             time_raw                        // time_raw (HHMMSSsss格式)
             );
-            OrderBook::insertEvent(order_event);
+            order_book.insertEvent(order_event);
 
         } catch (const std::exception& e) {
             std::cerr << "处理订单时发生错误: " << e.what() << std::endl;
@@ -360,14 +360,14 @@ void InfoLoader::load_traders(const std::string& csv_content, wangcai::OrderBook
                             time_raw);       // time_raw
             // 创建并插入撤单事件
            if (exectype == "2") {
-                OrderBook::insertEvent(trade_event);
+                order_book.insertEvent(trade_event);
             } else if (exectype != "2" && isContinuousTime(datetime)) {
                 // 价格笼子反推法（仅深市创业板暂存窗口）：真实成交事件进事件流，
                 // 供 BacktestEngine 做"穿价历史单的下一条消息确认"（不推策略、不动簿）。
                 // 连续竞价段限定（笼子不管集合竞价，收盘竞价段无反推需要）。
                 const bool in_continuous = datetime.substr(11, 8) < "14:57:00";
                 if (in_continuous && needsHistoricalCageInference(sym, date)) {
-                    OrderBook::insertEvent(trade_event);
+                    order_book.insertEvent(trade_event);
                 } else {
                     continuous_trades_.emplace_back(std::move(trade_event));
                 }
@@ -561,17 +561,13 @@ void InfoLoader::load_cstick(const std::string& csv_content, wangcai::OrderBook&
                             prevclose, open, high, low, close, volume, turnover, tradecount, bids, bid_sizes, asks, ask_sizes, avgbid, avgask, totalbsize, totalasize, iopv, "tick" 
                             , exchange, trading_day, trading_day, "", '\0', -1, time_raw);
                             
-            OrderBook::insertTick(tick_event);
+            order_book.insertTick(tick_event);
         } catch (const std::exception& e) {
             std::cerr << "处理Tick时发生错误: " << e.what() << std::endl;
         }
     }
 }
 
-// 清空事件列表
-void InfoLoader::clear_events() {
-    OrderBook::clearEvents();
-}
 
 
 wangcai::Price InfoLoader::loadPrevClosePrice(const std::string& csv_content, bool is_etf) {
