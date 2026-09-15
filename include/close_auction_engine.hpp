@@ -42,10 +42,10 @@ public:
     // 集合竞价结算与撮合（如09:25/14:57）
     void settle();  // 15:30
 
-    // 获取预测成交价
-    Price    getPredictPrice()  const { return _predict_px; }
+    // 获取预测成交价（惰性重算：accept/cancel 只置脏标记,读取时才计算）
+    Price    getPredictPrice()  const { ensurePredict(); return _predict_px; }
     // 获取预测成交量
-    Quantity getPredictVolume() const { return _predict_vol; }
+    Quantity getPredictVolume() const { ensurePredict(); return _predict_vol; }
 
     // 可选：为了把14:57时盘口剩余单纳入Fenwick统计，提供一个bootstrap
     void bootstrap_from_orderbook();
@@ -58,13 +58,16 @@ private:
     void  fenwickAdd(int idx,bool buy,int64_t d);
 
     // 计算深市集合竞价预测价
-    Price calcPredict_SZ();
+    Price calcPredict_SZ() const;
 
     // 计算沪市集合竞价预测价
-    Price calcPredict_SH();
+    Price calcPredict_SH() const;
 
     // 实时发布预测价
     void  publish();
+
+    // 脏标记置位时重算预测价/量
+    void  ensurePredict() const;
 
     // 应用集合竞价撮合成交
     // idx: 成交价对应的价格桶索引
@@ -94,9 +97,14 @@ private:
     std::string _exch;
 
     // 预测成交价
-    Price    _predict_px{0};
+    mutable Price    _predict_px{0};
     // 预测成交量
-    Quantity _predict_vol{0};
+    mutable Quantity _predict_vol{0};
+    // 预测值脏标记:true=账面已变,需重算
+    mutable bool     _predict_dirty{true};
+    // calcPredict_SH 复用缓冲,避免每次计算堆分配两个 N+1 数组
+    mutable std::vector<uint64_t> _sh_buy_cumu, _sh_sell_cumu;
+    mutable std::vector<Price>    _sh_tradable_prices;
     // 实际成交价
     Price    _real_px{0};
 };

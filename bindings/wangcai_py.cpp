@@ -36,6 +36,12 @@ private:
 
     // onEventSnapshot 覆盖探测缓存（同上，事件快照频率与市场事件同量级）
     mutable std::atomic<int> event_snap_override_state_{-1};
+
+    // onOrderEvent/onTradeEvent/onTickEvent 覆盖探测缓存（模式同上；
+    // 这三个是市场事件主回调，频率最高，未覆盖时跳过 GIL+override 查询收益最大）
+    mutable std::atomic<int> order_event_override_state_{-1};
+    mutable std::atomic<int> trade_event_override_state_{-1};
+    mutable std::atomic<int> tick_event_override_state_{-1};
     
     // RAII辅助类：自动管理处理计数器
     class ProcessingGuard {
@@ -50,45 +56,66 @@ private:
     };
 
 public:
-    // 事件回调：自动跟踪处理状态
+    // 事件回调：自动跟踪处理状态；未覆盖时经探测缓存直接返回，不进 GIL
     std::vector<UserEvent> onOrderEvent(const OrderDetail& order) override {
+        if (order_event_override_state_.load(std::memory_order_relaxed) == 0) {
+            return {};
+        }
         py::gil_scoped_acquire gil;
-        if (py::function f = py::get_override(this, "onOrderEvent")) {
-            ProcessingGuard guard(processing_count_);  // 自动管理计数器
-            try {
-                py::object ret = f(order);
-                return ret.cast<std::vector<UserEvent>>();
-            } catch (const py::error_already_set& e) {
-                py::print("[Strategy.onOrderEvent] exception:", e.what());
-            }
+        py::function f = py::get_override(this, "onOrderEvent");
+        if (!f) {
+            order_event_override_state_.store(0, std::memory_order_relaxed);
+            return {};
+        }
+        order_event_override_state_.store(1, std::memory_order_relaxed);
+        ProcessingGuard guard(processing_count_);  // 自动管理计数器
+        try {
+            py::object ret = f(order);
+            return ret.cast<std::vector<UserEvent>>();
+        } catch (const py::error_already_set& e) {
+            py::print("[Strategy.onOrderEvent] exception:", e.what());
         }
         return {};
     }
 
     std::vector<UserEvent> onTradeEvent(const TradeDetail& trade) override {
+        if (trade_event_override_state_.load(std::memory_order_relaxed) == 0) {
+            return {};
+        }
         py::gil_scoped_acquire gil;
-        if (py::function f = py::get_override(this, "onTradeEvent")) {
-            ProcessingGuard guard(processing_count_);  // 自动管理计数器
-            try {
-                py::object ret = f(trade);
-                return ret.cast<std::vector<UserEvent>>();
-            } catch (const py::error_already_set& e) {
-                py::print("[Strategy.onTradeEvent] exception:", e.what());
-            }
+        py::function f = py::get_override(this, "onTradeEvent");
+        if (!f) {
+            trade_event_override_state_.store(0, std::memory_order_relaxed);
+            return {};
+        }
+        trade_event_override_state_.store(1, std::memory_order_relaxed);
+        ProcessingGuard guard(processing_count_);  // 自动管理计数器
+        try {
+            py::object ret = f(trade);
+            return ret.cast<std::vector<UserEvent>>();
+        } catch (const py::error_already_set& e) {
+            py::print("[Strategy.onTradeEvent] exception:", e.what());
         }
         return {};
     }
 
     std::vector<UserEvent> onTickEvent(const Snapshot& snapshot) override {
+        if (tick_event_override_state_.load(std::memory_order_relaxed) == 0) {
+            return {};
+        }
         py::gil_scoped_acquire gil;
-        if (py::function f = py::get_override(this, "onTickEvent")) {
-            ProcessingGuard guard(processing_count_);  // 自动管理计数器
-            try {
-                py::object ret = f(snapshot);
-                return ret.cast<std::vector<UserEvent>>();
-            } catch (const py::error_already_set& e) {
-                py::print("[Strategy.onTickEvent] exception:", e.what());
-            }
+        py::function f = py::get_override(this, "onTickEvent");
+        if (!f) {
+            tick_event_override_state_.store(0, std::memory_order_relaxed);
+            return {};
+        }
+        tick_event_override_state_.store(1, std::memory_order_relaxed);
+        ProcessingGuard guard(processing_count_);  // 自动管理计数器
+        try {
+            py::object ret = f(snapshot);
+            return ret.cast<std::vector<UserEvent>>();
+        } catch (const py::error_already_set& e) {
+            py::print("[Strategy.onTickEvent] exception:", e.what());
         }
         return {};
     }

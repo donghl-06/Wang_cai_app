@@ -39,12 +39,13 @@ struct EngineManager {
 
 
 struct QueueEvent {
-    std::string datetime; // 统一的时间戳
+    int64_t datetime_ms;   // 统一的时间戳(int64 排序键,不再拷贝 23 字符字符串)
     std::size_t engineIndex; //引擎序列号
-    Event event; // 事件
+    // 不再按值携带 Event(~700B):事件本体留在 EngineManager::events,
+    // 归并时按 (engineIndex, 连续区间) 引用处理
 
     auto operator<=>(const QueueEvent& other) const {
-        return datetime <=> other.datetime;
+        return datetime_ms <=> other.datetime_ms;
     }
     bool operator==(const QueueEvent& other) const = default;
 };

@@ -789,10 +789,12 @@ TradeDetail BacktestEngine::normalizeHistoricalExecution(const Execution& ex,
 
     int time_raw = 0;
     if (datetime.length() >= 19) {
-        std::string time_part = datetime.substr(11, 8);
-        std::string ms_part = datetime.length() > 20 ? datetime.substr(20, 3) : "000";
-        time_part.erase(std::remove(time_part.begin(), time_part.end(), ':'), time_part.end());
-        time_raw = std::stoi(time_part + ms_part);
+        // 手工扫描 HHMMSSmmm,不再 substr + erase-remove + stoi(每笔成交省 3 次堆分配)
+        auto d2 = [&](std::size_t p) { return (datetime[p] - '0') * 10 + (datetime[p + 1] - '0'); };
+        int ms = 0;
+        if (datetime.length() > 22 && datetime[19] == '.')
+            ms = (datetime[20] - '0') * 100 + (datetime[21] - '0') * 10 + (datetime[22] - '0');
+        time_raw = d2(11) * 10000000 + d2(14) * 100000 + d2(17) * 1000 + ms;
     }
 
     TradeDetail trade{};
@@ -1225,13 +1227,16 @@ void BacktestEngine::notifyStrategyOrderCallback(const std::string& strategy_id,
  * 执行相应的撮合、快照更新和策略回调。
  */
 void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int64_t>& /*will_trade_ids*/) {
-    static constexpr const char* Call_Open_Time = "09:25:00";
-    static constexpr const char* Call_Close_Time = "14:57:00";
-    static constexpr const char* End_Time = "15:00:00";
+    // 时间阈值(当日毫秒):09:25:00 / 14:57:00 / 15:00:00
+    // 用事件预解析的 int64 毫秒键比较,不再每事件 substr(11,8) 堆分配
+    static constexpr int64_t Call_Open_Ms  = (9 * 3600 + 25 * 60) * 1000LL;
+    static constexpr int64_t Call_Close_Ms = (14 * 3600 + 57 * 60) * 1000LL;
+    static constexpr int64_t End_Sec       = 15 * 3600;
 
     // 更新当前时间
     current_datetime_ = ev.datetime;
-    if (current_datetime_.substr(11, 8) > "15:00:00") {
+    const int64_t ev_ms_of_day = ev.datetime_ms % 86400000LL;
+    if (ev_ms_of_day / 1000 > End_Sec) {  // 同原 "HH:MM:SS" > "15:00:00"(15:00:00.xxx 仍处理)
         return;
     }
 
@@ -1388,7 +1393,6 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
     // 根据是否进入连续竞价阶段分别处理
     if (!continuous_mode_) {
         // 集合竞价阶段
-        std::string tm_cur = ev.datetime.substr(11, 8);
         if (ev.source == "ord") {
             // 历史委托推送
             Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
@@ -1419,7 +1423,7 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
         }
 
         // 判断是否结束集合竞价阶段
-        if (tm_cur >= Call_Open_Time) {
+        if (ev_ms_of_day >= Call_Open_Ms) {
             // 使用 09:25:00.000 统一时间戳
             std::string auction_time = ev.datetime.substr(0, 11) + "09:25:00.000";
             current_datetime_ = auction_time;
@@ -1438,8 +1442,7 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
         }
     } else {
         // 连续竞价阶段
-        std::string tm_cur = ev.datetime.substr(11, 8);
-        if (!closing_mode_ && tm_cur >= Call_Close_Time) {
+        if (!closing_mode_ && ev_ms_of_day >= Call_Close_Ms) {
             closing_mode_ = true;
             close_engine_->bootstrap_from_orderbook();
             // 价格笼子：14:57 收盘集合竞价开始，笼中订单恢复参与竞价撮合
@@ -1453,7 +1456,7 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                     pending_auction_orders_.push_back({od, /*is_close_auction=*/true});
                 }
             }
-            std::cout << "[" << tm_cur << "] 进入收盘集合竞价阶段" << std::endl;
+            std::cout << "[" << ev.datetime.substr(11, 8) << "] 进入收盘集合竞价阶段" << std::endl;
         }
 
         if (!closing_mode_) {
@@ -1503,10 +1506,7 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                 }
             }
         } else {
-            // 收盘集合竞价阶段
-            if (tm_cur > End_Time) {
-                return;
-            }
+            // 收盘集合竞价阶段(>15:00:00 已在函数开头统一拦截,此处无需重复判断)
             if (ev.source == "ord") {
                 Direction dir = (ev.side == 1 ? Direction::Buy : Direction::Sell);
                 auto ord = orderbook_->createHistoricalOrder(

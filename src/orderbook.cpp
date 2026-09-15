@@ -157,20 +157,19 @@ std::optional<uint64_t> OrderBook::findEntryCancelledSystemId(uint64_t market_or
 
 // 插入事件到有序列表
 void OrderBook::insertEvent(const Event& event) {
-    // 时间过滤：只处理集合竞价时间段 09:15:00 到 09:25:00  
-    std::string time_part = event.datetime.substr(11); // 提取时间部分 HH:MM:SS
-    if (time_part < "09:15:00" ) {
-         return; // 跳过不在集合竞价时间段的事件
-    }  
+    // 时间过滤：只处理 09:15:00 之后的事件(用预解析的毫秒键,不再 substr 堆分配)
+    // 09:15:00 = (9*3600+15*60)*1000 = 33300000 当日毫秒
+    if (event.datetime_ms >= 0 && event.datetime_ms % 86400000LL < 33300000LL) {
+         return; // 跳过 09:15:00 之前的事件
+    }
     whole_events.push_back(event);
 }
 
 void OrderBook::insertTick(const Event& event) {
-    // 时间过滤：只处理集合竞价时间段 09:15:00 到 09:25:00  
-    std::string time_part = event.datetime.substr(11); // 提取时间部分 HH:MM:SS
-    if (time_part < "09:15:00" ) {
-         return; // 跳过不在集合竞价时间段的事件
-    }  
+    // 时间过滤：只处理 09:15:00 之后的事件
+    if (event.datetime_ms >= 0 && event.datetime_ms % 86400000LL < 33300000LL) {
+         return; // 跳过 09:15:00 之前的事件
+    }
     tick_events.push_back(event);
 }
 

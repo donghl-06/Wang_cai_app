@@ -46,9 +46,38 @@ public:
     using std::logic_error::logic_error;
 };
 
+// "YYYY-MM-DD HH:MM:SS[.fraction]" -> 自 1970-01-01 起的毫秒数(UTC 无关,仅作排序键)
+// 手工扫描解析,每事件一次;之后排序/归并全部用 int64 比较,不再做 23 字符字符串比较。
+// 小数部分取前 3 位(毫秒),不足补零;解析失败返回 -1。
+inline int64_t parseDatetimeMs(const std::string& dt) {
+    if (dt.size() < 19) return -1;
+    auto d2 = [&](std::size_t p) { return (dt[p] - '0') * 10 + (dt[p + 1] - '0'); };
+    const int y = (dt[0]-'0')*1000 + (dt[1]-'0')*100 + d2(2);
+    const int m = d2(5), d = d2(8);
+    // days-from-civil (Howard Hinnant 算法)
+    const int yy = (m <= 2) ? y - 1 : y;
+    const int era = (yy >= 0 ? yy : yy - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(yy - era * 400);
+    const unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const int64_t days = era * 146097LL + static_cast<int64_t>(doe) - 719468;
+    int64_t ms = (static_cast<int64_t>(d2(11)) * 3600 +
+                  static_cast<int64_t>(d2(14)) * 60 + d2(17)) * 1000;
+    if (dt.size() > 20 && dt[19] == '.') {
+        int frac = 0, nd = 0;
+        for (std::size_t p = 20; p < dt.size() && nd < 3 &&
+             dt[p] >= '0' && dt[p] <= '9'; ++p, ++nd)
+            frac = frac * 10 + (dt[p] - '0');
+        while (nd < 3) { frac *= 10; ++nd; }
+        ms += frac;
+    }
+    return days * 86400000LL + ms;
+}
+
 // 事件结构
 struct Event {
     std::string datetime;
+    int64_t datetime_ms;  // datetime 的 int64 排序键(构造时解析一次)
     std::string sym;
     int64_t price;
     int64_t size;
@@ -115,7 +144,7 @@ struct Event {
           // === 新增：原始市场数据字段 ===
           int exch = -1, int tday = -1, int aday = -1, const std::string& stat = "",
           char okind = '\0', int64_t tidx = -1, int traw = -1) 
-        : datetime(dt), sym(symbol), price(p), size(sz), side(sd), ordertype(ot), orderid(oid),
+        : datetime(dt), datetime_ms(parseDatetimeMs(dt)), sym(symbol), price(p), size(sz), side(sd), ordertype(ot), orderid(oid),
           channelno(ch), seqno(seq), bizindex(biz), bidorderid(bid), askorderid(ask), tradeid(tid),
           exectype(et), tradebsflag(tbf),
           prevclose(prev), open(op), high(hi), low(lo), close(cl),
@@ -140,8 +169,9 @@ inline int64_t marketEventSequenceKey(const Event& event) {
 }
 
 // 单条事件自带交易所属性，不能依赖跨标的共享的静态市场开关。
+// 主键用构造时预解析的 int64 时间戳,不再做 23 字符字符串比较。
 inline bool marketEventLess(const Event& a, const Event& b) {
-    if (a.datetime != b.datetime) return a.datetime < b.datetime;
+    if (a.datetime_ms != b.datetime_ms) return a.datetime_ms < b.datetime_ms;
 
     const int a_rank = eventSourceRank(a);
     const int b_rank = eventSourceRank(b);

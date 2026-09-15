@@ -28,9 +28,10 @@ public:
     void cancel_by_input_id(uint64_t input_id, int channel_no = -1);  // 通过市场复合键撤单
     void settle();                       // 09:25
 
-    // 获取预测结果的公共接口
-    Price getPredictPrice() const { return _predict_px; }
-    Quantity getPredictVolume() const { return _predict_vol; }
+    // 获取预测结果的公共接口（惰性重算：accept/cancel 只置脏标记，
+    // 读取时才计算；on_px_ 回调从未接线，原逐事件 publish 是纯浪费）
+    Price getPredictPrice() const { ensurePredict(); return _predict_px; }
+    Quantity getPredictVolume() const { ensurePredict(); return _predict_vol; }
     
     // 调试接口
     int64_t getTotalBuy() const { return _tot_buy; }
@@ -39,9 +40,10 @@ public:
 private:
     /* Fenwick helpers */
     void  fenwickAdd(int idx,bool buy,int64_t d);
-    Price calcPredict_SZ();                 // 实时预测深交所
-    Price calcPredict_SH();                 // 实时预测上交所
+    Price calcPredict_SZ() const;             // 实时预测深交所
+    Price calcPredict_SH() const;             // 实时预测上交所
     void  publish();
+    void  ensurePredict() const;              // 脏标记置位时重算预测价/量
 
     /* 批量结算 */
     void applyAuctionTrade(int auction_idx,
@@ -57,8 +59,12 @@ private:
     Price   _prev_close{};
     std::string _exch;
 
-    Price    _predict_px{0};
-    Quantity _predict_vol{0};
+    mutable Price    _predict_px{0};
+    mutable Quantity _predict_vol{0};
+    mutable bool     _predict_dirty{true};
+    // calcPredict_SH 复用缓冲,避免每次计算堆分配两个 N+1 数组
+    mutable std::vector<uint64_t> _sh_buy_cumu, _sh_sell_cumu;
+    mutable std::vector<Price>    _sh_tradable_prices;
     Price    _real_px{0};
 };
 

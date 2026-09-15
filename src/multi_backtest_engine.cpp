@@ -31,13 +31,16 @@ MultiBacktestEngine::MultiBacktestEngine(std::vector<SymbolData> symbol_data_lis
         data.trade_csv.clear();   data.trade_csv.shrink_to_fit();
         data.csbar1d_csv.clear(); data.csbar1d_csv.shrink_to_fit();
 
-        // 合并所有事件到一个数组
+        // 合并所有事件到一个数组(移动语义,不再逐事件拷贝 ~700B 结构)
         std::vector<Event> merged;
         merged.reserve(OrderBook::whole_events.size() + OrderBook::tick_events.size());
-        
-        // 直接添加所有事件
-        merged.insert(merged.end(), OrderBook::whole_events.begin(), OrderBook::whole_events.end());
-        merged.insert(merged.end(), OrderBook::tick_events.begin(), OrderBook::tick_events.end());
+
+        merged.insert(merged.end(),
+                      std::make_move_iterator(OrderBook::whole_events.begin()),
+                      std::make_move_iterator(OrderBook::whole_events.end()));
+        merged.insert(merged.end(),
+                      std::make_move_iterator(OrderBook::tick_events.begin()),
+                      std::make_move_iterator(OrderBook::tick_events.end()));
         
         // 排序逻辑：
         // 主排序键：datetime（所有事件先按时间排序）
@@ -74,12 +77,11 @@ void MultiBacktestEngine::run() {
         symbol_to_engine[engines_[i].symbol] = i;
     }
 
-    // init：每个引擎推入第一个事件
+    // init：每个引擎推入队首事件(只放排序键+引擎号,事件本体不搬动)
     for (std::size_t i = 0; i < engines_.size(); ++i) {
         auto& se = engines_[i];
         if (se.idx < se.events.size()) {
-            QueueEvent item{se.events[se.idx].datetime, i, se.events[se.idx]};
-            pq.push(item);
+            pq.push(QueueEvent{se.events[se.idx].datetime_ms, i});
             se.idx ++;
         }
     }
@@ -119,42 +121,57 @@ void MultiBacktestEngine::run() {
      */
     int loop_count = 0;
     while (!pq.empty()) {
-        // 取出当前最小时间戳
-        const auto top_item = pq.top();
-        std::string current_time = top_item.datetime;
-        if (current_time.substr(11, 8) > "15:00:00") {
+        // 取出当前最小时间戳(int64)
+        const int64_t current_ms = pq.top().datetime_ms;
+        // 收盘 cutoff:语义与原 "HH:MM:SS" > "15:00:00" 字符串比较一致
+        // (15:00:00.xxx 仍处理,15:00:01 起停止) → 当日秒数严格大于 54000
+        if (current_ms / 1000 % 86400 > 54000) {
             break;
         }
-        // 映射每个引擎索引到其在该时间戳的所有事件
-        std::map<std::size_t, std::vector<Event>> engine_events;
-        
-        // 收集所有时间相同的事件
-        while (!pq.empty() and pq.top().datetime == current_time) {
-            auto item = pq.top();
+        // 每个引擎 → 该时间戳的事件连续区间 [begin, end)
+        // (单引擎事件已按时间排序,同时间戳事件必然连续,无需再拷贝分组)
+        struct EngineRange { std::size_t engine_idx, begin, end; };
+        std::vector<EngineRange> engine_ranges;
+        // 当前时间戳的 datetime 字符串(供跨标的/自定义事件路由用),
+        // 指向事件本体,不拷贝
+        const std::string* current_time = nullptr;
+
+        // 收集所有时间相同的引擎(每引擎一次 pop,不再每事件一次)
+        while (!pq.empty() and pq.top().datetime_ms == current_ms) {
+            const std::size_t eng = pq.top().engineIndex;
             pq.pop();
-            engine_events[item.engineIndex].push_back(item.event);
-            
-            // 取下一事件并放入堆
-            auto& se = engines_[item.engineIndex];
-            if (se.idx < se.events.size()) {
-                QueueEvent next_item{se.events[se.idx].datetime, item.engineIndex, se.events[se.idx]};
-                pq.push(next_item);
-                se.idx ++;
+
+            auto& se = engines_[eng];
+            const std::size_t begin = se.idx - 1;  // 队首事件(即刚取出的那个)
+            std::size_t end = begin + 1;
+            while (end < se.events.size() &&
+                   se.events[end].datetime_ms == current_ms) ++end;
+            engine_ranges.push_back(EngineRange{eng, begin, end});
+            if (!current_time) current_time = &se.events[begin].datetime;
+
+            // 取下一事件并放入堆(不变式:pq 条目指向 se.idx-1)
+            if (end < se.events.size()) {
+                pq.push(QueueEvent{se.events[end].datetime_ms, eng});
+                se.idx = end + 1;
+            } else {
+                se.idx = end;
             }
         }
-        
+
         loop_count++;
 
-        // Taskflow 并行处理每个引擎的事件
+        // Taskflow 并行处理每个引擎的事件(按区间引用,零拷贝)
         tf::Taskflow taskflow;
-        for (const auto& [engine_idx, events] : engine_events) {
-            auto events_copy = events;
-            
+        for (const auto& range : engine_ranges) {
+            const std::size_t engine_idx = range.engine_idx;
+            const auto& events = engines_[engine_idx].events;
+
             // === 价格笼子预扫描（仅SZ市场）===
             // 收集同一时间戳内会成交的订单ID
             std::unordered_set<int64_t> will_trade_ids;
-            if (!events_copy.empty() && events_copy.front().isSZ()) {
-                for (const auto& ev : events_copy) {
+            if (range.begin < range.end && events[range.begin].isSZ()) {
+                for (std::size_t k = range.begin; k < range.end; ++k) {
+                    const auto& ev = events[k];
                     if (ev.source == "tra" && ev.exectype == "1") {
                         // exectype="1" 表示成交，收集买卖双方订单ID
                         if (ev.bidorderid > 0) will_trade_ids.insert(ev.bidorderid);
@@ -162,10 +179,13 @@ void MultiBacktestEngine::run() {
                     }
                 }
             }
-            
-            taskflow.emplace([this, engine_idx, events_copy, will_trade_ids]() mutable {
+
+            const std::size_t begin = range.begin, end = range.end;
+            taskflow.emplace([this, engine_idx, begin, end, will_trade_ids]() mutable {
                 auto& eng_ref = *engines_[engine_idx].engine;
-                for (const auto& ev : events_copy) eng_ref.processEvent(ev, will_trade_ids);
+                const auto& evs = engines_[engine_idx].events;
+                for (std::size_t k = begin; k < end; ++k)
+                    eng_ref.processEvent(evs[k], will_trade_ids);
             });
         }
         // 执行当前时间戳的所有任务并阻塞等待完成
@@ -186,7 +206,7 @@ void MultiBacktestEngine::run() {
                 if (ue.type == UserEvent::ORDER) {
                     auto it = symbol_to_engine.find(ue.order.symbol);
                     if (it != symbol_to_engine.end()) {
-                        engines_[it->second].engine->setCurrentDatetimeForCustomEvent(current_time);
+                        engines_[it->second].engine->setCurrentDatetimeForCustomEvent(*current_time);
                         engines_[it->second].engine->submitUserEvent(ue);
                     } else {
                         std::cerr << "[跨标的下单失败] 未找到合约: "
@@ -196,7 +216,7 @@ void MultiBacktestEngine::run() {
                     bool handled = false;
                     for (auto& se : engines_) {
                         if (se.engine->hasUserOrder(ue.cancel.order_id)) {
-                            se.engine->setCurrentDatetimeForCustomEvent(current_time);
+                            se.engine->setCurrentDatetimeForCustomEvent(*current_time);
                             se.engine->submitUserEvent(ue);
                             handled = true;
                             break;
@@ -215,7 +235,7 @@ void MultiBacktestEngine::run() {
         if (custom_data_enabled_ && !custom_events_.empty()) {
             // 推送所有 datetime <= current_time 的自定义事件
             while (custom_event_idx_ < custom_events_.size() && 
-                   custom_events_[custom_event_idx_].datetime <= current_time) {
+                   custom_events_[custom_event_idx_].datetime <= *current_time) {
                 
                 size_t event_index = custom_events_[custom_event_idx_].index;
                 const std::string& event_time = custom_events_[custom_event_idx_].datetime;

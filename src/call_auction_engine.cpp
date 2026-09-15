@@ -54,9 +54,9 @@ void CallAuctionEngine::accept(std::shared_ptr<Order> od)
     od->level_iter=std::prev(side[idx].orders.end()); // 更新订单迭代器
     ob_.bucketAdd(idx,buy,od->volume); // 更新桶挂单量
     ob_._loc[od->order_id]={buy,idx,od->level_iter}; // 更新订单位置映射
-    
-    // 实时发布预测价
-    publish();
+
+    // 预测价改惰性计算:仅置脏标记,读取(getPredictPrice/settle)时才重算
+    _predict_dirty = true;
 }
 
 // 撤单：从集合竞价队列和订单簿移除订单，更新树状数组和映射 
@@ -85,9 +85,9 @@ void CallAuctionEngine::cancel(uint64_t oid)
     
     // 撤单成功回调，传递订单信息
     if(on_cancel_) on_cancel_(oid, true, "撤单成功", ord);
-    
-    // 实时发布预测价
-    publish();
+
+    // 预测价改惰性计算:仅置脏标记
+    _predict_dirty = true;
 }
 
 // 通过输入订单ID撤单 
@@ -116,7 +116,7 @@ void CallAuctionEngine::cancel_by_input_id(uint64_t input_id, int channel_no)
 
 // 计算深圳市场集合竞价成交价（深交所规则）
 // 返回值：预测的集合竞价成交价（厘），若无可成交价则返回0
-Price CallAuctionEngine::calcPredict_SZ()
+Price CallAuctionEngine::calcPredict_SZ() const
 {
     // 1. 若买卖盘一方无挂单，直接返回0，成交量也为0
     if (_tot_buy == 0 || _tot_sell == 0) {
@@ -136,15 +136,13 @@ Price CallAuctionEngine::calcPredict_SZ()
     uint64_t bestDiff = ~0ULL;      // 买卖剩余量差的最小值（无符号最大值，便于后续比较）
     int      bestIdx  = -1;         // 最优价位索引
 
+    // 全市场买卖总量是循环不变量,提出循环只算一次
+    // (原实现在循环体内每个桶重算两次全量 prefixSum,纯属浪费)
+    const uint64_t total_buy  = _bit_buy.prefixSum(N-1);   // 全部买量
+    const uint64_t total_sell = _bit_sell.prefixSum(N-1);  // 全部卖量
+
     // 4. 遍历所有价格桶，逐一评估每个价位作为成交价的可行性
     for (int idx = 0; idx < N; ++idx) {
-        // 重新获取N，防止后续代码误用
-        int N = ob_._buy.size();
-
-        // 计算全市场买卖总量
-        uint64_t total_buy  = _bit_buy.prefixSum(N-1);   // 全部买量
-        uint64_t total_sell = _bit_sell.prefixSum(N-1);  // 全部卖量
-
         // 计算高于当前价位的买量（不含本档），低于当前价位的卖量（不含本档）
         uint64_t upper_buy_vol  = (idx < N-1) ? (total_buy - _bit_buy.prefixSum(idx)) : 0;
         uint64_t lower_sell_vol = (idx > 0)   ? _bit_sell.prefixSum(idx-1) : 0;
@@ -211,34 +209,33 @@ Price CallAuctionEngine::calcPredict_SZ()
 }
 
 /*
- * Optimised version: iterate only over价位桶里当前“活跃”的索引，而不再
- * 从 0‥N-1 全表扫描。活跃索引集合 _active_idx 在 accept()/cancel()
- * 时维护，因此大部分时间 M ≪ N，复杂度降为 O(M log N)。
- *
- * - accept():   _active_idx.insert(idx)  (若首单进入)
- * - cancel():   若桶清空则 _active_idx.erase(idx)
- *
- * 仍用 Fenwick 取前缀和，每价位两次 prefixSum，
- * 整体复杂度 O(M log N)。在深交所日常盘前场景，M 通常 <500。
+ * 上交所集合竞价预测价:从右往左/从左往右两个累计数组,O(N) 全表扫描。
+ * 注:此处旧注释声称有 _active_idx 活跃集优化(O(M log N)),该优化从未实现,
+ * 注释与实现不符,已于 2026-09-15 更正。真正的性能修复是调用侧惰性化:
+ * accept/cancel 不再逐事件 publish,仅置脏标记,读取时才重算(ensurePredict)。
+ * 累计数组复用成员缓冲,不再每次调用堆分配。
  */
-Price CallAuctionEngine::calcPredict_SH()
+Price CallAuctionEngine::calcPredict_SH() const
 {
     const int N = static_cast<int>(ob_._buy.size());
     if (N == 0) { _predict_vol = 0; return 0; }
 
-    // 构建累计数组（含本价位）
-    std::vector<uint64_t> buy_cumu(N + 1, 0);   // 从右往左累加买量
+    // 构建累计数组（含本价位）;复用成员缓冲,不再每次堆分配
+    _sh_buy_cumu.assign(N + 1, 0);          // 从右往左累加买量
+    auto& buy_cumu = _sh_buy_cumu;
     for (int i = N - 1; i >= 0; --i)
         buy_cumu[i] = buy_cumu[i + 1] + ob_._buy[i].vol_sum;
 
-    std::vector<uint64_t> sell_cumu(N + 1, 0);  // 从左往右累加卖量
+    _sh_sell_cumu.assign(N + 1, 0);         // 从左往右累加卖量
+    auto& sell_cumu = _sh_sell_cumu;
     for (int i = 0; i < N; ++i)
         sell_cumu[i + 1] = sell_cumu[i] + ob_._sell[i].vol_sum;
 
     uint64_t bestVol  = 0;
     uint64_t bestDiff = ~0ULL;
     int      bestIdx  = -1;
-    std::vector<Price> tradable_prices;  // 并列最优的潜在开盘价
+    auto& tradable_prices = _sh_tradable_prices;  // 并列最优的潜在开盘价
+    tradable_prices.clear();
  
     for (int idx = 0; idx < N; ++idx) {
         const uint64_t same_buy  = ob_._buy[idx].vol_sum;
@@ -296,11 +293,19 @@ Price CallAuctionEngine::calcPredict_SH()
 }
 
 
+// 惰性重算预测价/量:accept/cancel 只置脏标记,此处按需计算
+void CallAuctionEngine::ensurePredict() const
+{
+    if (!_predict_dirty) return;
+    if(_exch=="SZ") _predict_px=calcPredict_SZ();
+    else if(_exch=="SH") _predict_px=calcPredict_SH();
+    _predict_dirty = false;
+}
+
 //发布集合竞价成交价
 void CallAuctionEngine::publish()
 {
-    if(_exch=="SZ") _predict_px=calcPredict_SZ();
-    else if(_exch=="SH") _predict_px=calcPredict_SH();
+    ensurePredict();
     if(on_px_) on_px_(_predict_px,_predict_vol);
 }
 
@@ -461,6 +466,7 @@ void CallAuctionEngine::settle()
     // 先计算最终成交价
     if(_exch=="SZ") _predict_px=calcPredict_SZ();
     else if(_exch=="SH") _predict_px=calcPredict_SH();
+    _predict_dirty = false; // settle 已是最新计算,同步脏标记
     Price px = _predict_px; // 最终成交价
     if(px == 0) {
         // 无法确定集合竞价成交价，直接清空并返回
