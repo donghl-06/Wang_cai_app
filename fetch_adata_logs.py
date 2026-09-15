@@ -34,6 +34,11 @@ def parse_args():
     p.add_argument("--start", required=True, help="起始日期 YYYY-MM-DD")
     p.add_argument("--end", required=True, help="结束日期 YYYY-MM-DD")
     p.add_argument("--universe-size", type=int, default=1000, help="股票池大小(0=全部A股)")
+    p.add_argument("--offset", type=int, default=0, help="股票池起始偏移(分波用)")
+    p.add_argument("--limit", type=int, default=0, help="本波最多拉多少只(0=不限)")
+    p.add_argument("--universe-file", default="",
+                   help="股票池冻结文件:存在则读取,不存在则首个交易日计算后写入。"
+                        "分波拉取必须用它保证各波股票池一致(每日快照成分会变)")
     p.add_argument("--fetch-chunk", type=int, default=50, help="每次 get_data 调用的股票数")
     p.add_argument("--out", default=str(OUT_DIR), help="输出目录")
     p.add_argument("--no-skip", action="store_true", help="不跳过已存在文件,全部重拉")
@@ -102,11 +107,22 @@ def main():
             continue
 
         if universe is None:
-            pool = sorted(s for s in bar_all["sym"].unique() if is_a_share(s))
-            if args.universe_size > 0:
-                pool = pool[:args.universe_size]
-            universe = pool
-            print(f"📋 股票池:{len(universe)} 只 A 股(首个交易日 {day} 确定)", flush=True)
+            if args.universe_file and Path(args.universe_file).is_file():
+                universe = [s.strip() for s in open(args.universe_file) if s.strip()]
+                print(f"📋 股票池:{len(universe)} 只(冻结文件 {args.universe_file})", flush=True)
+            else:
+                pool = sorted(s for s in bar_all["sym"].unique() if is_a_share(s))
+                if args.universe_size > 0:
+                    pool = pool[:args.universe_size]
+                universe = pool
+                print(f"📋 股票池:{len(universe)} 只 A 股(首个交易日 {day} 确定)", flush=True)
+                if args.universe_file:
+                    Path(args.universe_file).write_text("\n".join(universe) + "\n")
+                    print(f"📋 股票池已冻结到 {args.universe_file}", flush=True)
+            # 本波切片
+            if args.offset or args.limit:
+                universe = universe[args.offset: args.offset + args.limit or None]
+                print(f"📋 本波切片:offset={args.offset} 共 {len(universe)} 只", flush=True)
 
         day_syms = set(bar_all["sym"])  # 当日有日线的票(剔除长期停牌)
         pending = [s for s in universe if s in day_syms]
