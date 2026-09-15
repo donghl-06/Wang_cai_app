@@ -38,7 +38,7 @@ for (( offset=0; offset<UNIVERSE; offset+=BLOCK_SIZE )); do
         log "拉取完成(磁盘余量 $(df -h . | awk 'NR==2{print $4}')),开始校验"
 
         # 2. 校验(增量:已 pass 的只次自动跳过)
-        if ! $VENV_PY tests/price_cage/run_adata_validation.py >> logs/validate.log 2>&1; then
+        if ! $VENV_PY tests/price_cage/run_adata_validation.py --batch-size 4 >> logs/validate.log 2>&1; then
             log "❌ 校验进程异常退出,见 logs/validate.log;保留数据,60s 后重试"
             sleep 60; continue
         fi

@@ -23,7 +23,9 @@
 
 import argparse
 import csv
+import multiprocessing as mp
 import os
+import queue as queue_mod
 import re
 import sys
 import time
@@ -54,7 +56,19 @@ def parse_args():
     p.add_argument("--max-missing-rate", type=float, default=0.0001,
                    help="源数据引用缺失率上限(默认 0.01%%;撤单引用缺失>0 或"
                         "成交引用缺失超此值即判 data_incomplete,不跑引擎)")
+    p.add_argument("--max-batch-rows", type=int, default=600_000,
+                   help="单批 csord+cstra 总行数上限(默认 60 万;实测 15GB 机器"
+                        "单批 >100 万行会被 OOM kill,巨型票自动单独成批)")
     return p.parse_args()
+
+
+def _count_rows(fp: Path) -> int:
+    """快速数行(wc -l,C 速度;文件不存在按 0 计)"""
+    try:
+        import subprocess
+        return int(subprocess.check_output(["wc", "-l", str(fp)]).split()[0])
+    except Exception:
+        return 0
 
 
 # ---------- 数据加载(口径沿用 run_real_stocks.load_files) ----------
@@ -196,6 +210,141 @@ def append_results(results_path: Path, rows):
         f.flush()
 
 
+# ---------- 批执行:子进程隔离 ----------
+
+def _err_row(sym, day, status, note):
+    return {"sym": sym, "date": day, "status": status,
+            "n_real_pairs": 0, "n_eng_pairs": 0, "subset_rate": 0,
+            "false_neg": 0, "false_pos": 0, "exact": 0,
+            "seconds": 0, "note": note[:80]}
+
+
+def _child_run_batch(day, syms, base_str, max_missing_rate, q):
+    """子进程:整批 加载→源数据预检→引擎→对账,结果行放入队列。
+
+    引擎在多只次连跑时内存持续增长(已知析构不释放问题),长进程必被 OOM
+    kill;每批一个全新子进程,退出即彻底释放,流水线可无人值守跑几天。
+    """
+    rows = []
+    try:
+        base = Path(base_str)
+        data_dict, reals = {}, {}
+        for sym in syms:
+            try:
+                files = load_one(base, sym, day)
+            except Exception as e:
+                rows.append(_err_row(sym, day, "load_error", str(e)))
+                continue
+            # 源数据质量前置检查:引用缺失的只次不可能过 100% 口径,直接登记
+            nmc, nmt, cr, tr = data_quality_check(files["csord"], files["cstra"])
+            if nmc > 0 or tr > max_missing_rate:
+                rows.append(_err_row(
+                    sym, day, "data_incomplete",
+                    f"撤单引用缺失{nmc}({cr:.4%}) 成交引用缺失{nmt}({tr:.4%})"))
+                continue
+            data_dict[sym] = (files["cstick"], files["csord"], files["cstra"],
+                              files["csbar1d"], is_etf_sym(sym))
+            reals[sym] = real_agg(files["cstra"])  # release_input 前先算好真值
+
+        if data_dict:
+            collector = Collector()
+            batch_syms = list(data_dict)  # release_input 会清空字典,先存名单
+            ok = False
+            try:
+                ok = run_backtest(data_dict, collector,
+                                  n_workers=min(len(data_dict), os.cpu_count()),
+                                  release_input=True)
+            except Exception as e:
+                for sym in batch_syms:
+                    rows.append(_err_row(sym, day, "engine_error", str(e)))
+            if not ok and not any(r["sym"] in batch_syms for r in rows):
+                # run_backtest 内部消化了异常并返回 False:整批记 engine_fail
+                for sym in batch_syms:
+                    row = _err_row(sym, day, "engine_fail",
+                                   "run_backtest 返回 False")
+                    row["n_real_pairs"] = len(reals[sym])
+                    rows.append(row)
+            if ok:
+                unknown = set(collector.trades) - set(batch_syms)
+                if unknown:
+                    print(f"   ⚠️ 引擎回报了批次外合约 {unknown},请检查 Instrument 字段!",
+                          flush=True)
+                for sym in batch_syms:
+                    eng, real = eng_agg(collector.trades.get(sym, [])), reals[sym]
+                    matched = sum(1 for k, v in real.items() if eng.get(k, 0) >= v)
+                    fn = sum(1 for k, v in real.items() if eng.get(k, 0) < v)
+                    fp = sum(1 for k in eng if k not in real)
+                    exact = int(eng == real)
+                    rows.append({
+                        "sym": sym, "date": day,
+                        "status": "pass" if exact else "fail",
+                        "n_real_pairs": len(real), "n_eng_pairs": len(eng),
+                        "subset_rate": round(matched / max(len(real), 1), 6),
+                        "false_neg": fn, "false_pos": fp, "exact": exact,
+                        "seconds": 0, "note": ""})
+                    if not exact:
+                        miss = [(k, v, eng.get(k, 0)) for k, v in real.items()
+                                if eng.get(k, 0) < v][:3]
+                        extra = [(k, v) for k, v in eng.items() if k not in real][:3]
+                        print(f"   ❌ {sym} {day}: 假阴{fn} 多出{fp} "
+                              f"缺样例{miss} 多样例{extra}", flush=True)
+    except Exception as e:
+        done_syms = {r["sym"] for r in rows}
+        for sym in syms:
+            if sym not in done_syms:
+                rows.append(_err_row(sym, day, "engine_error", str(e)))
+    try:
+        q.put(rows)
+        q.close()
+        q.join_thread()
+    except Exception:
+        pass
+    os._exit(0)  # 绕过 C++ 引擎析构卡死(见 benchmark_results.md 关键发现 5)
+
+
+def _run_batch_isolated(ctx, day, syms, base_str, max_missing_rate,
+                        child_timeout=900, solo_fallback=True):
+    """起子进程跑一批;子进程被 kill(疑似 OOM)时逐只单独重试,
+    单只仍死则登记 engine_crash(不丢只次、不阻塞流水线)。"""
+    def spawn(day_, syms_):
+        q = ctx.Queue()
+        p = ctx.Process(target=_child_run_batch,
+                        args=(day_, syms_, base_str, max_missing_rate, q))
+        p.start()
+        deadline = time.time() + child_timeout
+        rows = None
+        while time.time() < deadline:
+            try:
+                rows = q.get(timeout=5)
+                break
+            except queue_mod.Empty:
+                if not p.is_alive():
+                    try:
+                        rows = q.get_nowait()
+                    except queue_mod.Empty:
+                        rows = None
+                    break
+        if p.is_alive():
+            p.kill()
+        p.join()
+        return rows
+
+    rows = spawn(day, syms)
+    if rows is not None:
+        return rows
+    if len(syms) > 1 and solo_fallback:
+        print(f"   ⚠️ 子进程异常退出(疑似 OOM),{len(syms)} 只降级逐只重试",
+              flush=True)
+        rows = []
+        for sym in syms:
+            rows.extend(spawn(day, [sym]) or [
+                _err_row(sym, day, "engine_crash",
+                         "子进程异常退出(疑似 OOM),单只重试仍失败")])
+        return rows
+    return [_err_row(sym, day, "engine_crash",
+                     "子进程异常退出(疑似 OOM)") for sym in syms]
+
+
 # ---------- 主流程 ----------
 
 def main():
@@ -221,89 +370,43 @@ def main():
     if total == 0:
         return
 
-    # 按日期分组,日内按 batch-size 切批
+    # 按日期分组;日内按"行数上限 + 只数上限"贪心装箱切批。
+    # 巨型票(如 000625.SZ 2024-10-09 委托+成交 97 万行)多票同批会被
+    # OOM kill(实测单批 >100 万行必死,单只 97 万行可过),行数降序大票先装。
     by_date = defaultdict(list)
     for s, d in pairs:
         by_date[d].append(s)
     batches = []
     for d in sorted(by_date):
-        syms = sorted(by_date[d])
-        batches.extend((d, syms[i:i + args.batch_size])
-                       for i in range(0, len(syms), args.batch_size))
+        sized = []
+        for s in by_date[d]:
+            rows = (_count_rows(base / f"csord_{s}_{d}.csv")
+                    + _count_rows(base / f"cstra_{s}_{d}.csv"))
+            sized.append((rows, s))
+        sized.sort(reverse=True)
+        cur, cur_rows = [], 0
+        for rows, s in sized:
+            if cur and (len(cur) >= args.batch_size
+                        or cur_rows + rows > args.max_batch_rows):
+                batches.append((d, sorted(cur)))
+                cur, cur_rows = [], 0
+            cur.append(s)
+            cur_rows += rows
+        if cur:
+            batches.append((d, sorted(cur)))
 
     n_pairs_done = n_pass = 0
     t_start = time.time()
+    # 必须用 fork:run_backtest 内部靠 fork 继承 _mp_data_dict 全局给转换
+    # worker;spawn 子进程内默认启动方式会变 spawn,内部 Pool 拿不到数据
+    # (KeyError,整批 engine_fail)。fork 还省了每批重新 import 的开销。
+    ctx = mp.get_context("fork")
 
     for bi, (day, syms) in enumerate(batches, 1):
         t_batch = time.time()
-        data_dict, reals, rows = {}, {}, []
-        for sym in syms:
-            try:
-                files = load_one(base, sym, day)
-            except Exception as e:
-                rows.append({"sym": sym, "date": day, "status": "load_error",
-                             "n_real_pairs": 0, "n_eng_pairs": 0, "subset_rate": 0,
-                             "false_neg": 0, "false_pos": 0, "exact": 0,
-                             "seconds": 0, "note": str(e)[:80]})
-                continue
-            # 源数据质量前置检查:引用缺失的只次不可能过 100% 口径,直接登记
-            nmc, nmt, cr, tr = data_quality_check(files["csord"], files["cstra"])
-            if nmc > 0 or tr > args.max_missing_rate:
-                rows.append({"sym": sym, "date": day, "status": "data_incomplete",
-                             "n_real_pairs": 0, "n_eng_pairs": 0, "subset_rate": 0,
-                             "false_neg": 0, "false_pos": 0, "exact": 0,
-                             "seconds": 0,
-                             "note": f"撤单引用缺失{nmc}({cr:.4%}) 成交引用缺失{nmt}({tr:.4%})"})
-                continue
-            data_dict[sym] = (files["cstick"], files["csord"], files["cstra"],
-                              files["csbar1d"], is_etf_sym(sym))
-            reals[sym] = real_agg(files["cstra"])  # release_input 前先算好真值
-
-        if data_dict:
-            collector = Collector()
-            batch_syms = list(data_dict)  # release_input 会清空字典,先存名单
-            ok = False
-            try:
-                ok = run_backtest(data_dict, collector,
-                                  n_workers=min(len(data_dict), os.cpu_count()),
-                                  release_input=True)
-            except Exception as e:
-                for sym in batch_syms:
-                    rows.append({"sym": sym, "date": day, "status": "engine_error",
-                                 "n_real_pairs": 0, "n_eng_pairs": 0, "subset_rate": 0,
-                                 "false_neg": 0, "false_pos": 0, "exact": 0,
-                                 "seconds": 0, "note": str(e)[:80]})
-            if not ok and not any(r["sym"] in batch_syms for r in rows):
-                # run_backtest 内部消化了异常并返回 False:整批记 engine_fail
-                for sym in batch_syms:
-                    rows.append({"sym": sym, "date": day, "status": "engine_fail",
-                                 "n_real_pairs": len(reals[sym]), "n_eng_pairs": 0,
-                                 "subset_rate": 0, "false_neg": 0, "false_pos": 0,
-                                 "exact": 0, "seconds": 0, "note": "run_backtest 返回 False"})
-            if ok:
-                unknown = set(collector.trades) - set(batch_syms)
-                if unknown:
-                    print(f"   ⚠️ 引擎回报了批次外合约 {unknown},请检查 Instrument 字段!",
-                          flush=True)
-                for sym in batch_syms:
-                    eng, real = eng_agg(collector.trades.get(sym, [])), reals[sym]
-                    matched = sum(1 for k, v in real.items() if eng.get(k, 0) >= v)
-                    fn = sum(1 for k, v in real.items() if eng.get(k, 0) < v)
-                    fp = sum(1 for k in eng if k not in real)
-                    exact = int(eng == real)
-                    rows.append({
-                        "sym": sym, "date": day,
-                        "status": "pass" if exact else "fail",
-                        "n_real_pairs": len(real), "n_eng_pairs": len(eng),
-                        "subset_rate": round(matched / max(len(real), 1), 6),
-                        "false_neg": fn, "false_pos": fp, "exact": exact,
-                        "seconds": 0, "note": ""})
-                    if not exact:
-                        miss = [(k, v, eng.get(k, 0)) for k, v in real.items()
-                                if eng.get(k, 0) < v][:3]
-                        extra = [(k, v) for k, v in eng.items() if k not in real][:3]
-                        print(f"   ❌ {sym} {day}: 假阴{fn} 多出{fp} "
-                              f"缺样例{miss} 多样例{extra}", flush=True)
+        # 每批一个全新子进程:引擎连跑内存不释放,子进程退出即彻底回收
+        rows = _run_batch_isolated(ctx, day, syms, str(base),
+                                   args.max_missing_rate)
 
         append_results(results_path, rows)
         n_pairs_done += len(rows)
