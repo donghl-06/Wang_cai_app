@@ -190,12 +190,12 @@ def test_latency_zero_fills_and_immediate_callback():
 
 
 def test_latency_20ms_misses_trade_and_delays_callback():
-    """latency=20ms(走 run_backtest 参数):同一买单 release=.005+.020=.025,
+    """latency=20ms(走 run_backtest 开关):同一买单 release=.005+.020=.025,
     晚于 .010 的历史成交(卖单已被 9002 吃光)→ 不成交;
     下单回调延迟到 release 之后第一条市场事件(.030 的 9003)才发出"""
-    s = LatencyProbe("LAT20", SYM)  # 延迟由 run_backtest 参数设置
+    s = LatencyProbe("LAT20", SYM)  # 延迟由 run_backtest 开关设置
     s.actions = [("order", "L20", 100000, 100, 1)]
-    assert run_backtest(_build(), s, order_latency_ms=20)
+    assert run_backtest(_build(), s, order_latency_enabled=True, order_latency_ms=20)
     assert not _fills_for(s, "L20"), "latency=20ms 应错过 .010 的历史成交"
     assert s.order_cbs, "订单到达后仍应收到下单确认回调"
     cb_time = s.order_cbs[0][1]
@@ -218,13 +218,29 @@ def test_latency_cancel_fifo(capfd):
     assert not _fills_for(s, "LC")
 
 
-def test_latency_below_10_rejected():
-    """延迟最小 10ms:1~9ms 直接报错(0=关闭仍合法)。
-    C++ setter 抛 ValueError;run_backtest 参数校验失败按契约返回 False"""
-    s = LatencyProbe("LATMIN", SYM)
-    with pytest.raises(ValueError):
-        s.setOrderLatencyMs(5)
-    assert not run_backtest(_build(), s, order_latency_ms=5)
+def test_latency_alignment_and_switch():
+    """延迟对齐 10ms 粒度 + 开关语义:
+    - setter 直接设置:14→10,15→20,24→20,25→30,0→0(关闭)
+    - 只传 order_latency_ms 不开开关:延迟不生效(行为=latency 0)
+    - 开开关 + 14ms:对齐为 10ms"""
+    s = LatencyProbe("LATAL", SYM)
+    for raw, want in ((14, 10), (15, 20), (24, 20), (25, 30), (10, 10), (0, 0)):
+        s.setOrderLatencyMs(raw)
+        assert s.getOrderLatencyMs() == want, f"{raw}ms 应对齐为 {want}ms"
+    s.setOrderLatencyMs(0)  # 复位
+
+    # 不开开关:order_latency_ms 被忽略,立即成交(行为同 latency=0)
+    s1 = LatencyProbe("LATOFF", SYM)
+    s1.actions = [("order", "LOFF", 100000, 100, 1)]
+    assert run_backtest(_build(), s1, order_latency_ms=20)
+    assert s1.getOrderLatencyMs() == 0, "未开开关时不应设置延迟"
+    assert _fills_for(s1, "LOFF"), "未开开关时下单应立即进簿成交"
+
+    # 开开关 + 14ms:对齐为 10ms 生效
+    s2 = LatencyProbe("LATON", SYM)
+    s2.actions = [("order", "LON", 100000, 100, 1)]
+    assert run_backtest(_build(), s2, order_latency_enabled=True, order_latency_ms=14)
+    assert s2.getOrderLatencyMs() == 10, "14ms 应对齐为 10ms"
 
 
 def test_entry_head_fills_before_simultaneous():
@@ -239,11 +255,12 @@ def test_entry_head_fills_before_simultaneous():
 
 
 def test_entry_tail_waits_for_simultaneous():
-    """尾部进簿(走 run_backtest 参数):同一买单 release=.025,但等 .025 的
+    """尾部进簿(走 run_backtest 开关):同一买单 release=.025,但等 .025 的
     同时刻订单(9003/9004 自相匹配)全部处理完,随 .040 事件才进簿 → 不成交"""
     s = LatencyProbe("LATT", SYM, latency_ms=20)
     s.actions = [("order", "LT", 100000, 100, 1)]
-    assert run_backtest(_build_ht(), s, latency_entry_position="tail")
+    assert run_backtest(_build_ht(), s, order_latency_enabled=True,
+                        latency_entry_position="tail")
     assert not _fills_for(s, "LT"), "尾部进簿应错过 .025 同时刻的 9003"
     assert s.order_cbs[0][1].endswith("09:30:00.040"), \
         f"尾部单应随 .040 事件进簿,实际: {s.order_cbs}"

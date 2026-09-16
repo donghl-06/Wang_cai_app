@@ -415,6 +415,7 @@ def run_backtest(data_dict,
                  realtime_tick_interval_ms: int = 0,
                  event_snapshot_enabled: bool = False,
                  user_cage_enabled: bool = True,
+                 order_latency_enabled: bool = False,
                  order_latency_ms: int = 0,
                  latency_entry_position: str = "head") -> bool:
     """
@@ -475,13 +476,17 @@ def run_backtest(data_dict,
             自动激活。有效申报范围 = 基准价±2% 四舍五入至最小变动价位
             （基准价链：对手一档→本方一档→最新成交→昨收）。
             另：策略限价单新增涨跌停前置校验（超涨跌停废单，所有时代）。
-        order_latency_ms: 策略下单/撤单的交易所链路延迟（毫秒，默认 0=关闭，最小 10）
+        order_latency_enabled: 下单延迟开关（默认 False，仿严格主动单模式风格）
             开启后，策略在回调中返回的下单/撤单不立即进簿，而是延迟到
             回测时钟推进至 发出时刻+latency 才"到达交易所"：过涨跌停/价格笼子
             校验、进订单簿、参与撮合；下单确认回调也延迟到到达时刻才发出。
             撤单与下单走同一延迟通道，保 FIFO；收盘（15:00）后才到达的订单
             丢弃并打印提示。实际进簿时机为到达时刻之后的第一个市场事件
-            （回测时钟只随市场事件前进）。也可在策略 __init__ 里直接
+            （回测时钟只随市场事件前进）。只有开启本开关后，
+            order_latency_ms 与 latency_entry_position 才生效。
+        order_latency_ms: 延迟时长（毫秒，默认 0=开启开关但未指定时用 20ms）
+            自动四舍五入对齐到市场最小事件粒度 10ms（14→10，15→20）；
+            开启状态下对齐后最小 10ms。也可在策略 __init__ 里直接
             self.setOrderLatencyMs(n)，效果相同；以注册进引擎时的值为准。
         latency_entry_position: 延迟单进簿位置（"head"/"tail"，默认 "head"）
             延迟订单 release 的时刻若有多笔订单同时到达：
@@ -640,27 +645,38 @@ def run_backtest(data_dict,
             
             print(f"   ✅ 自定义数据已加载，共 {len(data_list)} 条记录")
         
-        # 下单延迟（交易所链路时延模拟，可选）：须在注册策略前设置
-        if order_latency_ms and 0 < order_latency_ms < 10:
-            raise ValueError(f"下单延迟最小 10ms（0=关闭），收到 {order_latency_ms}ms")
-        if order_latency_ms and order_latency_ms > 0:
+        # 下单延迟开关（交易所链路时延模拟，默认关闭；仿严格主动单模式的开关风格）
+        # 只有开启后，延迟时长与进簿位置设置才生效
+        if order_latency_enabled:
+            lat = int(order_latency_ms) if order_latency_ms else 20  # 开启未指定时长,默认 20ms
+            aligned = (lat + 5) // 10 * 10   # 市场最小事件粒度 10ms,四舍五入对齐(14→10,15→20)
+            if aligned < 10:
+                aligned = 10                 # 开启状态下最小 10ms
+            if aligned != lat:
+                print(f"   ⚙️ 下单延迟: {lat}ms 按市场最小事件粒度(10ms)对齐为 {aligned}ms")
             if hasattr(strategy, 'setOrderLatencyMs'):
-                strategy.setOrderLatencyMs(int(order_latency_ms))
-                print(f"   ⚙️ 下单延迟: ✅ {int(order_latency_ms)}ms"
+                strategy.setOrderLatencyMs(aligned)
+                print(f"   ⚙️ 下单延迟: ✅ {aligned}ms"
                       f"（下单/撤单延迟进场，下单确认回调同时延迟）")
             else:
                 print(f"   ⚠️ 当前引擎不支持下单延迟（wangcai_cpp 版本过旧），已忽略")
-        # 延迟单进簿位置（可选）：head=同时间订单头部（默认），tail=尾部
-        if latency_entry_position not in ("head", "tail"):
-            raise ValueError(f"latency_entry_position 只支持 'head'/'tail'，收到 {latency_entry_position!r}")
-        if latency_entry_position == "tail":
-            if hasattr(strategy, 'setLatencyEntryPosition'):
-                # 局部导入：旧引擎没有该枚举，顶层 import 会破坏兼容性
-                from wangcai_syn.wangcai_cpp import LatencyEntryPosition
-                strategy.setLatencyEntryPosition(LatencyEntryPosition.Tail)
-                print(f"   ⚙️ 延迟单进簿位置: 同时间订单尾部")
+            # 延迟单进簿位置：head=同时间订单头部（默认），tail=尾部
+            if latency_entry_position not in ("head", "tail"):
+                raise ValueError(f"latency_entry_position 只支持 'head'/'tail'，收到 {latency_entry_position!r}")
+            if latency_entry_position == "tail":
+                if hasattr(strategy, 'setLatencyEntryPosition'):
+                    # 局部导入：旧引擎没有该枚举，顶层 import 会破坏兼容性
+                    from wangcai_syn.wangcai_cpp import LatencyEntryPosition
+                    strategy.setLatencyEntryPosition(LatencyEntryPosition.Tail)
+                    print(f"   ⚙️ 延迟单进簿位置: 同时间订单尾部")
+                else:
+                    print(f"   ⚠️ 当前引擎不支持延迟单进簿位置（wangcai_cpp 版本过旧），已忽略")
             else:
-                print(f"   ⚠️ 当前引擎不支持延迟单进簿位置（wangcai_cpp 版本过旧），已忽略")
+                print(f"   ⚙️ 延迟单进簿位置: 同时间订单头部（默认）")
+        else:
+            if order_latency_ms:
+                print(f"   ⚠️ 已设置 order_latency_ms={order_latency_ms} 但未开启 "
+                      f"order_latency_enabled，下单延迟不生效")
 
         # 注册策略
         engine.registerStrategy(strategy)

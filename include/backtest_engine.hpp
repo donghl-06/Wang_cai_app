@@ -97,12 +97,11 @@ public:
     // 回测时钟推进到 发出时刻 + latency 时才"到达交易所"：过涨跌停/价格笼子
     // 校验、进订单簿、参与撮合；下单确认回调也延迟到到达时刻才发出。
     // 撤单走同一延迟通道，与下单保 FIFO（不会出现撤单比订单先到）。
-    // 最小 10ms；0 = 关闭（默认），行为与旧版一致；1~9ms 抛 invalid_argument。
-    // 须在注册进引擎（run_backtest）之前设置。
+    // 市场最小事件粒度 10ms：输入自动四舍五入对齐到 10ms 单位
+    // （14→10，15→20；对齐后不足 10ms 的视为 0=关闭）。
+    // 0 = 关闭（默认），行为与旧版一致。须在注册进引擎（run_backtest）之前设置。
     void setOrderLatencyMs(int latency_ms) {
-        if (latency_ms > 0 && latency_ms < 10)
-            throw std::invalid_argument("下单延迟最小 10ms（0=关闭）");
-        order_latency_ms_ = latency_ms > 0 ? latency_ms : 0;
+        order_latency_ms_ = latency_ms > 0 ? ((latency_ms + 5) / 10) * 10 : 0;
     }
     int getOrderLatencyMs() const { return order_latency_ms_; }
 
