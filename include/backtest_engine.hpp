@@ -17,8 +17,13 @@
 #include <unordered_set>
 #include <fstream>
 #include <atomic>  // 用于 atomic<bool>
+#include <stdexcept>
 
 namespace wangcai {
+
+// 延迟订单进簿位置:同一 release 时刻有多笔订单同时到达时,
+// 策略单排在同时间订单的头部(先处理,抢排队优先级)还是尾部(后处理)
+enum class LatencyEntryPosition { Head, Tail };
 
 // 前向声明和类型别名
 using OrderDetail = wangcai::OrderDetail;
@@ -92,9 +97,22 @@ public:
     // 回测时钟推进到 发出时刻 + latency 时才"到达交易所"：过涨跌停/价格笼子
     // 校验、进订单簿、参与撮合；下单确认回调也延迟到到达时刻才发出。
     // 撤单走同一延迟通道，与下单保 FIFO（不会出现撤单比订单先到）。
-    // 须在注册进引擎（run_backtest）之前设置；默认 0 = 关闭，行为与旧版一致。
-    void setOrderLatencyMs(int latency_ms) { order_latency_ms_ = latency_ms > 0 ? latency_ms : 0; }
+    // 最小 10ms；0 = 关闭（默认），行为与旧版一致；1~9ms 抛 invalid_argument。
+    // 须在注册进引擎（run_backtest）之前设置。
+    void setOrderLatencyMs(int latency_ms) {
+        if (latency_ms > 0 && latency_ms < 10)
+            throw std::invalid_argument("下单延迟最小 10ms（0=关闭）");
+        order_latency_ms_ = latency_ms > 0 ? latency_ms : 0;
+    }
     int getOrderLatencyMs() const { return order_latency_ms_; }
+
+    // 延迟订单进簿位置：release 时刻有多笔订单同时到达时，本策略单排在
+    // 同时间订单的头部（默认，先处理，抢同价位排队优先级）还是尾部
+    // （等同时间订单全部处理完再进簿）。须在注册进引擎之前设置。
+    void setLatencyEntryPosition(LatencyEntryPosition pos) { latency_entry_head_ = (pos == LatencyEntryPosition::Head); }
+    LatencyEntryPosition getLatencyEntryPosition() const {
+        return latency_entry_head_ ? LatencyEntryPosition::Head : LatencyEntryPosition::Tail;
+    }
     
     // 检查策略是否已完成所有处理（基于atomic状态变量）
     virtual bool isProcessingComplete() const { return processing_complete_.load(); }
@@ -135,6 +153,7 @@ protected:
     mutable std::atomic<bool> processing_complete_{true}; // 默认同步策略已完成
 
     int order_latency_ms_ = 0;  // 下单/撤单延迟（毫秒），0=关闭
+    bool latency_entry_head_ = true;  // 延迟单进簿位置：true=同时间订单头部
     
     // 更新持仓的受保护方法，供派生类使用
     void updatePosition(const std::string& symbol, int64_t quantity_change) {
@@ -328,12 +347,18 @@ private:
                                               : seq > o.seq;
         }
     };
-    std::priority_queue<DelayedUserEvent, std::vector<DelayedUserEvent>,
-                        std::greater<DelayedUserEvent>> delayed_events_;
+    using DelayedQueue = std::priority_queue<DelayedUserEvent, std::vector<DelayedUserEvent>,
+                                             std::greater<DelayedUserEvent>>;
+    // 头/尾两个独立队列：头部单 release <= 当前事件时间即释放（先于同时间订单进簿）;
+    // 尾部单须 release < 当前事件时间（等同时间订单处理完，随更晚的事件进簿）。
+    // 分开存是为了避免队列里靠前的尾部单堵住后面的头部单
+    DelayedQueue delayed_head_;
+    DelayedQueue delayed_tail_;
     uint64_t delayed_seq_ = 0;
     int64_t current_ms_ = -1;  // 当前回测时钟（与 current_datetime_ 同源）
     bool any_latency_ = false; // 有策略开延迟才走队列（默认路径零开销短路）
-    std::map<std::string, int> latency_map_;  // strategy_id -> 延迟ms（注册时快照）
+    std::map<std::string, int> latency_map_;   // strategy_id -> 延迟ms（注册时快照）
+    std::map<std::string, bool> latency_head_map_;  // strategy_id -> 进簿位置（注册时快照）
     // 尚在延迟队列中的用户订单ID：撤单路由判定时视为"本引擎持有"
     // （订单未 release 前 user_order_mapping_ 里查不到，撤单会被误路由为跨标的）
     std::unordered_set<std::string> delayed_order_ids_;

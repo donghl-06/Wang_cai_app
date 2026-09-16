@@ -300,6 +300,11 @@ PYBIND11_MODULE(wangcai_cpp, m) {
         .value("BestOwn", OrderType::BestOwn)
         .export_values();
 
+    py::enum_<LatencyEntryPosition>(m, "LatencyEntryPosition")
+        .value("Head", LatencyEntryPosition::Head)
+        .value("Tail", LatencyEntryPosition::Tail)
+        .export_values();
+
     // Basic typedefs (expose as Python ints)
     m.attr("PriceIsInt") = py::bool_(true);
     m.attr("QuantityIsInt") = py::bool_(true);
@@ -523,10 +528,14 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("onOrderCancelled", &Strategy::onOrderCancelled)
         .def("getStrategyId", &Strategy::getStrategyId)
         .def("setOrderLatencyMs", &Strategy::setOrderLatencyMs,
-             "设置下单/撤单的交易所链路延迟（毫秒）：策略单延迟到 发出时刻+延迟 "
+             "设置下单/撤单的交易所链路延迟（毫秒，最小 10）：策略单延迟到 发出时刻+延迟 "
              "才进订单簿参与撮合，下单确认回调同时延迟；撤单同通道保 FIFO。"
              "须在 run_backtest 前设置；0=关闭（默认），行为与旧版一致")
         .def("getOrderLatencyMs", &Strategy::getOrderLatencyMs)
+        .def("setLatencyEntryPosition", &Strategy::setLatencyEntryPosition,
+             "延迟单进簿位置：release 时刻有多笔订单同时到达时，本策略单排在"
+             "同时间订单的头部（LatencyEntryPosition.Head，默认）还是尾部（.Tail）")
+        .def("getLatencyEntryPosition", &Strategy::getLatencyEntryPosition)
         .def("onTradeCallback", &Strategy::onTradeCallback)
         .def("onOrderCallback", &Strategy::onOrderCallback)
         .def("isProcessingComplete", &Strategy::isProcessingComplete)

@@ -156,6 +156,20 @@ def _build():
                              upper=11.0, lower=9.0)
 
 
+# 头/尾进簿位置场景:.005 首事件(触发下单);.025 同时刻两笔——卖单 9003(新 ask
+# 10.00x100)与买单 9004(吃 9003);.040 一条无关委托作尾部释放的触发事件
+_ORDS_HT = [("09:30:00.005", 10.05, 500, 2, 9001),
+            ("09:30:00.025", 10.00, 100, 2, 9003),
+            ("09:30:00.025", 10.00, 100, 1, 9004),
+            ("09:30:00.040", 9.80, 100, 1, 9005)]
+_TRAS_HT = [("09:30:00.025", 10.00, 100, 9004, 9003, 8002, "1")]
+
+
+def _build_ht():
+    return make_latency_data(SYM, DATE, 10.0, _ORDS_HT, _TRAS_HT, _TICKS,
+                             upper=11.0, lower=9.0)
+
+
 def _fills_for(strat, localid):
     return [t for t in strat.trade_cbs if t[0] == localid and t[1] == 'T']
 
@@ -202,3 +216,34 @@ def test_latency_cancel_fifo(capfd):
     assert "[策略撤单失败]" not in out, f"延迟队列中的订单撤单被误判找不到: {out}"
     assert "[策略撤单]" in out, f"撤单未生效: {out}"
     assert not _fills_for(s, "LC")
+
+
+def test_latency_below_10_rejected():
+    """延迟最小 10ms:1~9ms 直接报错(0=关闭仍合法)。
+    C++ setter 抛 ValueError;run_backtest 参数校验失败按契约返回 False"""
+    s = LatencyProbe("LATMIN", SYM)
+    with pytest.raises(ValueError):
+        s.setOrderLatencyMs(5)
+    assert not run_backtest(_build(), s, order_latency_ms=5)
+
+
+def test_entry_head_fills_before_simultaneous():
+    """头部进簿(默认):.005 买 10.00,latency=20 → release=.025;
+    .025 同时刻的卖单 9003 进簿时撞上已挂的策略买单 → 策略成交"""
+    s = LatencyProbe("LATH", SYM, latency_ms=20)
+    s.actions = [("order", "LH", 100000, 100, 1)]
+    assert run_backtest(_build_ht(), s)
+    assert _fills_for(s, "LH"), "头部进簿应先于 .025 的同时刻订单挂入,吃到 9003"
+    assert s.order_cbs[0][1].endswith("09:30:00.025"), \
+        f"头部单应在 .025 事件处理前进簿,实际: {s.order_cbs}"
+
+
+def test_entry_tail_waits_for_simultaneous():
+    """尾部进簿(走 run_backtest 参数):同一买单 release=.025,但等 .025 的
+    同时刻订单(9003/9004 自相匹配)全部处理完,随 .040 事件才进簿 → 不成交"""
+    s = LatencyProbe("LATT", SYM, latency_ms=20)
+    s.actions = [("order", "LT", 100000, 100, 1)]
+    assert run_backtest(_build_ht(), s, latency_entry_position="tail")
+    assert not _fills_for(s, "LT"), "尾部进簿应错过 .025 同时刻的 9003"
+    assert s.order_cbs[0][1].endswith("09:30:00.040"), \
+        f"尾部单应随 .040 事件进簿,实际: {s.order_cbs}"

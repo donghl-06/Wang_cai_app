@@ -415,7 +415,8 @@ def run_backtest(data_dict,
                  realtime_tick_interval_ms: int = 0,
                  event_snapshot_enabled: bool = False,
                  user_cage_enabled: bool = True,
-                 order_latency_ms: int = 0) -> bool:
+                 order_latency_ms: int = 0,
+                 latency_entry_position: str = "head") -> bool:
     """
     运行回测（支持单合约/多合约，单策略，股票/ETF）
     
@@ -474,7 +475,7 @@ def run_backtest(data_dict,
             自动激活。有效申报范围 = 基准价±2% 四舍五入至最小变动价位
             （基准价链：对手一档→本方一档→最新成交→昨收）。
             另：策略限价单新增涨跌停前置校验（超涨跌停废单，所有时代）。
-        order_latency_ms: 策略下单/撤单的交易所链路延迟（毫秒，默认 0=关闭）
+        order_latency_ms: 策略下单/撤单的交易所链路延迟（毫秒，默认 0=关闭，最小 10）
             开启后，策略在回调中返回的下单/撤单不立即进簿，而是延迟到
             回测时钟推进至 发出时刻+latency 才"到达交易所"：过涨跌停/价格笼子
             校验、进订单簿、参与撮合；下单确认回调也延迟到到达时刻才发出。
@@ -482,6 +483,11 @@ def run_backtest(data_dict,
             丢弃并打印提示。实际进簿时机为到达时刻之后的第一个市场事件
             （回测时钟只随市场事件前进）。也可在策略 __init__ 里直接
             self.setOrderLatencyMs(n)，效果相同；以注册进引擎时的值为准。
+        latency_entry_position: 延迟单进簿位置（"head"/"tail"，默认 "head"）
+            延迟订单 release 的时刻若有多笔订单同时到达：
+            - "head"：本策略单排在同时间订单的头部（先处理，抢同价位排队优先级）
+            - "tail"：排在尾部（同时间订单全部处理完再进簿）
+            也可在策略里 self.setLatencyEntryPosition(LatencyEntryPosition.Tail)。
     
     Returns:
         bool: 回测是否成功
@@ -635,6 +641,8 @@ def run_backtest(data_dict,
             print(f"   ✅ 自定义数据已加载，共 {len(data_list)} 条记录")
         
         # 下单延迟（交易所链路时延模拟，可选）：须在注册策略前设置
+        if order_latency_ms and 0 < order_latency_ms < 10:
+            raise ValueError(f"下单延迟最小 10ms（0=关闭），收到 {order_latency_ms}ms")
         if order_latency_ms and order_latency_ms > 0:
             if hasattr(strategy, 'setOrderLatencyMs'):
                 strategy.setOrderLatencyMs(int(order_latency_ms))
@@ -642,6 +650,17 @@ def run_backtest(data_dict,
                       f"（下单/撤单延迟进场，下单确认回调同时延迟）")
             else:
                 print(f"   ⚠️ 当前引擎不支持下单延迟（wangcai_cpp 版本过旧），已忽略")
+        # 延迟单进簿位置（可选）：head=同时间订单头部（默认），tail=尾部
+        if latency_entry_position not in ("head", "tail"):
+            raise ValueError(f"latency_entry_position 只支持 'head'/'tail'，收到 {latency_entry_position!r}")
+        if latency_entry_position == "tail":
+            if hasattr(strategy, 'setLatencyEntryPosition'):
+                # 局部导入：旧引擎没有该枚举，顶层 import 会破坏兼容性
+                from wangcai_syn.wangcai_cpp import LatencyEntryPosition
+                strategy.setLatencyEntryPosition(LatencyEntryPosition.Tail)
+                print(f"   ⚙️ 延迟单进簿位置: 同时间订单尾部")
+            else:
+                print(f"   ⚠️ 当前引擎不支持延迟单进簿位置（wangcai_cpp 版本过旧），已忽略")
 
         # 注册策略
         engine.registerStrategy(strategy)

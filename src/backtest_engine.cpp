@@ -282,9 +282,11 @@ void BacktestEngine::registerStrategy(std::shared_ptr<Strategy> strategy) {
     strategies_.push_back(strategy);
     // 为每个策略初始化持仓映射
     positions_[strategy->getStrategyId()] = std::map<std::string, Position>();
-    // 下单延迟快照（注册之后再 setOrderLatencyMs 不生效）
+    // 下单延迟与进簿位置快照（注册之后再 set 不生效）
     const int lat = strategy->getOrderLatencyMs();
     latency_map_[strategy->getStrategyId()] = lat;
+    latency_head_map_[strategy->getStrategyId()] =
+        strategy->getLatencyEntryPosition() == LatencyEntryPosition::Head;
     if (lat > 0) any_latency_ = true;
 }
 
@@ -950,7 +952,9 @@ void BacktestEngine::processUserEvent(const UserEvent& user_event) {
 }
 
 // 下单延迟入口：开了延迟的策略事件入延迟队列（release = 当前时钟 + 延迟），
-// 否则同步处理——默认 latency=0 时与旧版行为完全一致
+// 否则同步处理——默认 latency=0 时与旧版行为完全一致。
+// 进簿位置（头/尾）决定入哪个队列：头部单抢在同时间订单之前进簿，
+// 尾部单等同时间订单处理完再进簿
 void BacktestEngine::enqueueOrDispatch(const UserEvent& user_event) {
     if (any_latency_ && current_ms_ >= 0) {
         const std::string& sid = user_event.type == UserEvent::ORDER
@@ -960,24 +964,35 @@ void BacktestEngine::enqueueOrDispatch(const UserEvent& user_event) {
         if (it != latency_map_.end() && it->second > 0) {
             if (user_event.type == UserEvent::ORDER)
                 delayed_order_ids_.insert(user_event.order.order_id);
-            delayed_events_.push(DelayedUserEvent{current_ms_ + it->second,
-                                                  delayed_seq_++, user_event});
+            auto hit = latency_head_map_.find(sid);
+            const bool at_head = hit == latency_head_map_.end() || hit->second;
+            auto& q = at_head ? delayed_head_ : delayed_tail_;
+            q.push(DelayedUserEvent{current_ms_ + it->second, delayed_seq_++, user_event});
             return;
         }
     }
     processUserEvent(user_event);
 }
 
-// 释放"到达时刻 <= now_ms"的延迟事件，走原有校验/进簿/撮合路径。
-// 先下单的先释放（release 相同按 seq），撤单不会比订单先到达
+// 释放到点的延迟事件，走原有校验/进簿/撮合路径。
+// 头部单：release <= 当前事件时间即释放（先于该时间所有事件进簿）;
+// 尾部单：release < 当前事件时间才释放（该时间的事件全部处理完后再进簿）;
+// 同队列内先下单的先释放（release 相同按 seq），撤单不会比订单先到达
 void BacktestEngine::drainDelayedEvents(int64_t now_ms) {
-    while (!delayed_events_.empty() && delayed_events_.top().release_ms <= now_ms) {
-        DelayedUserEvent due = std::move(const_cast<DelayedUserEvent&>(delayed_events_.top()));
-        delayed_events_.pop();
-        if (due.event.type == UserEvent::ORDER)
-            delayed_order_ids_.erase(due.event.order.order_id);
-        processUserEvent(due.event);
-    }
+    auto drain = [&](DelayedQueue& q, bool at_head) {
+        while (!q.empty()) {
+            const bool due = at_head ? q.top().release_ms <= now_ms
+                                     : q.top().release_ms < now_ms;
+            if (!due) break;
+            DelayedUserEvent ev = std::move(const_cast<DelayedUserEvent&>(q.top()));
+            q.pop();
+            if (ev.event.type == UserEvent::ORDER)
+                delayed_order_ids_.erase(ev.event.order.order_id);
+            processUserEvent(ev.event);
+        }
+    };
+    drain(delayed_head_, true);
+    drain(delayed_tail_, false);
 }
 
 // 处理用户撤单
@@ -1651,17 +1666,20 @@ void BacktestEngine::finish() {
     // 下单延迟收尾：收盘时刻(15:00:00.000 含)前"到达"的订单照常进场
     // （收市竞价时段到达的进 pending_auction_orders_，随下面 settle 判定）；
     // 收盘后才到达的订单，真实中交易所已拒收，丢弃并提示
+    // （尾部单按规则须严格早于 15:00 才释放，恰在 15:00 到达的尾部单一并丢弃）
     if (any_latency_) {
         drainDelayedEvents(15LL * 3600 * 1000);
-        while (!delayed_events_.empty()) {
-            const auto& d = delayed_events_.top();
-            std::cout << "[下单延迟] 到达时刻已过 15:00，未进场即丢弃: "
-                      << (d.event.type == UserEvent::ORDER ? d.event.order.order_id
-                                                           : d.event.cancel.order_id)
-                      << std::endl;
-            if (d.event.type == UserEvent::ORDER)
-                delayed_order_ids_.erase(d.event.order.order_id);
-            delayed_events_.pop();
+        for (auto* q : {&delayed_head_, &delayed_tail_}) {
+            while (!q->empty()) {
+                const auto& d = q->top();
+                std::cout << "[下单延迟] 到达时刻已过 15:00，未进场即丢弃: "
+                          << (d.event.type == UserEvent::ORDER ? d.event.order.order_id
+                                                               : d.event.cancel.order_id)
+                          << std::endl;
+                if (d.event.type == UserEvent::ORDER)
+                    delayed_order_ids_.erase(d.event.order.order_id);
+                q->pop();
+            }
         }
     }
 
