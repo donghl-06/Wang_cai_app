@@ -6,6 +6,7 @@
 # 结果: adata_validation_results.csv(增量,断点续传,逐子波 git 提交)
 set -uo pipefail
 cd "$(dirname "$0")/.."
+export TZ=Asia/Shanghai   # 系统时钟是 UTC,日志时间戳统一按东八区输出
 
 FETCH_PY=/home/donghuale/venv_adata/bin/python
 VENV_PY=.venv/bin/python
