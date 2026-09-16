@@ -282,6 +282,10 @@ void BacktestEngine::registerStrategy(std::shared_ptr<Strategy> strategy) {
     strategies_.push_back(strategy);
     // 为每个策略初始化持仓映射
     positions_[strategy->getStrategyId()] = std::map<std::string, Position>();
+    // 下单延迟快照（注册之后再 setOrderLatencyMs 不生效）
+    const int lat = strategy->getOrderLatencyMs();
+    latency_map_[strategy->getStrategyId()] = lat;
+    if (lat > 0) any_latency_ = true;
 }
 
 // 尝试立即成交USER订单
@@ -743,16 +747,19 @@ bool BacktestEngine::determineBuyPassive(const Event& ev) const {
 
 // === 用户自定义事件支持 ===
 void BacktestEngine::submitUserEvent(const UserEvent& user_event) {
-    // 复用现有用户事件处理逻辑
-    processUserEvent(user_event);
+    // 走下单延迟入口（跨标的/自定义事件同样受策略延迟约束）
+    enqueueOrDispatch(user_event);
 }
 
 bool BacktestEngine::hasUserOrder(const std::string& order_id) const {
-    return user_order_mapping_.find(order_id) != user_order_mapping_.end();
+    // 延迟队列中的订单也算本引擎持有（撤单路由判定用）
+    return user_order_mapping_.find(order_id) != user_order_mapping_.end()
+        || delayed_order_ids_.find(order_id) != delayed_order_ids_.end();
 }
 
 void BacktestEngine::setCurrentDatetimeForCustomEvent(const std::string& datetime) {
     current_datetime_ = datetime;
+    current_ms_ = parseDatetimeMs(datetime);  // 下单延迟的释放基准（跨标的/自定义事件路径）
 }
 
 std::vector<UserEvent> BacktestEngine::drainCrossSymbolEvents() {
@@ -939,6 +946,37 @@ void BacktestEngine::processUserEvent(const UserEvent& user_event) {
         case UserEvent::CANCEL:
             processUserCancel(user_event.cancel);
             break;
+    }
+}
+
+// 下单延迟入口：开了延迟的策略事件入延迟队列（release = 当前时钟 + 延迟），
+// 否则同步处理——默认 latency=0 时与旧版行为完全一致
+void BacktestEngine::enqueueOrDispatch(const UserEvent& user_event) {
+    if (any_latency_ && current_ms_ >= 0) {
+        const std::string& sid = user_event.type == UserEvent::ORDER
+                                     ? user_event.order.strategy_id
+                                     : user_event.cancel.strategy_id;
+        auto it = latency_map_.find(sid);
+        if (it != latency_map_.end() && it->second > 0) {
+            if (user_event.type == UserEvent::ORDER)
+                delayed_order_ids_.insert(user_event.order.order_id);
+            delayed_events_.push(DelayedUserEvent{current_ms_ + it->second,
+                                                  delayed_seq_++, user_event});
+            return;
+        }
+    }
+    processUserEvent(user_event);
+}
+
+// 释放"到达时刻 <= now_ms"的延迟事件，走原有校验/进簿/撮合路径。
+// 先下单的先释放（release 相同按 seq），撤单不会比订单先到达
+void BacktestEngine::drainDelayedEvents(int64_t now_ms) {
+    while (!delayed_events_.empty() && delayed_events_.top().release_ms <= now_ms) {
+        DelayedUserEvent due = std::move(const_cast<DelayedUserEvent&>(delayed_events_.top()));
+        delayed_events_.pop();
+        if (due.event.type == UserEvent::ORDER)
+            delayed_order_ids_.erase(due.event.order.order_id);
+        processUserEvent(due.event);
     }
 }
 
@@ -1231,6 +1269,9 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
 
     // 更新当前时间
     current_datetime_ = ev.datetime;
+    current_ms_ = ev.datetime_ms;
+    // 下单延迟：先释放"到达时刻 <= 当前事件时刻"的策略单/撤单（先于本事件进簿）
+    if (any_latency_) drainDelayedEvents(ev.datetime_ms);
     const int64_t ev_ms_of_day = ev.datetime_ms % 86400000LL;
     if (ev_ms_of_day / 1000 > End_Sec) {  // 同原 "HH:MM:SS" > "15:00:00"(15:00:00.xxx 仍处理)
         return;
@@ -1544,12 +1585,13 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                 return;
             }
         } else { // CANCEL
-            if (user_order_mapping_.find(ue.cancel.order_id) == user_order_mapping_.end()) {
+            if (user_order_mapping_.find(ue.cancel.order_id) == user_order_mapping_.end()
+                && delayed_order_ids_.find(ue.cancel.order_id) == delayed_order_ids_.end()) {
                 cross_symbol_events_.push_back(ue);
                 return;
             }
         }
-        processUserEvent(ue);
+        enqueueOrDispatch(ue);  // 下单延迟：开了延迟的策略入队，否则同步处理
     };
 
     // 批量成交推送:本市场事件撮合产生的全部历史成交一次跨边界。
@@ -1605,7 +1647,24 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
 void BacktestEngine::finish() {
     // 等待所有策略完成处理
     waitForStrategiesCompletion();
-    
+
+    // 下单延迟收尾：收盘时刻(15:00:00.000 含)前"到达"的订单照常进场
+    // （收市竞价时段到达的进 pending_auction_orders_，随下面 settle 判定）；
+    // 收盘后才到达的订单，真实中交易所已拒收，丢弃并提示
+    if (any_latency_) {
+        drainDelayedEvents(15LL * 3600 * 1000);
+        while (!delayed_events_.empty()) {
+            const auto& d = delayed_events_.top();
+            std::cout << "[下单延迟] 到达时刻已过 15:00，未进场即丢弃: "
+                      << (d.event.type == UserEvent::ORDER ? d.event.order.order_id
+                                                           : d.event.cancel.order_id)
+                      << std::endl;
+            if (d.event.type == UserEvent::ORDER)
+                delayed_order_ids_.erase(d.event.order.order_id);
+            delayed_events_.pop();
+        }
+    }
+
     // 如果已进入收盘集合竞价阶段，则结算
     if (closing_mode_) {
         close_engine_->settle();

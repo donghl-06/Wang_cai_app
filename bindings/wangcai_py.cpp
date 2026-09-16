@@ -522,6 +522,11 @@ py::class_<OrderCallback>(m, "OrderCallback")
         .def("onOrderFilled", &Strategy::onOrderFilled)
         .def("onOrderCancelled", &Strategy::onOrderCancelled)
         .def("getStrategyId", &Strategy::getStrategyId)
+        .def("setOrderLatencyMs", &Strategy::setOrderLatencyMs,
+             "设置下单/撤单的交易所链路延迟（毫秒）：策略单延迟到 发出时刻+延迟 "
+             "才进订单簿参与撮合，下单确认回调同时延迟；撤单同通道保 FIFO。"
+             "须在 run_backtest 前设置；0=关闭（默认），行为与旧版一致")
+        .def("getOrderLatencyMs", &Strategy::getOrderLatencyMs)
         .def("onTradeCallback", &Strategy::onTradeCallback)
         .def("onOrderCallback", &Strategy::onOrderCallback)
         .def("isProcessingComplete", &Strategy::isProcessingComplete)

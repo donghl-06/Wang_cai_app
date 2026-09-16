@@ -86,6 +86,15 @@ public:
     
     // 获取策略ID
     virtual std::string getStrategyId() const = 0;
+
+    // === 下单延迟（交易所链路时延模拟）===
+    // latency_ms > 0 时，本策略的下单/撤单不再同步进簿，而是进入延迟队列，
+    // 回测时钟推进到 发出时刻 + latency 时才"到达交易所"：过涨跌停/价格笼子
+    // 校验、进订单簿、参与撮合；下单确认回调也延迟到到达时刻才发出。
+    // 撤单走同一延迟通道，与下单保 FIFO（不会出现撤单比订单先到）。
+    // 须在注册进引擎（run_backtest）之前设置；默认 0 = 关闭，行为与旧版一致。
+    void setOrderLatencyMs(int latency_ms) { order_latency_ms_ = latency_ms > 0 ? latency_ms : 0; }
+    int getOrderLatencyMs() const { return order_latency_ms_; }
     
     // 检查策略是否已完成所有处理（基于atomic状态变量）
     virtual bool isProcessingComplete() const { return processing_complete_.load(); }
@@ -124,6 +133,8 @@ protected:
     
     // 异步处理状态管理（用于异步策略）
     mutable std::atomic<bool> processing_complete_{true}; // 默认同步策略已完成
+
+    int order_latency_ms_ = 0;  // 下单/撤单延迟（毫秒），0=关闭
     
     // 更新持仓的受保护方法，供派生类使用
     void updatePosition(const std::string& symbol, int64_t quantity_change) {
@@ -227,6 +238,11 @@ private:
     void processUserOrder(const UserOrder& user_order);
     void processUserCancel(const UserCancel& user_cancel);
     void processUserEvent(const UserEvent& user_event);
+    // 下单延迟入口：开了延迟的策略事件入延迟队列，否则同步走 processUserEvent
+    void enqueueOrDispatch(const UserEvent& user_event);
+    // 释放所有 release_ms <= now_ms 的延迟事件（回测时钟只随市场事件前进，
+    // 实际进簿时机 = 到达时刻之后的第一个市场事件，释放先于该事件处理）
+    void drainDelayedEvents(int64_t now_ms);
     bool tryFillImmediately(std::shared_ptr<Order> user_order);
 
     // 集合竞价 settle 时处理影子订单：
@@ -301,6 +317,26 @@ private:
     // 跨标的用户事件暂存：策略在本引擎回调里返回、但 symbol 不属于本引擎的订单/撤单
     // 仅在 Taskflow 并行阶段内写入，join 之后由上层串行 drain + 路由
     std::vector<UserEvent> cross_symbol_events_;
+
+    // === 下单延迟队列（策略单交易所链路时延模拟，见 Strategy::setOrderLatencyMs）===
+    struct DelayedUserEvent {
+        int64_t release_ms;  // 到达交易所的时刻（发出时刻 + 延迟）
+        uint64_t seq;        // 同一 release_ms 内保 FIFO
+        UserEvent event;
+        bool operator>(const DelayedUserEvent& o) const {
+            return release_ms != o.release_ms ? release_ms > o.release_ms
+                                              : seq > o.seq;
+        }
+    };
+    std::priority_queue<DelayedUserEvent, std::vector<DelayedUserEvent>,
+                        std::greater<DelayedUserEvent>> delayed_events_;
+    uint64_t delayed_seq_ = 0;
+    int64_t current_ms_ = -1;  // 当前回测时钟（与 current_datetime_ 同源）
+    bool any_latency_ = false; // 有策略开延迟才走队列（默认路径零开销短路）
+    std::map<std::string, int> latency_map_;  // strategy_id -> 延迟ms（注册时快照）
+    // 尚在延迟队列中的用户订单ID：撤单路由判定时视为"本引擎持有"
+    // （订单未 release 前 user_order_mapping_ 里查不到，撤单会被误路由为跨标的）
+    std::unordered_set<std::string> delayed_order_ids_;
 
     // 集合竞价期间暂存的用户订单（开盘 09:15-09:25、收盘 14:57-15:00）
     // settle 时做影子成交判定

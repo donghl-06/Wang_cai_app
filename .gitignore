@@ -59,3 +59,6 @@ user_example/*.csv
 
 # 设计/讨论/修复记录文档（本地留存，不入库）
 docs/
+# 实验引擎构建与影子包(下单延迟功能过渡期内)
+build_exp/
+exp_pkg/

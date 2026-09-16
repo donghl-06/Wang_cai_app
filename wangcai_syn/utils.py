@@ -402,8 +402,8 @@ def create_multi_symbol_data(data_dict, n_workers=None, release_input: bool = Fa
     return symbol_data_list
 
 
-def run_backtest(data_dict, 
-                 strategy, 
+def run_backtest(data_dict,
+                 strategy,
                  output_dir: str = None,
                  strict_active_order_mode: bool = False,
                  real_trade_match_mode: bool = False,
@@ -414,7 +414,8 @@ def run_backtest(data_dict,
                  release_input: bool = False,
                  realtime_tick_interval_ms: int = 0,
                  event_snapshot_enabled: bool = False,
-                 user_cage_enabled: bool = True) -> bool:
+                 user_cage_enabled: bool = True,
+                 order_latency_ms: int = 0) -> bool:
     """
     运行回测（支持单合约/多合约，单策略，股票/ETF）
     
@@ -473,6 +474,14 @@ def run_backtest(data_dict,
             自动激活。有效申报范围 = 基准价±2% 四舍五入至最小变动价位
             （基准价链：对手一档→本方一档→最新成交→昨收）。
             另：策略限价单新增涨跌停前置校验（超涨跌停废单，所有时代）。
+        order_latency_ms: 策略下单/撤单的交易所链路延迟（毫秒，默认 0=关闭）
+            开启后，策略在回调中返回的下单/撤单不立即进簿，而是延迟到
+            回测时钟推进至 发出时刻+latency 才"到达交易所"：过涨跌停/价格笼子
+            校验、进订单簿、参与撮合；下单确认回调也延迟到到达时刻才发出。
+            撤单与下单走同一延迟通道，保 FIFO；收盘（15:00）后才到达的订单
+            丢弃并打印提示。实际进簿时机为到达时刻之后的第一个市场事件
+            （回测时钟只随市场事件前进）。也可在策略 __init__ 里直接
+            self.setOrderLatencyMs(n)，效果相同；以注册进引擎时的值为准。
     
     Returns:
         bool: 回测是否成功
@@ -625,6 +634,15 @@ def run_backtest(data_dict,
             
             print(f"   ✅ 自定义数据已加载，共 {len(data_list)} 条记录")
         
+        # 下单延迟（交易所链路时延模拟，可选）：须在注册策略前设置
+        if order_latency_ms and order_latency_ms > 0:
+            if hasattr(strategy, 'setOrderLatencyMs'):
+                strategy.setOrderLatencyMs(int(order_latency_ms))
+                print(f"   ⚙️ 下单延迟: ✅ {int(order_latency_ms)}ms"
+                      f"（下单/撤单延迟进场，下单确认回调同时延迟）")
+            else:
+                print(f"   ⚠️ 当前引擎不支持下单延迟（wangcai_cpp 版本过旧），已忽略")
+
         # 注册策略
         engine.registerStrategy(strategy)
         
