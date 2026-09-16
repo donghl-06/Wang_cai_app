@@ -16,6 +16,8 @@ UNIVERSE_FILE=adata_universe_1000.txt
 BLOCK_SIZE=200         # 股票块大小(5 块 × 200 = 1000)
 CHUNK_DAYS=7           # 日历天/子波(≈5 个交易日)
 RESULTS=adata_validation_results.csv
+STATE=logs/waves.state   # 最后完成的子波 "<offset> <chunk_start>";重启后跳过它及之前的子波
+                       # (已完成子波原始数据已删,重拉纯属浪费,校验也只会跳过)
 
 log() { echo "[$(date '+%m-%d %H:%M:%S')] $*"; }
 
@@ -25,6 +27,16 @@ for (( offset=0; offset<UNIVERSE; offset+=BLOCK_SIZE )); do
         chunk_end=$(date -d "$chunk_start +$((CHUNK_DAYS-1)) days" +%F)
         [[ "$chunk_end" > "$END" ]] && chunk_end=$END
         tag="块$((offset))-$((offset+BLOCK_SIZE-1)) @ $chunk_start~$chunk_end"
+
+        # 断点续跑:跳过状态文件记录的已完成子波(执行顺序为 offset 外层、日期内层)
+        if [[ -f "$STATE" ]]; then
+            read -r s_off s_chunk < "$STATE"
+            if (( offset < s_off )) || { (( offset == s_off )) && [[ ! "$chunk_start" > "$s_chunk" ]]; }; then
+                log "跳过已完成子波 $tag"
+                chunk_start=$(date -d "$chunk_end +1 day" +%F)
+                continue
+            fi
+        fi
         log "===== 子波 $tag ====="
 
         # 1. 拉取(断点续传:已齐四件套的只次自动跳过)
@@ -38,7 +50,9 @@ for (( offset=0; offset<UNIVERSE; offset+=BLOCK_SIZE )); do
         log "拉取完成(磁盘余量 $(df -h . | awk 'NR==2{print $4}')),开始校验"
 
         # 2. 校验(增量:已 pass 的只次自动跳过)
-        if ! $VENV_PY tests/price_cage/run_adata_validation.py --batch-size 4 >> logs/validate.log 2>&1; then
+        # 2026-09-16 扩容 4→12 核:batch-size 4→12(内存仍 15GB,
+        # run_adata_validation 的 60 万行/批 OOM 上限不变)
+        if ! $VENV_PY tests/price_cage/run_adata_validation.py --batch-size 12 >> logs/validate.log 2>&1; then
             log "❌ 校验进程异常退出,见 logs/validate.log;保留数据,60s 后重试"
             sleep 60; continue
         fi
@@ -86,6 +100,7 @@ EOF
             log "无新结果可提交"
         fi
 
+        echo "$offset $chunk_start" > "$STATE"   # 记录刚完成的子波(供重启跳过)
         chunk_start=$(date -d "$chunk_end +1 day" +%F)
     done
     log "✅ 块 $offset 全部日期完成"
