@@ -43,6 +43,9 @@ private:
     std::vector<Event> call_auction_orders_;
     std::vector<Event> continuous_orders_;
     std::vector<Event> continuous_trades_;
+    // 深市裸市价单(ordertype=1 且 price=0,≥2023-04-10)集合:load_sz_info 收集,
+    // load_traders 据此放行其成交记录进事件流(事件驱动执行的执行依据)
+    std::unordered_set<int64_t> naked_market_ids_;
 };
 
 

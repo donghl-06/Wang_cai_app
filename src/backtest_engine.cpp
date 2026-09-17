@@ -1292,6 +1292,45 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
         return;
     }
 
+    // 深市裸市价单(≥2023-04-10)事件驱动执行：消息序=orderid 序，本单的
+    // 成交/撤单记录紧随委托连续到达。本条消息是它的成交 → 按记录吃掉簿内
+    // 对手（executeMarketRealTrade）；是它的撤单 → 进场即撤登记（后续撤单
+    // 处理由 entry_cancelled 表自动吸收）；都不是 → 事件段终结：剩余量以
+    // 最后成交价（=对方最优一档）挂簿，后续被动成交交自主撮合。
+    if (pending_market_hist_) {
+        auto od = pending_market_hist_;
+        const uint64_t pid = od->input_id;
+        const bool is_my_tra = (ev.source == "tra" && !ev.exectype.empty()
+            && (static_cast<uint64_t>(ev.bidorderid) == pid
+                || static_cast<uint64_t>(ev.askorderid) == pid));
+        if (is_my_tra && ev.exectype[0] == '1') {
+            const bool od_on_bid = (static_cast<uint64_t>(ev.bidorderid) == pid);
+            const uint64_t counter = od_on_bid
+                ? static_cast<uint64_t>(ev.askorderid)
+                : static_cast<uint64_t>(ev.bidorderid);
+            con_engine_->executeMarketRealTrade(od, ev.price, ev.size,
+                                                counter, ev.channelno);
+            pending_market_last_px_ = ev.price;
+            // 不清 pending：消息段内可能还有下一条本单成交
+        } else if (is_my_tra && ev.exectype[0] == '2') {
+            // 撤单回执（含零成交即撤与数据缺损场景）；有成交的剩余撤销
+            // 实证不存在（挂簿后撤单走正常路径），统一按进场即撤吸收
+            orderbook_->markEntryCancelled(od->order_id);
+            pending_market_hist_ = nullptr;
+        } else {
+            // 非本单消息 → 事件段终结
+            pending_market_hist_ = nullptr;
+            if (od->remaining_volume() > 0) {
+                if (od->traded_volume > 0) {
+                    con_engine_->placeMarketRemainderOnBook(od, pending_market_last_px_);
+                } else {
+                    // 零成交且撤单回执未紧随（消息序被跳过）：按进场即撤处理
+                    orderbook_->markEntryCancelled(od->order_id);
+                }
+            }
+        }
+    }
+
     // 价格笼子反推确认：上一条挂起的穿价历史单，看紧挨的本条消息——
     // 是它的成交（tra, exectype='1', 引用其市场 orderid）→ 放行：正常 accept
     //   自主撮合。消息序=交易所处理序：真实里穿价单若立即成交，紧邻消息必是
@@ -1530,7 +1569,17 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                     const Price opp = buy ? orderbook_->bestAsk() : orderbook_->bestBid();
                     crossing_hist = (opp > 0 && (buy ? ord->price >= opp : ord->price <= opp));
                 }
-                if (crossing_hist) {
+
+                // 深市裸市价单(≥2023-04-10)：子类被 adata 压平，accept 阶段
+                // 无法正确转换（见 accept_sz 注释），挂起走事件驱动执行
+                bool naked_sz_market = (ord->order_type == OrderType::Market
+                    && ord->price == 0
+                    && ev.sym.find(".SZ") != std::string::npos
+                    && ord->market_trading_day >= 20230410);
+                if (naked_sz_market) {
+                    pending_market_hist_ = ord;
+                    pending_market_last_px_ = 0;
+                } else if (crossing_hist) {
                     pending_crossing_hist_ = ord;  // 不进簿：十档暂不可见
                 } else {
                     con_engine_->accept(ord);

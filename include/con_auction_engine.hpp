@@ -70,6 +70,13 @@ public:
     void accept(std::shared_ptr<Order>);
     bool cancel(uint64_t oid);
     bool cancel_by_input_id(uint64_t input_id, int channel_no = -1);  // 通过市场复合键撤单
+
+    // === 深市裸市价单事件驱动执行（≥2023-04-10，子类被 adata 压平，见 accept_sz 注释）===
+    // 按真实成交记录吃掉簿内对手订单（校验身份/价格/量，簿同步由引擎维护）
+    void executeMarketRealTrade(std::shared_ptr<Order>& od, Price px, Quantity vol,
+                                uint64_t counter_input_id, int channel);
+    // 事件段结束时剩余量以成交价（=对方最优一档）挂簿，后续交自主撮合
+    void placeMarketRemainderOnBook(std::shared_ptr<Order>& od, Price px);
     
     // === 价格笼子功能（2023年3月前规则）===
     void enablePriceCage(bool enable) { price_cage_enabled_ = enable; }

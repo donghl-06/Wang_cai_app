@@ -798,6 +798,21 @@ void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
         OrderType orig = od->order_type;
         Price px = 0;
         MarketOrderKey market_key{od->market_channel_no, ext_id};
+
+        // 全面注册制(2023-04-10)后,深市裸市价单(price=0)的子类语义被 adata
+        // 压平(ordertype=1 不分子类),同一日内并存多种真实行为(2024-12-11 实证):
+        //   对方最优价申报:同毫秒只吃对手一档,剩余转限价挂簿等被动成交
+        //     (002248 1652976 吃 9.53x400 剩 2600 挂 5 秒分批;002214 8993335
+        //      吃 12.49x8500 剩 81200 挂簿迟撤);
+        //   FOK/扫单类:同毫秒逐档吃穿全簿全额(3801641 72800 股 16 档 51 笔),
+        //     深度不足则零成交当场撤(7788420 等 8 张,撤单 tradeid=orderid+1);
+        //   空簿即撤:对方最优遇空簿(与 FOK 深度不足同表现)。
+        // 委托流无先验特征区分子类,accept 阶段无法正确转换 → 2023-04-10 起
+        // 的裸市价单不再进入本函数,由 BacktestEngine 按消息流事件驱动执行
+        // (成交记录紧随委托,消息序=orderid 序,见 executeMarketRealTrade)。
+        // 2023-04-10 前市价单为"转对手最优+剩余挂簿"语义(000661/002192
+        // 2022-06-02 实证存在部分成交后挂簿/迟撤),保留下方旧转换逻辑。
+
         if (orig == OrderType::Market) {
             // 先看历史成交价格
             if (auto it = ob_.first_trade_px_.find(market_key); it != ob_.first_trade_px_.end())
@@ -855,6 +870,111 @@ void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
         ob_.bucketAdd(idx, buy, od->remaining_volume());
     
     ob_._loc[od->order_id] = { buy, idx, od->level_iter }; // 记录订单位置
+}
+
+// ========== 深市裸市价单事件驱动执行(≥2023-04-10) ==========
+
+// 按真实成交记录执行:吃掉引擎簿内对手订单 vol 股(被动方按成交价成交)。
+// 市价单的撮合对手与量由真实消息流给定,引擎负责簿内定位与一致性校验——
+// 对手不存在/方向价格不符/量不足即簿状态已偏离,抛 MarketIdentityError。
+void ConAuctionEngine::executeMarketRealTrade(std::shared_ptr<Order>& od, Price px,
+                                              Quantity vol, uint64_t counter_input_id,
+                                              int channel)
+{
+    const bool buy = od->direction == Direction::Buy;
+
+    if (od->remaining_volume() < vol)
+        throw MarketIdentityError(
+            "市价单真实成交超过剩余量: order_id=" + std::to_string(od->input_id) +
+            ", 剩余=" + std::to_string(od->remaining_volume()) +
+            ", 成交=" + std::to_string(vol));
+
+    const auto sys_id = ob_.findSystemOrderId(counter_input_id, channel);
+    if (!sys_id.has_value())
+        throw MarketIdentityError(
+            "市价单真实成交引用的对手订单不在活跃表: market_order_id=" +
+            std::to_string(counter_input_id));
+    auto loc_it = ob_._loc.find(*sys_id);
+    if (loc_it == ob_._loc.end())
+        throw MarketIdentityError(
+            "市价单真实成交的对手订单不在簿内: market_order_id=" +
+            std::to_string(counter_input_id));
+    const auto& loc = loc_it->second;
+    auto oppo = *loc.it;
+
+    // 身份与价格校验:对手须在相反侧,且被动方成交价=其限价(交易所口径)
+    if (loc.is_buy == buy)
+        throw MarketIdentityError(
+            "市价单真实成交的对手方向不符: market_order_id=" +
+            std::to_string(counter_input_id));
+    if (oppo->price != px)
+        throw MarketIdentityError(
+            "市价单真实成交价不等于对手限价: order_id=" + std::to_string(od->input_id) +
+            ", 成交价=" + std::to_string(px) +
+            ", 对手限价=" + std::to_string(oppo->price));
+    if (oppo->remaining_volume() < vol)
+        throw MarketIdentityError(
+            "市价单真实成交超过对手剩余量: market_order_id=" +
+            std::to_string(counter_input_id) +
+            ", 对手剩余=" + std::to_string(oppo->remaining_volume()) +
+            ", 成交=" + std::to_string(vol));
+
+    // 执行成交(簿操作口径与 match_sz 一致)
+    od->traded_volume += vol;
+    oppo->traded_volume += vol;
+    ob_.bucketSub(loc.idx, !buy, vol);
+
+    if (ob_._on_exec) {
+        Execution ex = Execution::historical(
+            buy ? od->order_id : oppo->order_id,
+            buy ? oppo->order_id : od->order_id,
+            px, vol);
+        ob_._on_exec(ex);
+    }
+    if (real_trade_match_mode_) {
+        feedRealTrade(px, vol, !buy);
+    }
+    if (strict_active_order_mode_ && debt_volume_ > 0) {
+        uint64_t reduce = std::min(static_cast<uint64_t>(vol), debt_volume_);
+        debt_volume_ -= reduce;
+        diag_.debt_clear_total += reduce;
+    }
+
+    // 对手方完全成交,移出订单簿
+    if (oppo->remaining_volume() == 0) {
+        on_historical_order_removing(oppo, loc.idx, !buy, true);
+        oppo->status = OrderStatus::Filled;
+        auto& side = !buy ? ob_._buy : ob_._sell;  // 对手侧
+        side[loc.idx].orders.erase(loc.it);
+        ob_._loc.erase(oppo->order_id);
+        ob_._omap.erase(oppo->order_id);
+        ob_.eraseActiveMarketOrder(oppo->order_id);
+    } else {
+        oppo->status = OrderStatus::PartFilled;
+    }
+
+    // 市价单自身状态
+    if (od->remaining_volume() == 0) {
+        od->status = OrderStatus::Filled;
+        ob_.eraseActiveMarketOrder(od->order_id);
+    } else {
+        od->status = OrderStatus::PartFilled;
+    }
+}
+
+// 事件段结束(消息流中不再有本单的成交/撤单)时,剩余量以最后成交价挂簿。
+// 最后成交价=对方最优一档(交易所按被动方价成交),转限价后交自主撮合。
+void ConAuctionEngine::placeMarketRemainderOnBook(std::shared_ptr<Order>& od, Price px)
+{
+    od->price = px;
+    od->order_type = OrderType::Limit;
+    const bool buy = od->direction == Direction::Buy;
+    const int idx = ob_.pxToIdx(od->price);
+    auto& side = buy ? ob_._buy : ob_._sell;
+    side[idx].orders.push_back(od);
+    od->level_iter = std::prev(side[idx].orders.end());
+    ob_.bucketAdd(idx, buy, od->remaining_volume());
+    ob_._loc[od->order_id] = { buy, idx, od->level_iter };
 }
 
 // 连续竞价核心撮合函数

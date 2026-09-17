@@ -78,6 +78,7 @@ inline bool isContinuousTime(std::string_view datetime_str) {
 void InfoLoader::load_sh_info(const std::string& order_csv_content, const std::string& trade_csv_content, wangcai::OrderBook& order_book) {
     std::istringstream file(order_csv_content);
     std::string line;
+    naked_market_ids_.clear();  // 沪市无裸市价单事件驱动路径,防实例复用残留
     std::getline(file, line); // 跳过标题行
 
     int total_lines = 0;
@@ -169,8 +170,11 @@ void InfoLoader::load_sh_info(const std::string& order_csv_content, const std::s
 }
 
 void InfoLoader::load_sz_info(const std::string& order_csv_content, const std::string& trade_csv_content, wangcai::OrderBook& order_book) {
-    std::istringstream file(order_csv_content);  
+    std::istringstream file(order_csv_content);
     std::string line;
+    // 深市裸市价单(ordertype=1 且 price=0,≥2023-04-10)集合:其成交记录需进
+    // 事件流,供 BacktestEngine 事件驱动执行(子类被 adata 压平,见 accept_sz 注释)
+    naked_market_ids_.clear();
     std::getline(file, line); // 跳过CSV文件的标题行
 
     while (std::getline(file, line)) {
@@ -237,10 +241,15 @@ void InfoLoader::load_sz_info(const std::string& order_csv_content, const std::s
                 date_part.erase(std::remove(date_part.begin(), date_part.end(), '-'), date_part.end());
                 trading_day = std::stoi(date_part);
             }
-            
+
+            // 收集裸市价单(其成交记录需进事件流,见 load_traders 放行)
+            if (ordertype == 1 && price == 0 && trading_day >= 20230410) {
+                naked_market_ids_.insert(orderid);
+            }
+
             // 创建并插入订单事件，填充新增的原始市场数据字段
-            Event order_event(datetime, sym, price, size, side, ordertype, orderid, channelno, 
-                            seqno, bizindex, -1, -1, -1, "", "", 
+            Event order_event(datetime, sym, price, size, side, ordertype, orderid, channelno,
+                            seqno, bizindex, -1, -1, -1, "", "",
                             -1, -1, -1, -1, -1, -1, -1, -1, {}, {}, {}, {}, -1, -1, -1, -1, -1, "ord",
                             // === 新增的原始市场数据字段 ===
                             1,                              // exchange (SZ深交所=1)
@@ -366,7 +375,13 @@ void InfoLoader::load_traders(const std::string& csv_content, wangcai::OrderBook
                 // 供 BacktestEngine 做"穿价历史单的下一条消息确认"（不推策略、不动簿）。
                 // 连续竞价段限定（笼子不管集合竞价，收盘竞价段无反推需要）。
                 const bool in_continuous = datetime.substr(11, 8) < "14:57:00";
-                if (in_continuous && needsHistoricalCageInference(sym, date)) {
+                // 裸市价单的成交同样进流：事件驱动执行的执行依据（见 load_sz_info 开头）
+                const bool refs_naked_market =
+                    naked_market_ids_.count(bidorderid) > 0 ||
+                    naked_market_ids_.count(askorderid) > 0;
+                if (in_continuous && refs_naked_market) {
+                    order_book.insertEvent(trade_event);
+                } else if (in_continuous && needsHistoricalCageInference(sym, date)) {
                     order_book.insertEvent(trade_event);
                 } else {
                     continuous_trades_.emplace_back(std::move(trade_event));
