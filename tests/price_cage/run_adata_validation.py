@@ -56,9 +56,10 @@ def parse_args():
     p.add_argument("--max-missing-rate", type=float, default=0.0001,
                    help="源数据引用缺失率上限(默认 0.01%%;撤单引用缺失>0 或"
                         "成交引用缺失超此值即判 data_incomplete,不跑引擎)")
-    p.add_argument("--max-batch-rows", type=int, default=600_000,
-                   help="单批 csord+cstra 总行数上限(默认 60 万;实测 15GB 机器"
-                        "单批 >100 万行会被 OOM kill,巨型票自动单独成批)")
+    p.add_argument("--max-batch-rows", type=int, default=1_200_000,
+                   help="单批 csord+cstra 总行数上限(默认 120 万;15GB 时实测"
+                        "单批 >100 万行会被 OOM kill,2026-09-16 内存扩到 31GB "
+                        "后上限同步翻倍,巨型票仍自动单独成批)")
     return p.parse_args()
 
 
