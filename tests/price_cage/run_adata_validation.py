@@ -56,10 +56,10 @@ def parse_args():
     p.add_argument("--max-missing-rate", type=float, default=0.0001,
                    help="源数据引用缺失率上限(默认 0.01%%;撤单引用缺失>0 或"
                         "成交引用缺失超此值即判 data_incomplete,不跑引擎)")
-    p.add_argument("--max-batch-rows", type=int, default=1_200_000,
-                   help="单批 csord+cstra 总行数上限(默认 120 万;15GB 时实测"
-                        "单批 >100 万行会被 OOM kill,2026-09-16 内存扩到 31GB "
-                        "后上限同步翻倍,巨型票仍自动单独成批)")
+    p.add_argument("--max-batch-rows", type=int, default=3_000_000,
+                   help="单批 csord+cstra 总行数上限(默认 300 万;120 万行批实测"
+                        "RSS≈2.1G,31GB 内存下 300 万外推≈5G 安全;OOM 时上层"
+                        "脚本自动重试不丢只次,巨型票仍自动单独成批)")
     return p.parse_args()
 
 
@@ -220,81 +220,144 @@ def _err_row(sym, day, status, note):
             "seconds": 0, "note": note[:80]}
 
 
-def _child_run_batch(day, syms, base_str, max_missing_rate, q):
-    """子进程:整批 加载→源数据预检→引擎→对账,结果行放入队列。
+def _verify_one_sym(sym, day, base_str, max_missing_rate, q):
+    """孙进程:单只 加载→源数据预检→单票引擎→对账,结果行入队。
 
-    引擎在多只次连跑时内存持续增长(已知析构不释放问题),长进程必被 OOM
-    kill;每批一个全新子进程,退出即彻底释放,流水线可无人值守跑几天。
+    单票 run_backtest 走引擎归并循环的单引擎退化路径,纯单线程 ≈ 1 核,
+    N 只并发即 N 核——不受 MultiBacktestEngine 每毫秒同步屏障对
+    "同时活跃票数"的限制(实测同毫秒平均仅 ~5 只票有事件,12 只批
+    CPU 上限 ~5.5 根)。
+    """
+    rows = []
+
+    def done():
+        try:
+            q.put(rows)
+            q.close()
+            q.join_thread()
+        except Exception:
+            pass
+        os._exit(0)
+
+    try:
+        base = Path(base_str)
+        files = load_one(base, sym, day)
+        # 源数据质量前置检查:引用缺失的只次不可能过 100% 口径,直接登记。
+        # 沪市逐笔委托天然不全,预检必须用还原后的副本(进引擎的仍是原始
+        # 数据,由引擎侧统一还原,纯函数不改原 df)
+        csord_qc = files["csord"]
+        if sym.endswith(".SH"):
+            csord_qc = _restore_sh_orders(sym, csord_qc, files["cstra"])
+        nmc, nmt, cr, tr = data_quality_check(csord_qc, files["cstra"])
+        if nmc > 0 or tr > max_missing_rate:
+            rows.append(_err_row(
+                sym, day, "data_incomplete",
+                f"撤单引用缺失{nmc}({cr:.4%}) 成交引用缺失{nmt}({tr:.4%})"))
+            done()
+        reals = real_agg(files["cstra"])  # release_input 前先算好真值
+        collector = Collector()
+        data_dict = {sym: (files["cstick"], files["csord"], files["cstra"],
+                           files["csbar1d"], is_etf_sym(sym))}
+        ok = False
+        try:
+            ok = run_backtest(data_dict, collector, release_input=True)
+        except Exception as e:
+            rows.append(_err_row(sym, day, "engine_error", str(e)))
+        if not ok:
+            if not rows:
+                # run_backtest 内部消化了异常并返回 False
+                row = _err_row(sym, day, "engine_fail", "run_backtest 返回 False")
+                row["n_real_pairs"] = len(reals)
+                rows.append(row)
+            done()
+        eng, real = eng_agg(collector.trades.get(sym, [])), reals
+        matched = sum(1 for k, v in real.items() if eng.get(k, 0) >= v)
+        fn = sum(1 for k, v in real.items() if eng.get(k, 0) < v)
+        fp = sum(1 for k in eng if k not in real)
+        exact = int(eng == real)
+        rows.append({
+            "sym": sym, "date": day,
+            "status": "pass" if exact else "fail",
+            "n_real_pairs": len(real), "n_eng_pairs": len(eng),
+            "subset_rate": round(matched / max(len(real), 1), 6),
+            "false_neg": fn, "false_pos": fp, "exact": exact,
+            "seconds": 0, "note": ""})
+        if not exact:
+            miss = [(k, v, eng.get(k, 0)) for k, v in real.items()
+                    if eng.get(k, 0) < v][:3]
+            extra = [(k, v) for k, v in eng.items() if k not in real][:3]
+            print(f"   ❌ {sym} {day}: 假阴{fn} 多出{fp} "
+                  f"缺样例{miss} 多样例{extra}", flush=True)
+    except Exception as e:
+        if not any(r["sym"] == sym for r in rows):
+            rows.append(_err_row(sym, day, "engine_error", str(e)))
+    done()
+
+
+def _child_run_batch(day, syms, base_str, max_missing_rate, q):
+    """子进程:批内每票再 fork 一个孙进程并行验证(每票 1 核,N 进程≈N 核),
+    结果行汇总后放入队列。
+
+    孙进程异常退出(疑似 OOM/崩溃)的只次逐只串行重试,仍死则登记
+    engine_crash——不丢只次、不阻塞流水线;孙进程 os._exit 即彻底
+    释放引擎内存(已知析构不释放问题),流水线可无人值守跑几天。
     """
     rows = []
     try:
-        base = Path(base_str)
-        data_dict, reals = {}, {}
-        for sym in syms:
-            try:
-                files = load_one(base, sym, day)
-            except Exception as e:
-                rows.append(_err_row(sym, day, "load_error", str(e)))
-                continue
-            # 源数据质量前置检查:引用缺失的只次不可能过 100% 口径,直接登记
-            # 沪市逐笔委托天然不全(主动方订单需从成交还原,见 utils.revert_sh_order),
-            # 预检必须用还原后的副本,否则沪市票必被误判 data_incomplete;
-            # 进引擎的仍是原始数据,由引擎侧统一还原(纯函数,不改原 df)
-            csord_qc = files["csord"]
-            if sym.endswith(".SH"):
-                csord_qc = _restore_sh_orders(sym, csord_qc, files["cstra"])
-            nmc, nmt, cr, tr = data_quality_check(csord_qc, files["cstra"])
-            if nmc > 0 or tr > max_missing_rate:
-                rows.append(_err_row(
-                    sym, day, "data_incomplete",
-                    f"撤单引用缺失{nmc}({cr:.4%}) 成交引用缺失{nmt}({tr:.4%})"))
-                continue
-            data_dict[sym] = (files["cstick"], files["csord"], files["cstra"],
-                              files["csbar1d"], is_etf_sym(sym))
-            reals[sym] = real_agg(files["cstra"])  # release_input 前先算好真值
+        ctx = mp.get_context("fork")
+        results = {}
 
-        if data_dict:
-            collector = Collector()
-            batch_syms = list(data_dict)  # release_input 会清空字典,先存名单
-            ok = False
+        # 第一轮:批内全部只次并发起孙进程(batch-size ≤ CPU 核数)
+        batch_q = ctx.Queue()
+        procs = {}
+        for sym in syms:
+            p = ctx.Process(target=_verify_one_sym,
+                            args=(sym, day, base_str, max_missing_rate, batch_q))
+            p.start()
+            procs[sym] = p
+        for _ in range(len(procs)):
             try:
-                ok = run_backtest(data_dict, collector,
-                                  n_workers=min(len(data_dict), os.cpu_count()),
-                                  release_input=True)
-            except Exception as e:
-                for sym in batch_syms:
-                    rows.append(_err_row(sym, day, "engine_error", str(e)))
-            if not ok and not any(r["sym"] in batch_syms for r in rows):
-                # run_backtest 内部消化了异常并返回 False:整批记 engine_fail
-                for sym in batch_syms:
-                    row = _err_row(sym, day, "engine_fail",
-                                   "run_backtest 返回 False")
-                    row["n_real_pairs"] = len(reals[sym])
-                    rows.append(row)
-            if ok:
-                unknown = set(collector.trades) - set(batch_syms)
-                if unknown:
-                    print(f"   ⚠️ 引擎回报了批次外合约 {unknown},请检查 Instrument 字段!",
-                          flush=True)
-                for sym in batch_syms:
-                    eng, real = eng_agg(collector.trades.get(sym, [])), reals[sym]
-                    matched = sum(1 for k, v in real.items() if eng.get(k, 0) >= v)
-                    fn = sum(1 for k, v in real.items() if eng.get(k, 0) < v)
-                    fp = sum(1 for k in eng if k not in real)
-                    exact = int(eng == real)
-                    rows.append({
-                        "sym": sym, "date": day,
-                        "status": "pass" if exact else "fail",
-                        "n_real_pairs": len(real), "n_eng_pairs": len(eng),
-                        "subset_rate": round(matched / max(len(real), 1), 6),
-                        "false_neg": fn, "false_pos": fp, "exact": exact,
-                        "seconds": 0, "note": ""})
-                    if not exact:
-                        miss = [(k, v, eng.get(k, 0)) for k, v in real.items()
-                                if eng.get(k, 0) < v][:3]
-                        extra = [(k, v) for k, v in eng.items() if k not in real][:3]
-                        print(f"   ❌ {sym} {day}: 假阴{fn} 多出{fp} "
-                              f"缺样例{miss} 多样例{extra}", flush=True)
+                for r in batch_q.get(timeout=900):
+                    results.setdefault(r["sym"], []).append(r)
+            except queue_mod.Empty:
+                break
+        for sym, p in procs.items():
+            p.join(5)
+            if p.is_alive():
+                p.kill()
+                p.join()
+        # 第二轮:没交出结果的只次逐只串行重试(并发 1,排除 OOM 因素)
+        missing = [s for s in syms if s not in results]
+        if missing:
+            print(f"   ⚠️ {len(missing)} 只孙进程异常(疑似 OOM),逐只重试: "
+                  f"{missing}", flush=True)
+            for sym in missing:
+                sq = ctx.Queue()
+                p = ctx.Process(target=_verify_one_sym,
+                                args=(sym, day, base_str, max_missing_rate, sq))
+                p.start()
+                deadline = time.time() + 900
+                got = None
+                while time.time() < deadline:
+                    try:
+                        got = sq.get(timeout=5)
+                        break
+                    except queue_mod.Empty:
+                        if not p.is_alive():
+                            try:
+                                got = sq.get_nowait()
+                            except queue_mod.Empty:
+                                got = None
+                            break
+                if p.is_alive():
+                    p.kill()
+                p.join()
+                if got:
+                    results[sym] = got
+        for sym in syms:
+            rows.extend(results.get(sym, [
+                _err_row(sym, day, "engine_crash",
+                         "孙进程异常退出(疑似 OOM),单只重试仍失败")]))
     except Exception as e:
         done_syms = {r["sym"] for r in rows}
         for sym in syms:
