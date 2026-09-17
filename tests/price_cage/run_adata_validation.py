@@ -35,7 +35,7 @@ from pathlib import Path
 import pandas as pd
 
 from wangcai_syn import Strategy, run_backtest
-from wangcai_syn.utils import _normalize_table_layout
+from wangcai_syn.utils import _normalize_table_layout, _restore_sh_orders
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -237,7 +237,13 @@ def _child_run_batch(day, syms, base_str, max_missing_rate, q):
                 rows.append(_err_row(sym, day, "load_error", str(e)))
                 continue
             # 源数据质量前置检查:引用缺失的只次不可能过 100% 口径,直接登记
-            nmc, nmt, cr, tr = data_quality_check(files["csord"], files["cstra"])
+            # 沪市逐笔委托天然不全(主动方订单需从成交还原,见 utils.revert_sh_order),
+            # 预检必须用还原后的副本,否则沪市票必被误判 data_incomplete;
+            # 进引擎的仍是原始数据,由引擎侧统一还原(纯函数,不改原 df)
+            csord_qc = files["csord"]
+            if sym.endswith(".SH"):
+                csord_qc = _restore_sh_orders(sym, csord_qc, files["cstra"])
+            nmc, nmt, cr, tr = data_quality_check(csord_qc, files["cstra"])
             if nmc > 0 or tr > max_missing_rate:
                 rows.append(_err_row(
                     sym, day, "data_incomplete",
