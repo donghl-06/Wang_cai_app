@@ -1366,7 +1366,11 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             auto od = it->second;
             replaying_caged_.erase(it);
             if (od->remaining_volume() > 0) {
-                con_engine_->placeMarketRemainderOnBook(od, od->price);
+                // 出笼撮合的剩余量回笼（创业板暂存语义，见
+                // activateEligibleSuspendedHistorical 同款注释：300568.SZ
+                // 28.71 买出笼成交 100 后剩 1900 回笼，挂簿会被同毫秒
+                // 深穿价卖单多吃）
+                con_engine_->suspendHistoricalOrder(od);
             }
         }
     }
@@ -1392,7 +1396,21 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             && ev.datetime_ms == pending_crossing_ms_
             && (static_cast<uint64_t>(ev.bidorderid) == od->input_id
                 || static_cast<uint64_t>(ev.askorderid) == od->input_id));
-        if (next_is_my_trade) {
+        // 簿顶价一致性校验：立即撮合的首笔成交必然打在簿顶价（被动方价格）。
+        // 同毫秒成交但价≠簿顶 → 真实并非"进场即撮合"，而是同毫秒内的
+        // 状态变更（撤单打掉簿顶→笼子边界移动→出笼）后的成交——
+        // 300568.SZ 2022-06-29 实证：卖 28.13 数值上出笼（买一 28.71×
+        // 0.98=28.1358→28.14）被暂存，同毫秒撤单撤掉买一 17697508 剩
+        // 1900 后边界落到 28.10 出笼，打在 28.67 的 16121963；adata 压平
+        // 记录里该成交排在撤单记录前，若见此成交即 accept 会错打 28.71 档
+        // 多吃 400 股。价不符 → 入笼：本笔真实成交由出笼回放兜底按记录
+        // 精确回放（同事件后续 tra 处理段命中 releaseCagedForReplay）。
+        const bool book_top_match = [&] {
+            const bool buy = od->direction == Direction::Buy;
+            const Price top = buy ? orderbook_->bestAsk() : orderbook_->bestBid();
+            return top > 0 && ev.price == top;
+        }();
+        if (next_is_my_trade && book_top_match) {
             con_engine_->accept(od);
         } else {
             con_engine_->suspendHistoricalOrder(od);
