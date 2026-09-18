@@ -69,8 +69,11 @@ void BacktestEngine::initialize() {
         throw std::runtime_error("无法读取前收盘价");
     }
     
-    // 2. 从csbar1d文件读取涨跌停限制（含冗余，ETF=0.01元，股票=0.1元）
-    auto [upper_limit, lower_limit] = loader.loadPriceLimits(csbar1d_csv_, is_etf_);
+    // 2. 从csbar1d文件读取涨跌停限制（含冗余，ETF=0.01元，股票=0.1元）；
+    //    涨跌停为 0（新股前 5 日无涨跌幅）时按全天申报/成交价格范围构造簿边界
+    auto [px_lo, px_hi] = InfoLoader::scanPriceRange(order_csv_, trade_csv_);
+    auto [upper_limit, lower_limit] = loader.loadPriceLimits(
+        csbar1d_csv_, is_etf_, prev_close_ / 10000.0, px_lo, px_hi);
     upper_limit_ = upper_limit;
     lower_limit_ = lower_limit;
 

@@ -656,9 +656,47 @@ wangcai::Price InfoLoader::loadOpenPrice(const std::string& csv_content, bool is
     return 0;
 }
 
+// 扫描 CSV 第 4 列(price,元)取价格范围:新股无涨跌幅日的簿边界构造用
+//（该日委托可含远离市价的申报,如 688327.SH 2022-06-01 出现 6790 元卖单,
+// 簿边界必须覆盖全部申报价,否则 pxToIdx 越界）
+std::pair<double, double> InfoLoader::scanPriceRange(
+    const std::string& csv_a, const std::string& csv_b) {
+    double lo = std::numeric_limits<double>::max(), hi = 0.0;
+    auto scan = [&](const std::string& content) {
+        std::istringstream file(content);
+        std::string line;
+        std::getline(file, line);  // 标题行
+        while (std::getline(file, line)) {
+            size_t p1 = line.find(',');
+            if (p1 == std::string::npos) continue;
+            size_t p2 = line.find(',', p1 + 1);
+            if (p2 == std::string::npos) continue;
+            size_t p3 = line.find(',', p2 + 1);
+            if (p3 == std::string::npos) continue;
+            size_t p4 = line.find(',', p3 + 1);
+            try {
+                double px = std::stod(line.substr(p3 + 1, p4 == std::string::npos
+                                                    ? std::string::npos : p4 - p3 - 1));
+                if (px > 0.0) {
+                    if (px < lo) lo = px;
+                    if (px > hi) hi = px;
+                }
+            } catch (const std::exception&) {
+                continue;  // 价格列解析失败的行跳过（与主加载路径的容错一致）
+            }
+        }
+    };
+    scan(csv_a);
+    scan(csv_b);
+    if (hi <= 0.0) return {0.0, 0.0};
+    return {lo, hi};
+}
+
 // 从csbar1d加载涨跌停限制
 // is_etf: true=ETF（tick=10厘=0.001元）, false=股票（tick=100厘=0.01元）
-std::pair<wangcai::Price, wangcai::Price> InfoLoader::loadPriceLimits(const std::string& csbar1d_csv_content, bool is_etf) {
+std::pair<wangcai::Price, wangcai::Price> InfoLoader::loadPriceLimits(
+    const std::string& csbar1d_csv_content, bool is_etf,
+    double prev_close_yuan, double px_lo_yuan, double px_hi_yuan) {
     std::istringstream file(csbar1d_csv_content);
     std::string line;
     std::getline(file, line); // 跳过标题行
@@ -683,13 +721,29 @@ std::pair<wangcai::Price, wangcai::Price> InfoLoader::loadPriceLimits(const std:
     }
     
     if (upper_limit_yuan == 0.0 || lower_limit_yuan == 0.0) {
-        throw std::runtime_error("无法从csbar1d读取涨跌停限制");
+        // 新股上市前 5 日(科创板/创业板)无涨跌幅限制,csbar1d 记 0:
+        // 簿边界改用全天申报/成交价格范围(含前收)构造,此期间交易所不拒
+        // 远离市价的申报,边界必须覆盖之(688327.SH 2022-06-01 实证:直接
+        // throw 致引擎初始化即崩,孙进程 OOM 式连环退出)。
+        double hi = px_hi_yuan, lo = px_lo_yuan;
+        if (prev_close_yuan > 0.0) {           // 前收必在簿内(竞价基准)
+            hi = std::max(hi, prev_close_yuan);
+            lo = lo > 0.0 ? std::min(lo, prev_close_yuan) : prev_close_yuan;
+        }
+        if (hi <= 0.0) {
+            throw std::runtime_error("无法从csbar1d读取涨跌停限制");
+        }
+        upper_limit_yuan = hi;
+        lower_limit_yuan = lo > 0.0 ? lo : 0.0;
     }
     
     // 添加冗余（ETF=0.01元，股票=0.1元）
     double margin = is_etf ? 0.01 : 0.1;
     upper_limit_yuan += margin;
     lower_limit_yuan -= margin;
+    // 簿下界不低于一个 tick(无涨跌幅日 min 价可能极小,减冗余后会 ≤0)
+    const double min_tick_yuan = is_etf ? 0.001 : 0.01;
+    if (lower_limit_yuan < min_tick_yuan) lower_limit_yuan = min_tick_yuan;
     
     // 获取 tick（ETF=10厘=0.001元，股票=100厘=0.01元）
     wangcai::Price tick = get_tick(is_etf);

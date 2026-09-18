@@ -33,7 +33,15 @@ public:
     
     // 从csbar1d加载涨跌停限制（返回pair<上限,下限>，单位：厘，已包含0.1元冗余）
     // is_etf: true=ETF（tick=10厘=0.001元）, false=股票（tick=100厘=0.01元）
-    std::pair<wangcai::Price, wangcai::Price> loadPriceLimits(const std::string& csbar1d_csv_content, bool is_etf = false);
+    // prev_close_yuan/px_lo_yuan/px_hi_yuan: 仅当 csbar1d 涨跌停为 0（新股上市
+    // 前 5 日无涨跌幅）时用于构造簿边界——取全天委托/成交价格范围并含前收。
+    std::pair<wangcai::Price, wangcai::Price> loadPriceLimits(
+        const std::string& csbar1d_csv_content, bool is_etf = false,
+        double prev_close_yuan = 0.0, double px_lo_yuan = 0.0, double px_hi_yuan = 0.0);
+
+    // 扫描委托/成交 CSV 第 4 列(price,元)取 [min,max];无有效价格返回 {0,0}
+    static std::pair<double, double> scanPriceRange(
+        const std::string& csv_a, const std::string& csv_b);
     
 private:
     void load_traders(const std::string& csv_content, wangcai::OrderBook& order_book);
