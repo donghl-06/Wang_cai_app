@@ -107,7 +107,8 @@ for (( i=start_idx; i<TOTAL; i++ )); do
 
     # 2. 校验本波(增量:已 pass 的只次自动跳过;异常退出重试,不丢只次)
     log "校验中(磁盘余量 $(disk_free))..."
-    until $VENV_PY tests/price_cage/run_adata_validation.py --batch-size 12 >> logs/validate_pred.log 2>&1; do
+    until $VENV_PY tests/price_cage/run_adata_validation.py --batch-size 12 \
+        --results "$RESULTS" >> logs/validate_pred.log 2>&1; do
         log "❌ 校验进程异常退出,见 logs/validate_pred.log;保留数据,60s 后重试"
         sleep 60
     done
@@ -130,22 +131,42 @@ EOF
     read -r n_pass n_inc n_done <<< "$wave_stat"
     log "本子波结果:$n_pass pass + $n_inc data_incomplete / 共 $n_done"
 
-    # 4. 全部 pass/data_incomplete 才删本波原始数据(其余保留待查;
+    # 4. 清理本波原始 CSV:pass/data_incomplete 照删;失败只次只保留
+    #    其四件套待查(整波保留会在失败密集时撑爆磁盘,2026-09-18 事故);
     #    跳过 tools/protect_pairs.txt 里的回归基准只次;
-    #    预取的下一波在暂存目录,不受删除影响;重叠波次日期区间必然不相交)
-    if [[ "$n_done" -gt 0 && $((n_pass + n_inc)) == "$n_done" ]]; then
-        d=$chunk_start
-        while [[ "$d" < "$chunk_end" || "$d" == "$chunk_end" ]]; do
-            for f in adata_logs/*_"$d".csv; do
-                [[ -e "$f" ]] || continue
-                pair=$(basename "$f" | sed 's/^[a-z0-9]*_//; s/\.csv//')
-                grep -qx "$pair" tools/protect_pairs.txt 2>/dev/null || rm -f "$f"
-            done
-            d=$(date -d "$d +1 day" +%F)
+    #    预取的下一波在暂存目录,不受删除影响;重叠波次日期区间必然不相交
+    keep_list=$(mktemp)
+    $VENV_PY - "$chunk_start" "$chunk_end" "$RESULTS" "$keep_list" <<'EOF'
+import csv, sys
+s, e = sys.argv[1], sys.argv[2]
+best = {}
+for r in csv.DictReader(open(sys.argv[3])):
+    if s <= r["date"] <= e:
+        best[(r["sym"], r["date"])] = r["status"]
+with open(sys.argv[4], "w") as f:
+    for (sym, date), st in best.items():
+        if st not in ("pass", "data_incomplete"):
+            f.write(f"{sym}_{date}\n")
+EOF
+    n_keep=$(wc -l < "$keep_list")
+    d=$chunk_start
+    while [[ "$d" < "$chunk_end" || "$d" == "$chunk_end" ]]; do
+        for f in adata_logs/*_"$d".csv; do
+            [[ -e "$f" ]] || continue
+            pair=$(basename "$f" | sed 's/^[a-z0-9]*_//; s/\.csv//')
+            if grep -qxF "$pair" "$keep_list" || \
+               grep -qx "$pair" tools/protect_pairs.txt 2>/dev/null; then
+                continue
+            fi
+            rm -f "$f"
         done
-        log "已删除本子波原始 CSV(磁盘余量 $(disk_free))"
+        d=$(date -d "$d +1 day" +%F)
+    done
+    rm -f "$keep_list"
+    if (( n_keep > 0 )); then
+        log "已清理本子波原始 CSV,保留 $n_keep 只失败只次四件套待查(磁盘余量 $(disk_free))"
     else
-        log "⚠️ 有 $((n_done - n_pass - n_inc)) 只次未通过,保留数据待查"
+        log "已删除本子波原始 CSV(磁盘余量 $(disk_free))"
     fi
 
     # 5. 提交进度
