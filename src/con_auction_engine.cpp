@@ -626,21 +626,66 @@ void ConAuctionEngine::suspendHistoricalOrder(std::shared_ptr<Order> od)
     suspended_hist_[od->order_id] = od;
 }
 
+std::shared_ptr<Order> ConAuctionEngine::releaseCagedForReplay(
+    uint64_t market_order_id, int channel_no)
+{
+    const auto sys = ob_.findSystemOrderId(market_order_id, channel_no);
+    if (!sys.has_value()) return nullptr;
+    auto sit = suspended_hist_.find(*sys);
+    if (sit == suspended_hist_.end()) return nullptr;
+    auto od = sit->second;
+    suspended_hist_.erase(sit);
+    return od;
+}
+
+// 同批出笼放行序：价格优先（买降序/卖升序），同价保持入笼序（=市场委托
+// 序，即时间优先）；买卖跨侧按原委托 id 归并——时间早者先恢复成为被动方。
+// 实证 300207.SZ 2022-06-28：买 33.95(10:21:36)/33.98(10:23:04)双双入笼，
+// 10:31:24.850 同轮出笼，交易所按价格优先 33.98 先成交；旧实现按入笼序
+// 逐单 accept+match，33.95 先吃掉卖一 FIFO 首单，两对成交交叉配对
+// （真值 A×C/B×D，引擎 A×D/B×C，假阴2/多出2）。
+namespace {
+std::vector<std::shared_ptr<Order>> orderByReleasePriority(
+    std::vector<std::shared_ptr<Order>> orders)
+{
+    std::vector<std::shared_ptr<Order>> buys, sells;
+    for (auto& od : orders)
+        (od->direction == Direction::Buy ? buys : sells).push_back(std::move(od));
+    auto price_priority = [](const std::shared_ptr<Order>& a,
+                             const std::shared_ptr<Order>& b) {
+        return a->direction == Direction::Buy ? a->price > b->price
+                                              : a->price < b->price;
+    };
+    std::stable_sort(buys.begin(), buys.end(), price_priority);
+    std::stable_sort(sells.begin(), sells.end(), price_priority);
+    std::vector<std::shared_ptr<Order>> ordered;
+    ordered.reserve(buys.size() + sells.size());
+    size_t i = 0, j = 0;
+    while (i < buys.size() || j < sells.size()) {
+        if (j >= sells.size()
+            || (i < buys.size() && buys[i]->order_id < sells[j]->order_id))
+            ordered.push_back(std::move(buys[i++]));
+        else
+            ordered.push_back(std::move(sells[j++]));
+    }
+    return ordered;
+}
+}  // namespace
+
 // 出笼判据（数值规则，创业板暂存窗口的制度语义："价格落回有效申报价格范围"）：
 // 申报价落回 [基准×(1-幅度), 基准×(1+幅度)] 即出笼——出笼时可以仍然穿价
 // （例：买 7.37 入笼后基准由 7.21 升至 7.23，7.37 ≤ 7.3746 出笼吃 7.23 卖单）。
-// 基准价链与策略笼共用 userCageBounds。map 有序迭代 = 按入笼序（即市场委托序）恢复。
+// 基准价链与策略笼共用 userCageBounds。
 void ConAuctionEngine::activateEligibleSuspendedHistorical(const PriceCageRule& rule)
 {
     if (suspended_hist_.empty() || !rule.enabled) return;
-    std::vector<uint64_t> to_activate;
+    std::vector<std::shared_ptr<Order>> to_activate;
     for (const auto& [sid, od] : suspended_hist_) {
         const CageBounds b = userCageBounds(od->direction == Direction::Buy, rule, ob_);
-        if (b.lo > 0 && od->price >= b.lo && od->price <= b.hi) to_activate.push_back(sid);
+        if (b.lo > 0 && od->price >= b.lo && od->price <= b.hi) to_activate.push_back(od);
     }
-    for (uint64_t sid : to_activate) {
-        auto od = suspended_hist_[sid];
-        suspended_hist_.erase(sid);
+    for (auto& od : orderByReleasePriority(std::move(to_activate))) {
+        suspended_hist_.erase(od->order_id);
         accept(od);  // 出笼即正常参与撮合（穿价则立即吃对手，与真实一致）
     }
 }
@@ -696,20 +741,20 @@ void ConAuctionEngine::suspendUserOrder(std::shared_ptr<Order> od)
     user_cage_[od->order_id] = od;
 }
 
-// 策略笼单出笼：数值范围重查（暂存单的恢复条件 = 价格落回有效申报范围）
+// 策略笼单出笼：数值范围重查（暂存单的恢复条件 = 价格落回有效申报范围）；
+// 放行序与历史笼单同规则（价格优先，见 orderByReleasePriority 注释）
 void ConAuctionEngine::activateEligibleUserCageOrders(const PriceCageRule& rule)
 {
     if (user_cage_.empty() || !rule.enabled) return;
-    std::vector<uint64_t> to_activate;
+    std::vector<std::shared_ptr<Order>> to_activate;
     for (const auto& [sid, od] : user_cage_) {
         const CageBounds b = userCageBounds(od->direction == Direction::Buy, rule, ob_);
-        if (b.lo > 0 && od->price >= b.lo && od->price <= b.hi) to_activate.push_back(sid);
+        if (b.lo > 0 && od->price >= b.lo && od->price <= b.hi) to_activate.push_back(od);
     }
-    for (uint64_t sid : to_activate) {
-        auto od = user_cage_[sid];
-        user_cage_.erase(sid);
-        ob_._omap.erase(sid);  // accept_virtual_order 会重新登记
-        accept(od);            // 虚拟单路径（默认/RT 模式自动分流）
+    for (auto& od : orderByReleasePriority(std::move(to_activate))) {
+        user_cage_.erase(od->order_id);
+        ob_._omap.erase(od->order_id);  // accept_virtual_order 会重新登记
+        accept(od);  // 虚拟单路径（默认/RT 模式自动分流）
     }
 }
 

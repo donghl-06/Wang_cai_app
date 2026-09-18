@@ -428,11 +428,23 @@ private:
     bool cage_inference_active_ = false;            // 历史单反推状态机是否激活
     bool user_cage_enabled_ = true;                 // 策略单数值判定开关（默认开）
     std::shared_ptr<Order> pending_crossing_hist_;  // 挂起待确认的穿价历史单（反推窗口）
+    int64_t pending_crossing_ms_ = -1;              // 挂起单的委托毫秒（同毫秒确认判据）
 
     // === 深市裸市价单事件驱动执行（≥2023-04-10，子类被压平，见 accept_sz 注释）===
     // 委托到达先挂起；消息流中紧随的本单成交逐笔执行（executeMarketRealTrade）；
     // 出现非本单消息即事件段终结：剩余>0 以最后成交价挂簿，零成交登记进场即撤。
     std::shared_ptr<Order> pending_market_hist_;    // 挂起中的裸市价历史单
+    // 出笼回放中的历史笼中单（事件驱动出笼兜底，创业板暂存窗口）：
+    // 数值出笼判据的基准价来自引擎簿，簿偏差会使边界单漏判出笼
+    // （300745.SZ 2022-06-27 实证：引擎买一 54.85 vs 真实 54.82，范围
+    // 下限 53.76 vs 53.72，53.73 卖单真实出笼吃穿、引擎蹲笼假阴）。
+    // 校正：真实成交事件引用了仍在笼中的订单 → 该单此刻必已在真实簿
+    // 参与撮合，强制取出并进入回放——本单紧随的连续成交逐笔按记录吃掉
+    // 引擎簿内对手（executeMarketRealTrade，校验身份/价格/量，对手缺失
+    // 即暴露簿偏离）；出现非本单引用的消息 → 终结，剩余量按原限价挂簿
+    // 交自主撮合。集合支持多单并行回放（高频日多个笼中单成交串交错，
+    // 300651.SZ 单容量实证漏回放）。
+    std::map<uint64_t, std::shared_ptr<Order>> replaying_caged_;  // key=input_id
     Price pending_market_last_px_ = 0;              // 其最后真实成交价（=对方最优一档）
 };
 

@@ -1331,6 +1331,46 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
         }
     }
 
+    // 出笼回放段（事件驱动出笼兜底，见 replaying_caged_ 声明处注释）：
+    // 本条消息是某回放中订单的成交 → 按记录吃掉簿内对手；对每个回放中
+    // 订单，非本单引用的消息 → 该单终结，剩余量按原限价挂簿交自主撮合。
+    if (!replaying_caged_.empty() && con_engine_) {
+        std::vector<uint64_t> finished;
+        for (auto& [pid, od] : replaying_caged_) {
+            const bool is_my_tra = (ev.source == "tra" && !ev.exectype.empty()
+                && (static_cast<uint64_t>(ev.bidorderid) == pid
+                    || static_cast<uint64_t>(ev.askorderid) == pid));
+            if (is_my_tra && ev.exectype[0] == '1') {
+                const bool od_on_bid = (static_cast<uint64_t>(ev.bidorderid) == pid);
+                const uint64_t counter = od_on_bid
+                    ? static_cast<uint64_t>(ev.askorderid)
+                    : static_cast<uint64_t>(ev.bidorderid);
+                try {
+                    con_engine_->executeMarketRealTrade(od, ev.price, ev.size,
+                                                        counter, ev.channelno);
+                } catch (const MarketIdentityError& e) {
+                    // 校验失败（簿偏离致对手/量对不上，簿未被改动）：
+                    // 降级回笼等待收盘竞价恢复，差异由对账暴露
+                    std::cerr << "⚠️ [出笼回放失败] " << e.what() << std::endl;
+                    con_engine_->suspendHistoricalOrder(od);
+                    finished.push_back(pid);
+                    continue;
+                }
+                // 不终结：吃穿串可能还有下一条本单成交
+            } else {
+                finished.push_back(pid);
+            }
+        }
+        for (uint64_t pid : finished) {
+            auto it = replaying_caged_.find(pid);
+            auto od = it->second;
+            replaying_caged_.erase(it);
+            if (od->remaining_volume() > 0) {
+                con_engine_->placeMarketRemainderOnBook(od, od->price);
+            }
+        }
+    }
+
     // 价格笼子反推确认：上一条挂起的穿价历史单，看紧挨的本条消息——
     // 是它的成交（tra, exectype='1', 引用其市场 orderid）→ 放行：正常 accept
     //   自主撮合。消息序=交易所处理序：真实里穿价单若立即成交，紧邻消息必是
@@ -1342,8 +1382,14 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
     if (pending_crossing_hist_ && con_engine_) {
         auto od = pending_crossing_hist_;
         pending_crossing_hist_ = nullptr;
+        // 同毫秒确认判据：正常穿价进簿的撮合成交与委托同毫秒（主机即时
+        // 处理）；入笼后出笼的吃穿成交必然跨毫秒（价格落回需市场事件驱动，
+        // 300745.SZ 2022-06-27 实证：53.73 卖 820ms 后出笼吃穿被误确认
+        // 放行，自主撮合从引擎簿偏差价位吃穿，全天错配级联）。跨毫秒的
+        // 本单成交 → 入笼，出笼交由数值判据扫描/事件驱动回放。
         const bool next_is_my_trade = (ev.source == "tra" && !ev.exectype.empty()
             && ev.exectype[0] == '1'
+            && ev.datetime_ms == pending_crossing_ms_
             && (static_cast<uint64_t>(ev.bidorderid) == od->input_id
                 || static_cast<uint64_t>(ev.askorderid) == od->input_id));
         if (next_is_my_trade) {
@@ -1418,6 +1464,38 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
 
         if (is_real_trade_event) {
             // 真实成交事件：已完成 pending 确认（函数开头），其余 no-op。
+            // 事件驱动出笼兜底：成交引用的订单仍在笼中 → 数值判据漏判了
+            // 出笼（引擎簿偏差），强制取出进入回放段，本笔即回放首笔。
+            if (cage_inference_active_ && con_engine_ && !entry_cancel_absorbed) {
+                auto od = con_engine_->releaseCagedForReplay(
+                    static_cast<uint64_t>(trade.BuyNo),
+                    static_cast<int>(trade.ChannelNo));
+                if (!od) {
+                    od = con_engine_->releaseCagedForReplay(
+                        static_cast<uint64_t>(trade.SellNo),
+                        static_cast<int>(trade.ChannelNo));
+                }
+                if (od) {
+                    const bool od_on_bid =
+                        (static_cast<uint64_t>(trade.BuyNo) == od->input_id);
+                    const uint64_t counter = od_on_bid
+                        ? static_cast<uint64_t>(trade.SellNo)
+                        : static_cast<uint64_t>(trade.BuyNo);
+                    try {
+                        con_engine_->executeMarketRealTrade(
+                            od, ev.price, ev.size, counter, ev.channelno);
+                    } catch (const MarketIdentityError& e) {
+                        // 校验失败（簿偏离致对手/量对不上，簿未被改动）：
+                        // 降级回笼等待收盘竞价恢复，差异由对账暴露
+                        std::cerr << "⚠️ [出笼回放失败] " << e.what() << std::endl;
+                        con_engine_->suspendHistoricalOrder(od);
+                        od = nullptr;
+                    }
+                    if (od && od->remaining_volume() > 0) {
+                        replaying_caged_[od->input_id] = od;  // 连续成交串继续回放
+                    }
+                }
+            }
         } else if (trade.ExecType == '2') {
             if ((trade.BuyNo != 0) == (trade.SellNo != 0)) {
                 throw MarketIdentityError("撤单事件必须且只能有一个非零 BuyNo/SellNo");
@@ -1433,27 +1511,35 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             if (!system_id.has_value()) {
                 // 活跃表未命中 → 查进场即撤表:该订单入场时因定价基准侧空簿
                 // 被交易所当场自动撤销,这条撤单记录即自动撤销的回执,
-                // 身份校验后吸收为 no-op;不在表中才判定真异常。
+                // 身份校验后吸收为 no-op。
                 const auto ec_id = orderbook_->findEntryCancelledSystemId(
                     market_order_id, static_cast<int>(trade.ChannelNo));
-                if (!ec_id.has_value()) {
-                    throw MarketIdentityError(
-                        "撤单引用了未注册或非活动市场订单: symbol=" + ev.sym +
-                        ", datetime=" + ev.datetime +
-                        ", channel=" + std::to_string(trade.ChannelNo) +
-                        ", order_id=" + std::to_string(market_order_id));
+                if (ec_id.has_value()) {
+                    const auto& ec_identity = orderbook_->requireMarketIdentity(*ec_id);
+                    if (ec_identity.direction != expected_direction || ec_identity.instrument != ev.sym ||
+                        (ev.trading_day > 0 && ec_identity.trading_day > 0 &&
+                         ec_identity.trading_day != ev.trading_day)) {
+                        throw MarketIdentityError(
+                            "撤单市场身份与 BuyNo/SellNo 方向、标的或交易日不一致(进场即撤): symbol=" + ev.sym +
+                            ", datetime=" + ev.datetime +
+                            ", channel=" + std::to_string(trade.ChannelNo) +
+                            ", order_id=" + std::to_string(market_order_id));
+                    }
+                    entry_cancel_absorbed = true;
+                } else {
+                    // 两表均未命中：撤单引用的委托在引擎侧已完结（被撮合吃完
+                    // 或已撤）。源数据侧"撤单引用未注册委托"已被预检拦截
+                    // （data_incomplete 不会进引擎），走到这里必然是引擎簿与
+                    // 真实的偏差或同毫秒消息序歧义（真实先撤后吃、引擎先吃
+                    // 后撤，301089.SZ 2022-06-06 实证）。吸收为 no-op 并告警，
+                    // 让差异在对账中显性量化，而非整批 engine_fail 连坐。
+                    std::cerr << "⚠️ [撤单吸收] 引用引擎侧已完结订单(簿偏差或"
+                                 "同毫秒序歧义): symbol=" << ev.sym
+                              << " datetime=" << ev.datetime
+                              << " channel=" << trade.ChannelNo
+                              << " order_id=" << market_order_id << std::endl;
+                    entry_cancel_absorbed = true;
                 }
-                const auto& ec_identity = orderbook_->requireMarketIdentity(*ec_id);
-                if (ec_identity.direction != expected_direction || ec_identity.instrument != ev.sym ||
-                    (ev.trading_day > 0 && ec_identity.trading_day > 0 &&
-                     ec_identity.trading_day != ev.trading_day)) {
-                    throw MarketIdentityError(
-                        "撤单市场身份与 BuyNo/SellNo 方向、标的或交易日不一致(进场即撤): symbol=" + ev.sym +
-                        ", datetime=" + ev.datetime +
-                        ", channel=" + std::to_string(trade.ChannelNo) +
-                        ", order_id=" + std::to_string(market_order_id));
-                }
-                entry_cancel_absorbed = true;
             } else {
 
             const auto& identity = orderbook_->requireMarketIdentity(*system_id);
@@ -1581,6 +1667,7 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                     pending_market_last_px_ = 0;
                 } else if (crossing_hist) {
                     pending_crossing_hist_ = ord;  // 不进簿：十档暂不可见
+                    pending_crossing_ms_ = ev.datetime_ms;
                 } else {
                     con_engine_->accept(ord);
                 }
@@ -1677,7 +1764,9 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
     // 价格笼子出笼扫描（连续竞价段，每条逐笔消息处理后）：
     // 历史笼单与策略笼单均按数值规则重查（共用 userCageBounds，判据=价格落回
     // 有效申报范围；非"不再穿价"——出笼时可仍穿价，300026 边界单实测锁定）。
-    // 放在事件快照推送之前，出笼效果体现在本次快照中。
+    // 数值判据的基准来自引擎簿，边界单可能漏放（由事件驱动回放兜底，
+    // 见 replaying_caged_）或早放（罕见，对账暴露）。放在事件快照推送之前，
+    // 出笼效果体现在本次快照中。
     if (continuous_mode_ && !closing_mode_ && con_engine_) {
         if (cage_inference_active_) {
             con_engine_->activateEligibleSuspendedHistorical(cage_rule_);

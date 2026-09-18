@@ -144,6 +144,11 @@ public:
     // 仅"深市创业板暂存窗口(2020.8-2023.4)"由 BacktestEngine 激活。
     // 笼中单不进主订单簿（fillDepth 十档天然不可见），可被撤单，可出笼恢复。
     void suspendHistoricalOrder(std::shared_ptr<Order> od);       // 入笼
+    // 事件驱动出笼兜底：真实成交引用的笼中单强制取出的出笼通道
+    //（数值判据因引擎簿偏差漏判出笼时的校正，见 backtest_engine 侧
+    // replaying_caged_ 注释）。命中则取出并返回，未命中返回 nullptr。
+    std::shared_ptr<Order> releaseCagedForReplay(uint64_t market_order_id,
+                                                 int channel_no);
     // 出笼扫描（数值判据：价格落回有效申报范围，按入笼序恢复）
     void activateEligibleSuspendedHistorical(const PriceCageRule& rule);
     std::vector<std::shared_ptr<Order>> takeAllSuspendedHistorical(); // 14:57 收盘竞价开始时全部恢复
