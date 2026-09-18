@@ -1350,7 +1350,8 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                     : static_cast<uint64_t>(ev.bidorderid);
                 try {
                     con_engine_->executeMarketRealTrade(od, ev.price, ev.size,
-                                                        counter, ev.channelno);
+                                                        counter, ev.channelno,
+                                                        /*allow_mid_price=*/true);
                 } catch (const MarketIdentityError& e) {
                     // 校验失败（簿偏离致对手/量对不上，簿未被改动）：
                     // 降级回笼等待收盘竞价恢复，差异由对账暴露
@@ -1504,7 +1505,8 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                         : static_cast<uint64_t>(trade.BuyNo);
                     try {
                         con_engine_->executeMarketRealTrade(
-                            od, ev.price, ev.size, counter, ev.channelno);
+                            od, ev.price, ev.size, counter, ev.channelno,
+                            /*allow_mid_price=*/true);
                     } catch (const MarketIdentityError& e) {
                         // 校验失败（簿偏离致对手/量对不上，簿未被改动）：
                         // 降级回笼等待收盘竞价恢复，差异由对账暴露

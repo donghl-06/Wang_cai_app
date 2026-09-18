@@ -924,7 +924,7 @@ void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
 // 对手不存在/方向价格不符/量不足即簿状态已偏离,抛 MarketIdentityError。
 void ConAuctionEngine::executeMarketRealTrade(std::shared_ptr<Order>& od, Price px,
                                               Quantity vol, uint64_t counter_input_id,
-                                              int channel)
+                                              int channel, bool allow_mid_price)
 {
     const bool buy = od->direction == Direction::Buy;
 
@@ -952,11 +952,22 @@ void ConAuctionEngine::executeMarketRealTrade(std::shared_ptr<Order>& od, Price 
         throw MarketIdentityError(
             "市价单真实成交的对手方向不符: market_order_id=" +
             std::to_string(counter_input_id));
-    if (oppo->price != px)
-        throw MarketIdentityError(
-            "市价单真实成交价不等于对手限价: order_id=" + std::to_string(od->input_id) +
-            ", 成交价=" + std::to_string(px) +
-            ", 对手限价=" + std::to_string(oppo->price));
+    if (oppo->price != px) {
+        // 出笼回放口径（allow_mid_price）：创业板暂存窗口内两只笼单被同一笔
+        // 最新成交价触发出笼互撮时，成交价=该最新成交价，可以不是被动方限价
+        // （300409.SZ 2022-06-29：笼中卖 25.89 × 笼中买 26.42 成交于 26.40；
+        // 300068.SZ 2022-07-18：买 21.35 × 卖 20.95 成交于 20.97；
+        // 300529.SZ 2022-07-25：买 47.92 × 卖 47.00 成交于 47.01——均为双方
+        // 价格改善的合法限价成交）。放宽为区间校验：买限价 ≥ 成交价 ≥ 卖限价。
+        // 区间仍不符 → 簿状态偏离，维持抛错回笼。
+        const Price buy_px  = buy ? od->price : oppo->price;
+        const Price sell_px = buy ? oppo->price : od->price;
+        if (!(allow_mid_price && buy_px >= px && px >= sell_px))
+            throw MarketIdentityError(
+                "市价单真实成交价不等于对手限价: order_id=" + std::to_string(od->input_id) +
+                ", 成交价=" + std::to_string(px) +
+                ", 对手限价=" + std::to_string(oppo->price));
+    }
     if (oppo->remaining_volume() < vol)
         throw MarketIdentityError(
             "市价单真实成交超过对手剩余量: market_order_id=" +

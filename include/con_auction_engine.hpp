@@ -73,8 +73,13 @@ public:
 
     // === 深市裸市价单事件驱动执行（≥2023-04-10，子类被 adata 压平，见 accept_sz 注释）===
     // 按真实成交记录吃掉簿内对手订单（校验身份/价格/量，簿同步由引擎维护）
+    // allow_mid_price: 出笼回放口径（创业板暂存窗口）——笼单出笼互撮的成交价
+    // 可以是双方限价之间的任意价（实证=触发出笼的最新成交价，与被动方限价可差
+    // 1 tick：300409/300068/300529）；true 时价格校验放宽为"买限价≥成交价≥卖
+    // 限价"（对双方均为价格改善，限价单合法成交），false 保持死卡对手限价。
     void executeMarketRealTrade(std::shared_ptr<Order>& od, Price px, Quantity vol,
-                                uint64_t counter_input_id, int channel);
+                                uint64_t counter_input_id, int channel,
+                                bool allow_mid_price = false);
     // 事件段结束时剩余量以成交价（=对方最优一档）挂簿，后续交自主撮合
     void placeMarketRemainderOnBook(std::shared_ptr<Order>& od, Price px);
     
