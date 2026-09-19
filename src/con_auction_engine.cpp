@@ -781,6 +781,15 @@ void ConAuctionEngine::rejectUserOrder(std::shared_ptr<Order> od, const std::str
 // 连续竞价订单接收函数
 void ConAuctionEngine::accept(std::shared_ptr<Order> od)
 {
+    // 簿外价历史限价委托(无涨跌幅日恶作剧天价/地板价,边界封顶论证见
+    // OrderLoader.cpp loadPriceLimits):永不成交,登记簿外价吸收表后不撮合、
+    // 不挂簿,后续真实撤单记录由分发层凭表吸收为 no-op。
+    // 仅限价单:深市市价/本方最优 price=0,价格在下方 accept_sz 转换后才知道。
+    if (od->is_historical && od->order_type == OrderType::Limit &&
+        !ob_.inBookRange(od->price)) {
+        ob_.markOutOfBookAbsorbed(od->order_id);
+        return;
+    }
     if (market_type_ == MarketType::SH) {
         accept_sh(od);
     } else {

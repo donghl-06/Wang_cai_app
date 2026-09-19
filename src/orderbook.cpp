@@ -34,9 +34,18 @@ OrderBook::OrderBook(double hi, double lo, bool is_etf, ExecCallback cb)
     _upper = static_cast<Price>(hi); 
 
     // 3. 预分配桶数组
-    const int bucket_cnt = (_upper - _lower) / _tick + 1; // 桶数 = (最大价格 - 最小价格) / 最小价格单位 + 1
-    _buy .resize(bucket_cnt); // 买盘桶
-    _sell.resize(bucket_cnt); // 卖盘桶
+    // 桶数必须按 int64 计算:无涨跌幅日若边界构造失守(恶作剧天价申报),
+    // int 溢出后 resize 负值→size_t 巨值,length_error/bad_alloc 在 taskflow
+    // 任务内被静默吞掉,留下 null 引擎致 registerStrategy 段错误
+    // (301408.SZ 2023-03-01 实证)。此处兜底:超限即大声抛错。
+    const int64_t bucket_cnt = (int64_t)(_upper - _lower) / _tick + 1; // 桶数 = (最大价格 - 最小价格) / 最小价格单位 + 1
+    if (bucket_cnt <= 0 || bucket_cnt > 50000000) {
+        throw std::length_error("订单簿桶数异常: " + std::to_string(bucket_cnt) +
+                                " (价格区间 [" + std::to_string(_lower) + ", " +
+                                std::to_string(_upper) + "], 请检查涨跌停/簿边界构造)");
+    }
+    _buy .resize((size_t)bucket_cnt); // 买盘桶
+    _sell.resize((size_t)bucket_cnt); // 卖盘桶
 
     _best_bid = _best_ask = -1; //最优价索引
     _prev_close_price = 0; // 前收盘价
@@ -144,6 +153,42 @@ std::optional<uint64_t> OrderBook::findEntryCancelledSystemId(uint64_t market_or
         if (key.market_order_id != market_order_id) continue;
         if (result.has_value() && *result != system_id) {
             throw MarketIdentityError("进场即撤订单 ID 在多个通道中有歧义: " +
+                                      std::to_string(market_order_id));
+        }
+        result = system_id;
+    }
+    return result;
+}
+
+void OrderBook::markOutOfBookAbsorbed(uint64_t system_id) {
+    auto identity_it = market_identity_by_system_id_.find(system_id);
+    if (identity_it == market_identity_by_system_id_.end()) {
+        throw MarketIdentityError("簿外价吸收登记失败: 未注册的 system-id=" +
+                                  std::to_string(system_id));
+    }
+    MarketOrderKey key{identity_it->second.channel_no, identity_it->second.market_order_id};
+    auto active_it = market_system_id_by_key_.find(key);
+    if (active_it != market_system_id_by_key_.end() && active_it->second == system_id) {
+        market_system_id_by_key_.erase(active_it);
+    }
+    out_of_book_system_id_by_key_.emplace(key, system_id);
+}
+
+std::optional<uint64_t> OrderBook::findOutOfBookAbsorbedSystemId(uint64_t market_order_id,
+                                                                 int channel_no) const {
+    if (market_order_id == 0) return std::nullopt;
+    if (channel_no >= 0) {
+        auto it = out_of_book_system_id_by_key_.find({channel_no, market_order_id});
+        if (it == out_of_book_system_id_by_key_.end()) return std::nullopt;
+        return it->second;
+    }
+
+    // 裸 ID 扫描（与 findSystemOrderId 同口径）
+    std::optional<uint64_t> result;
+    for (const auto& [key, system_id] : out_of_book_system_id_by_key_) {
+        if (key.market_order_id != market_order_id) continue;
+        if (result.has_value() && *result != system_id) {
+            throw MarketIdentityError("簿外价吸收订单 ID 在多个通道中有歧义: " +
                                       std::to_string(market_order_id));
         }
         result = system_id;

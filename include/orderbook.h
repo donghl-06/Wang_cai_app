@@ -257,6 +257,12 @@ public:
     void markEntryCancelled(uint64_t system_id);
     [[nodiscard]] std::optional<uint64_t> findEntryCancelledSystemId(
         uint64_t market_order_id, int channel_no = -1) const;
+    // 簿外价吸收：将订单从活跃表移入簿外价表（语义见成员声明）
+    void markOutOfBookAbsorbed(uint64_t system_id);
+    [[nodiscard]] std::optional<uint64_t> findOutOfBookAbsorbedSystemId(
+        uint64_t market_order_id, int channel_no = -1) const;
+    // 价格是否在簿边界内（accept 段簿外价吸收判据）
+    bool inBookRange(Price p) const { return p >= _lower && p <= _upper; }
     
     // 获取订单信息
     std::shared_ptr<Order> getOrder(uint64_t order_id) const {
@@ -344,6 +350,11 @@ private:
     // 被交易所当场自动撤销（零成交、撤单记录与委托同时间戳），身份登记于此，
     // 供后续真实撤单记录精确吸收（no-op），不复用活跃表以免掩盖真异常。
     std::unordered_map<MarketOrderKey, uint64_t, MarketOrderKeyHash> entry_cancelled_system_id_by_key_;
+    // 簿外价吸收市场身份 → system-id：无涨跌幅日簿边界按成交价范围封顶后，
+    // 界外历史委托（恶作剧天价卖/地板价买，永不成交，论证见 OrderLoader.cpp
+    // loadPriceLimits）不进簿，身份登记于此，供后续真实撤单记录精确吸收
+    // （no-op）。与进场即撤表分立：两种语义的触发原因不同，分表便于归因。
+    std::unordered_map<MarketOrderKey, uint64_t, MarketOrderKeyHash> out_of_book_system_id_by_key_;
 
     //订单价格转换为桶索引
     int  pxToIdx(Price p) const { 

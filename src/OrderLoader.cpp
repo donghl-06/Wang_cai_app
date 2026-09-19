@@ -696,7 +696,8 @@ std::pair<double, double> InfoLoader::scanPriceRange(
 // is_etf: true=ETF（tick=10厘=0.001元）, false=股票（tick=100厘=0.01元）
 std::pair<wangcai::Price, wangcai::Price> InfoLoader::loadPriceLimits(
     const std::string& csbar1d_csv_content, bool is_etf,
-    double prev_close_yuan, double px_lo_yuan, double px_hi_yuan) {
+    double prev_close_yuan, double px_lo_yuan, double px_hi_yuan,
+    double trade_lo_yuan, double trade_hi_yuan) {
     std::istringstream file(csbar1d_csv_content);
     std::string line;
     std::getline(file, line); // 跳过标题行
@@ -726,6 +727,20 @@ std::pair<wangcai::Price, wangcai::Price> InfoLoader::loadPriceLimits(
         // 远离市价的申报,边界必须覆盖之(688327.SH 2022-06-01 实证:直接
         // throw 致引擎初始化即崩,孙进程 OOM 式连环退出)。
         double hi = px_hi_yuan, lo = px_lo_yuan;
+        // 但申报价可以是恶作剧天价/地板价(301408.SZ 2023-03-01 上市首日
+        // 出现 26033921 元卖单与 0.01 元买单,按申报全范围建簿需 26 亿档,
+        // int 桶数溢出 + 上百 GB 分配,初始化必崩)。此类申报永不成交:
+        //   - 连续竞价:界外单若成交,成交价必落在真实成交范围之外,矛盾;
+        //   - 集合竞价:天价卖/地板买只延伸累计曲线的两端,不改变界内
+        //     最大可成交量价位,清算价不变。
+        // 故边界以全天成交价范围 ×kOutOfBookFactor 封顶,界外历史委托
+        // 由 accept 段登记簿外价吸收表(不进簿),撤单凭表吸收为 no-op。
+        if (trade_hi_yuan > 0.0) {
+            hi = std::min(hi, trade_hi_yuan * kOutOfBookFactor);
+        }
+        if (trade_lo_yuan > 0.0 && lo > 0.0) {
+            lo = std::max(lo, trade_lo_yuan / kOutOfBookFactor);
+        }
         if (prev_close_yuan > 0.0) {           // 前收必在簿内(竞价基准)
             hi = std::max(hi, prev_close_yuan);
             lo = lo > 0.0 ? std::min(lo, prev_close_yuan) : prev_close_yuan;

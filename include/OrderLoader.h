@@ -35,9 +35,15 @@ public:
     // is_etf: true=ETF（tick=10厘=0.001元）, false=股票（tick=100厘=0.01元）
     // prev_close_yuan/px_lo_yuan/px_hi_yuan: 仅当 csbar1d 涨跌停为 0（新股上市
     // 前 5 日无涨跌幅）时用于构造簿边界——取全天委托/成交价格范围并含前收。
+    // trade_lo_yuan/trade_hi_yuan: 全天成交价范围（撤单行 price=0 已被扫描端
+    // 过滤）。无涨跌幅日申报可含恶作剧天价（301408.SZ 2023-03-01 上市首日
+    // 26033921 元卖单），簿边界以成交范围×kOutOfBookFactor 封顶，界外历史
+    // 委托由各 accept 段吸收进簿外价表（永不成交，语义论证见实现注释）。
+    static constexpr double kOutOfBookFactor = 1000.0;
     std::pair<wangcai::Price, wangcai::Price> loadPriceLimits(
         const std::string& csbar1d_csv_content, bool is_etf = false,
-        double prev_close_yuan = 0.0, double px_lo_yuan = 0.0, double px_hi_yuan = 0.0);
+        double prev_close_yuan = 0.0, double px_lo_yuan = 0.0, double px_hi_yuan = 0.0,
+        double trade_lo_yuan = 0.0, double trade_hi_yuan = 0.0);
 
     // 扫描委托/成交 CSV 第 4 列(price,元)取 [min,max];无有效价格返回 {0,0}
     static std::pair<double, double> scanPriceRange(

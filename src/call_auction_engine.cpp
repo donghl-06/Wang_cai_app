@@ -38,9 +38,17 @@ inline void CallAuctionEngine::fenwickAdd(int idx,bool buy,int64_t d){
 }
 
 
-// 接收新订单：加入集合竞价队列，更新树状数组、订单簿、位置映射 
+// 接收新订单：加入集合竞价队列，更新树状数组、订单簿、位置映射
 void CallAuctionEngine::accept(std::shared_ptr<Order> od)
 {
+    // 簿外价历史限价委托(无涨跌幅日恶作剧天价/地板价,论证见 OrderLoader.cpp
+    // loadPriceLimits):只延伸累计曲线端点、不改变界内清算价,登记簿外价
+    // 吸收表后不入簿,后续真实撤单记录由分发层凭表吸收为 no-op。
+    if (od->is_historical && od->order_type == OrderType::Limit &&
+        !ob_.inBookRange(od->price)) {
+        ob_.markOutOfBookAbsorbed(od->order_id);
+        return;
+    }
     bool buy = od->direction==Direction::Buy;      // 判断买卖方向
     int  idx = ob_.pxToIdx(od->price);             // 价格转桶索引
     

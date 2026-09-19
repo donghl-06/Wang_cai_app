@@ -9,6 +9,8 @@
 #include <iostream>
 #include <algorithm>
 #include <unordered_map>
+#include <mutex>
+#include <stdexcept>
 
 namespace wangcai {
 
@@ -24,9 +26,15 @@ MultiBacktestEngine::MultiBacktestEngine(std::vector<SymbolData> symbol_data_lis
     // 每个合约独立构建(解析 CSV → 建簿 → 合并排序),互相无共享状态
     // (OrderBook 事件表已从静态全局改为实例成员),Taskflow 并行。
     // 4 核机器上 6~8 只一批时初始化近线性加速。
+    // 任务异常必须显式捕获汇总、wait() 后回抛:taskflow wait() 不回抛异常,
+    // 静默跳过会留下 null 引擎,后续 registerStrategy 对 null 解引用即段错误
+    // (301408.SZ 2023-03-01 新股首日恶作剧天价申报致建簿分配失败,实证)。
+    std::mutex err_mu;
+    std::vector<std::string> init_errors;
     tf::Taskflow taskflow;
     for (std::size_t i = 0; i < n; ++i) {
-        taskflow.emplace([this, &symbol_data_list, i]() {
+        taskflow.emplace([this, &symbol_data_list, &err_mu, &init_errors, i]() {
+          try {
             auto& data = symbol_data_list[i];
             EngineManager se;
             se.symbol = data.symbol;
@@ -64,15 +72,31 @@ MultiBacktestEngine::MultiBacktestEngine(std::vector<SymbolData> symbol_data_lis
             ob.clearEvents();
             ob.clearTicks();
             engines_[i] = std::move(se);
+          } catch (const std::exception& e) {
+            std::lock_guard<std::mutex> lk(err_mu);
+            init_errors.push_back(symbol_data_list[i].symbol + ": " + e.what());
+          } catch (...) {
+            std::lock_guard<std::mutex> lk(err_mu);
+            init_errors.push_back(symbol_data_list[i].symbol + ": 未知异常");
+          }
         });
     }
     tf::Executor executor;
     executor.run(taskflow).wait();
+    if (!init_errors.empty()) {
+        throw std::runtime_error("引擎初始化失败(" +
+                                 std::to_string(init_errors.size()) + " 只): " +
+                                 init_errors.front());
+    }
 }
 
 void MultiBacktestEngine::registerStrategy(std::shared_ptr<Strategy> strategy) {
     strategies_.push_back(strategy);
     for (auto& se : engines_) {
+        // 防御:构造段的异常传播已保证此处非空,守卫防未来改动破坏该约定
+        if (!se.engine) {
+            throw std::runtime_error("引擎未初始化,无法注册策略: " + se.symbol);
+        }
         se.engine->registerStrategy(strategy);
     }
 }

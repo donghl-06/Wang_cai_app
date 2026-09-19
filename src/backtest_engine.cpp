@@ -70,10 +70,14 @@ void BacktestEngine::initialize() {
     }
     
     // 2. 从csbar1d文件读取涨跌停限制（含冗余，ETF=0.01元，股票=0.1元）；
-    //    涨跌停为 0（新股前 5 日无涨跌幅）时按全天申报/成交价格范围构造簿边界
+    //    涨跌停为 0（新股前 5 日无涨跌幅）时按全天申报/成交价格范围构造簿边界,
+    //    并以成交价范围为锚封顶(申报可含恶作剧天价,见 loadPriceLimits 注释;
+    //    撤单行 price=0 已被 scanPriceRange 过滤,不污染锚点)
     auto [px_lo, px_hi] = InfoLoader::scanPriceRange(order_csv_, trade_csv_);
+    auto [trade_lo, trade_hi] = InfoLoader::scanPriceRange(trade_csv_, "");
     auto [upper_limit, lower_limit] = loader.loadPriceLimits(
-        csbar1d_csv_, is_etf_, prev_close_ / 10000.0, px_lo, px_hi);
+        csbar1d_csv_, is_etf_, prev_close_ / 10000.0, px_lo, px_hi,
+        trade_lo, trade_hi);
     upper_limit_ = upper_limit;
     lower_limit_ = lower_limit;
 
@@ -1532,12 +1536,29 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             const auto system_id = orderbook_->findSystemOrderId(
                 market_order_id, static_cast<int>(trade.ChannelNo));
             if (!system_id.has_value()) {
-                // 活跃表未命中 → 查进场即撤表:该订单入场时因定价基准侧空簿
+                // 活跃表未命中 → 先查簿外价吸收表:该订单申报价超出封顶簿边界
+                // (无涨跌幅日恶作剧天价/地板价),从未进簿,这条撤单记录即其
+                // 真实撤单回执,身份校验后吸收为 no-op。
+                const auto ob_id = orderbook_->findOutOfBookAbsorbedSystemId(
+                    market_order_id, static_cast<int>(trade.ChannelNo));
+                // 再查进场即撤表:该订单入场时因定价基准侧空簿
                 // 被交易所当场自动撤销,这条撤单记录即自动撤销的回执,
                 // 身份校验后吸收为 no-op。
                 const auto ec_id = orderbook_->findEntryCancelledSystemId(
                     market_order_id, static_cast<int>(trade.ChannelNo));
-                if (ec_id.has_value()) {
+                if (ob_id.has_value()) {
+                    const auto& ob_identity = orderbook_->requireMarketIdentity(*ob_id);
+                    if (ob_identity.direction != expected_direction || ob_identity.instrument != ev.sym ||
+                        (ev.trading_day > 0 && ob_identity.trading_day > 0 &&
+                         ob_identity.trading_day != ev.trading_day)) {
+                        throw MarketIdentityError(
+                            "撤单市场身份与 BuyNo/SellNo 方向、标的或交易日不一致(簿外价吸收): symbol=" + ev.sym +
+                            ", datetime=" + ev.datetime +
+                            ", channel=" + std::to_string(trade.ChannelNo) +
+                            ", order_id=" + std::to_string(market_order_id));
+                    }
+                    entry_cancel_absorbed = true;
+                } else if (ec_id.has_value()) {
                     const auto& ec_identity = orderbook_->requireMarketIdentity(*ec_id);
                     if (ec_identity.direction != expected_direction || ec_identity.instrument != ev.sym ||
                         (ev.trading_day > 0 && ec_identity.trading_day > 0 &&
