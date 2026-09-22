@@ -46,7 +46,7 @@ RESULT_FIELDS = ["sym", "date", "status", "n_real_pairs", "n_eng_pairs",
 def parse_args():
     p = argparse.ArgumentParser(description="adata 全量成交一致性验证")
     p.add_argument("--data-dir", default=str(ROOT / "adata_logs"), help="四件套 CSV 目录")
-    p.add_argument("--results", default=str(ROOT / "adata_validation_results.csv"),
+    p.add_argument("--results", default=str(ROOT / "result" / "adata_validation_results.csv"),
                    help="结果 CSV(增量追加,用于续传)")
     p.add_argument("--batch-size", type=int, default=6, help="单次 run_backtest 的合约数")
     p.add_argument("--limit", type=int, default=0, help="最多跑多少只次(0=全部)")

@@ -4,7 +4,7 @@
 #   每子波:入库 → 校验 → 全过则删原始数据 → 提交结果 → 下一子波
 # 用法: nohup bash tools/run_waves.sh > logs/waves.log 2>&1 &
 # 进度: tail -f logs/waves_pred.log(明细 logs/fetch_pred.log、logs/validate_pred.log)
-# 结果: adata_validation_results.csv(增量,断点续传,逐子波 git 提交)
+# 结果: result/adata_validation_results.csv(增量,断点续传; 2026-09-22起不再逐子波提交)
 # 断点: logs/waves.state 记录最后完成子波,重启自动跳到下一子波;
 #       暂存目录(adata_staging/)残留自恢复,被中断的拉取断点续传
 set -uo pipefail
@@ -19,7 +19,7 @@ UNIVERSE=450
 UNIVERSE_FILE=adata_universe_pred_450.txt
 BLOCK_SIZE=150         # 股票块大小(3 块 × 150 = 450)
 CHUNK_DAYS=7           # 日历天/子波(≈5 个交易日)
-RESULTS=adata_validation_results_pred.csv
+RESULTS=result/adata_validation_results_pred.csv
 STATE=logs/waves_pred.state   # 最后完成的子波 "<offset> <chunk_start>"
 STAGING=adata_staging_pred    # 预取暂存根目录(每子波一个子目录,校验目录不受污染)
 
@@ -169,13 +169,7 @@ EOF
         log "已删除本子波原始 CSV(磁盘余量 $(disk_free))"
     fi
 
-    # 5. 提交进度
-    if git add "$RESULTS" "$UNIVERSE_FILE" 2>/dev/null && \
-       git commit -q -m "adata 拒单前分波校验: $tag $n_pass/$n_done pass"; then
-        log "进度已提交"
-    else
-        log "无新结果可提交"
-    fi
+    # 5. 提交进度(2026-09-22 起停用: 避免历史噪音, 结果 CSV 于周期收尾时手动汇总提交)
 
     # 6. 记录断点;等预取完成,入库作为下一波校验数据
     echo "$offset $chunk_start" > "$STATE"

@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 1. 失败只次(2022-06/07 块150 窗口) = 需要保留证据的
 fails = set()
-for r in csv.DictReader(open(f"{ROOT}/adata_validation_results_pred.csv")):
+for r in csv.DictReader(open(f"{ROOT}/result/adata_validation_results_pred.csv")):
     if r["status"] not in ("pass",) and r["date"].startswith("2022-"):
         fails.add((r["sym"], r["date"]))
 

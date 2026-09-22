@@ -11,13 +11,13 @@ from collections import defaultdict
 from pathlib import Path
 
 CAMPS = {
-    "g20": ("adata_universe_g20_620.txt", "adata_validation_results_g20.csv",
+    "g20": ("adata_universe_g20_620.txt", "result/adata_validation_results_g20.csv",
             ["2020-09-07", "2020-09-08", "2020-09-09", "2020-09-10", "2020-09-11"]),
-    "n21": ("adata_universe_n21_620.txt", "adata_validation_results_n21.csv",
+    "n21": ("adata_universe_n21_620.txt", "result/adata_validation_results_n21.csv",
             ["2021-07-05", "2021-07-06", "2021-07-07", "2021-07-08", "2021-07-09"]),
-    "pred": ("adata_universe_pred_450.txt", "adata_validation_results_pred.csv",
+    "pred": ("adata_universe_pred_450.txt", "result/adata_validation_results_pred.csv",
              ["2022-06-27", "2022-06-28", "2022-06-29", "2022-06-30", "2022-07-01"]),
-    "reg": ("adata_universe_reg_600.txt", "adata_validation_results_reg.csv",
+    "reg": ("adata_universe_reg_600.txt", "result/adata_validation_results_reg.csv",
             ["2023-04-10", "2023-04-11", "2023-04-12", "2023-04-13", "2023-04-14"]),
 }
 N_SYMS = 25
