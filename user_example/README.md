@@ -107,6 +107,10 @@ python run_example.py
 | `run_real_trade_mode.py` | 真实成交替代模式 | 被动单排队 + 主动单严格模式 |
 | `run_queue_info_test.py` | 队列信息回调测试 | 下单回调新增字段验证 |
 | `run_etf_test.py` | ETF 回测测试 | ETF 三位小数精度 |
+| `run_order_latency_test.py` | 下单延迟模拟 | 链路时延、进簿位置选择 |
+| `run_event_snapshot_test.py` | 事件驱动快照 | 逐事件十档盘口回调 |
+| `run_realtime_tick_test.py` | 实时合成 Tick | 自定间隔盘口推送 |
+| `run_price_cage_test.py` | 价格笼子 | 笼内接受 / 笼外废单 |
 
 ---
 
@@ -122,6 +126,13 @@ wangcai_syn.run_backtest(
     queue_info_enabled=False,           # 下单回调队列信息开关
     custom_data=None,                   # 自定义数据 DataFrame
     enable_custom_data=False,           # 启用自定义数据推送
+    release_input=False,                # 转换后清空输入数据省内存
+    realtime_tick_interval_ms=0,        # 实时合成 Tick 间隔(0=关闭)
+    event_snapshot_enabled=False,       # 事件驱动快照开关
+    user_cage_enabled=True,             # 策略单价格笼子判定
+    order_latency_enabled=False,        # 下单延迟开关
+    order_latency_ms=0,                 # 延迟时长(0=开启时默认 20ms)
+    latency_entry_position="head",      # 延迟单进簿位置 head/tail
 )
 ```
 
@@ -135,6 +146,13 @@ wangcai_syn.run_backtest(
 | `queue_info_enabled` | bool | False | 在 onOrderCallback 增加队列字段 |
 | `custom_data` | DataFrame | None | 自定义数据（必须含 datetime 列） |
 | `enable_custom_data` | bool | False | 启用自定义数据推送 |
+| `release_input` | bool | False | 转换后清空 data_dict 省内存（数据无法再复用） |
+| `realtime_tick_interval_ms` | int | 0 | 实时合成 Tick 间隔毫秒，0=关闭 |
+| `event_snapshot_enabled` | bool | False | 每个市场事件后推送十档快照 |
+| `user_cage_enabled` | bool | True | 策略单价格笼子判定（废单/暂存） |
+| `order_latency_enabled` | bool | False | 下单/撤单延迟进簿开关 |
+| `order_latency_ms` | int | 0 | 延迟时长，对齐 10ms 粒度，开启未指定时默认 20ms |
+| `latency_entry_position` | str | "head" | 延迟单进簿位置："head"/"tail" |
 
 ---
 
@@ -170,6 +188,74 @@ wangcai_syn.run_backtest(data, strategy, real_trade_match_mode=True)
 - 下单时记录前方排队量，真实成交消耗完才轮到你
 - 支持部分成交（多次 `matchtype='T'` 回调）
 - 主动单自动使用严格模式（无需同时设 `strict_active_order_mode`）
+
+---
+
+## 下单延迟模拟
+
+```python
+wangcai_syn.run_backtest(
+    data, strategy,
+    order_latency_enabled=True,
+    order_latency_ms=50,              # 对齐 10ms 粒度: 14→10, 15→20
+    latency_entry_position="head",    # 或 "tail"
+)
+```
+
+- 策略在回调中返回的下单/撤单不立即进簿，延迟到 **发出时刻+latency** 才"到达交易所"：过涨跌停/价格笼子校验、进订单簿、参与撮合；下单确认回调也延迟到到达时刻才发出
+- 撤单与下单走同一延迟通道（保 FIFO）；收盘（15:00）后才到达的订单被丢弃
+- 实际进簿时机为到达时刻之后的第一个市场事件（回测时钟只随市场事件前进）
+- 多笔订单同一时刻到达时，`"head"` 排在同时间订单头部（抢同价位排队优先级），`"tail"` 排在尾部
+- 也可在策略 `__init__` 里 `self.setOrderLatencyMs(n)` / `self.setLatencyEntryPosition(LatencyEntryPosition.Tail)`，效果相同
+- 适合评估策略对链路时延的敏感性：同一个信号，0ms 与 50ms 延迟的成交结果可能完全不同
+
+示例：`python run_order_latency_test.py`
+
+---
+
+## 事件驱动快照与实时合成 Tick
+
+两种比官方 3 秒快照更细粒度的盘口推送，快照口径一致（十档只含历史订单/公开订单簿）：
+
+**事件驱动快照**（逐事件，最细）：
+
+```python
+wangcai_syn.run_backtest(data, strategy, event_snapshot_enabled=True)
+```
+
+每个市场事件（逐笔委托/逐笔成交含撤单）的全部处理——撮合 + 策略响应产生的下单/撤单——结束后，推送一次十档 Snapshot 到 `onEventSnapshot`；tick 事件不触发。集合竞价阶段的委托按竞价规则集中处理，不逐事件推送。
+
+**实时合成 Tick**（按间隔网格，适中）：
+
+```python
+wangcai_syn.run_backtest(data, strategy, realtime_tick_interval_ms=100)
+```
+
+引擎每跨过一个间隔网格边界，从内部订单簿合成十档 Snapshot 推送到 `onRealTimeTickEvent`。字段结构与真实 3 秒 Tick 一致；`Volume/Turnover/NumTrades/High/Low` 由引擎按重建的历史成交逐笔累计，与官方快照的数值出入来自时间戳口径不同，属正常现象。无事件的空白区间（如午休）不补发。
+
+示例：`python run_event_snapshot_test.py` / `python run_realtime_tick_test.py`
+
+---
+
+## 价格笼子（策略单）
+
+策略限价单默认受交易所价格笼子约束（`user_cage_enabled=True`），规则按数据日期×板块自动判定：
+
+| 板块 | 时期 | 行为 |
+|------|------|------|
+| 主板 | 2023-04-10 起 | ±2% 与 0.1 元孰高，超范围**废单** |
+| 创业板 | 2020-08-24 ~ 2023-04-10 | **暂存模式**：超范围入笼，价格落回范围自动恢复参与撮合 |
+| 创业板 | 2023-04-10 起 | 同主板（废单） |
+| 科创板 | 2019-07-22 起 | 拒单（纯 ±2%），2023-04-10 后加 0.1 元兜底 |
+| 北交所/ETF/债券 | - | 不适用 |
+
+- 有效申报范围 = 基准价±2% 四舍五入至最小变动价位（基准价链：对手一档→本方一档→最新成交→昨收）
+- 笼外单流程：先收到 `onOrderCallback` 申报回执，随后引擎废单，策略收到 `onTradeCallback` 的 `matchtype='D'` 回调，引擎日志打印废单原因
+- 创业板暂存窗口内：笼外单不废，而是挂起等待价格落回后自动激活
+- 另有涨跌停前置校验：超涨跌停的策略限价单直接废单（所有时代）
+- `user_cage_enabled=False` 只关闭**策略单**的笼子判定，历史订单簿侧的笼子语义（交易所行为）始终生效
+
+示例：`python run_price_cage_test.py`
 
 ---
 
