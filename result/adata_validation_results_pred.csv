@@ -635,18 +635,18 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 600760.SH,2022-06-07,pass,33524,33524,1.0,0,0,1,0,
 600763.SH,2022-06-07,pass,19900,19900,1.0,0,0,1,0,
 601179.SH,2022-06-07,pass,37874,37874,1.0,0,0,1,0,
-002108.SZ,2024-12-11,engine_fail,20504,0,0,0,0,0,0,run_backtest 返回 False
-002110.SZ,2024-12-11,engine_fail,24195,0,0,0,0,0,0,run_backtest 返回 False
-002119.SZ,2024-12-11,engine_fail,21788,0,0,0,0,0,0,run_backtest 返回 False
-002137.SZ,2024-12-11,engine_fail,22643,0,0,0,0,0,0,run_backtest 返回 False
-002148.SZ,2024-12-11,engine_fail,24532,0,0,0,0,0,0,run_backtest 返回 False
-002160.SZ,2024-12-11,engine_fail,26319,0,0,0,0,0,0,run_backtest 返回 False
-002164.SZ,2024-12-11,engine_fail,21402,0,0,0,0,0,0,run_backtest 返回 False
-002214.SZ,2024-12-11,engine_fail,21076,0,0,0,0,0,0,run_backtest 返回 False
-002244.SZ,2024-12-11,engine_fail,21306,0,0,0,0,0,0,run_backtest 返回 False
-002248.SZ,2024-12-11,engine_fail,22360,0,0,0,0,0,0,run_backtest 返回 False
-002268.SZ,2024-12-11,engine_fail,21621,0,0,0,0,0,0,run_backtest 返回 False
-002284.SZ,2024-12-11,engine_fail,23975,0,0,0,0,0,0,run_backtest 返回 False
+002108.SZ,2024-12-11,engine_fail,20504,0,0.0,0,0,0,0,run_backtest 返回 False
+002110.SZ,2024-12-11,engine_fail,24195,0,0.0,0,0,0,0,run_backtest 返回 False
+002119.SZ,2024-12-11,engine_fail,21788,0,0.0,0,0,0,0,run_backtest 返回 False
+002137.SZ,2024-12-11,engine_fail,22643,0,0.0,0,0,0,0,run_backtest 返回 False
+002148.SZ,2024-12-11,engine_fail,24532,0,0.0,0,0,0,0,run_backtest 返回 False
+002160.SZ,2024-12-11,engine_fail,26319,0,0.0,0,0,0,0,run_backtest 返回 False
+002164.SZ,2024-12-11,engine_fail,21402,0,0.0,0,0,0,0,run_backtest 返回 False
+002214.SZ,2024-12-11,engine_fail,21076,0,0.0,0,0,0,0,run_backtest 返回 False
+002244.SZ,2024-12-11,engine_fail,21306,0,0.0,0,0,0,0,run_backtest 返回 False
+002248.SZ,2024-12-11,engine_fail,22360,0,0.0,0,0,0,0,run_backtest 返回 False
+002268.SZ,2024-12-11,engine_fail,21621,0,0.0,0,0,0,0,run_backtest 返回 False
+002284.SZ,2024-12-11,engine_fail,23975,0,0.0,0,0,0,0,run_backtest 返回 False
 000625.SZ,2022-06-08,pass,222495,222495,1.0,0,0,1,0,
 000756.SZ,2022-06-08,pass,183724,183724,1.0,0,0,1,0,
 002466.SZ,2022-06-08,pass,195029,195029,1.0,0,0,1,0,
@@ -6467,7 +6467,7 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 300073.SZ,2022-06-01,pass,21315,21315,1.0,0,0,1,0,
 300124.SZ,2022-06-01,pass,22634,22634,1.0,0,0,1,0,
 300496.SZ,2022-06-01,pass,18286,18286,1.0,0,0,1,0,
-300651.SZ,2022-06-01,engine_fail,20792,0,0,0,0,0,0,run_backtest 返回 False
+300651.SZ,2022-06-01,engine_fail,20792,0,0.0,0,0,0,0,run_backtest 返回 False
 300759.SZ,2022-06-01,pass,17103,17103,1.0,0,0,1,0,
 300760.SZ,2022-06-01,pass,16575,16575,1.0,0,0,1,0,
 300782.SZ,2022-06-01,pass,16225,16225,1.0,0,0,1,0,
@@ -6716,7 +6716,7 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 300223.SZ,2022-06-06,pass,40251,40251,1.0,0,0,1,0,
 300233.SZ,2022-06-06,pass,38462,38462,1.0,0,0,1,0,
 300458.SZ,2022-06-06,pass,45389,45389,1.0,0,0,1,0,
-300505.SZ,2022-06-06,engine_fail,41790,0,0,0,0,0,0,run_backtest 返回 False
+300505.SZ,2022-06-06,engine_fail,41790,0,0.0,0,0,0,0,run_backtest 返回 False
 301215.SZ,2022-06-06,pass,44866,44866,1.0,0,0,1,0,
 000738.SZ,2022-06-06,pass,41870,41870,1.0,0,0,1,0,
 000815.SZ,2022-06-06,pass,39716,39716,1.0,0,0,1,0,
@@ -6776,7 +6776,7 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 300831.SZ,2022-06-06,pass,22716,22716,1.0,0,0,1,0,
 300896.SZ,2022-06-06,pass,14683,14683,1.0,0,0,1,0,
 300957.SZ,2022-06-06,pass,16830,16830,1.0,0,0,1,0,
-301089.SZ,2022-06-06,engine_fail,15424,0,0,0,0,0,0,run_backtest 返回 False
+301089.SZ,2022-06-06,engine_fail,15424,0,0.0,0,0,0,0,run_backtest 返回 False
 301155.SZ,2022-06-06,pass,18798,18798,1.0,0,0,1,0,
 300751.SZ,2022-06-06,pass,10676,10676,1.0,0,0,1,0,
 300841.SZ,2022-06-06,pass,15383,15383,1.0,0,0,1,0,
@@ -8984,7 +8984,7 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 002699.SZ,2022-06-27,pass,24328,24328,1.0,0,0,1,0,
 002920.SZ,2022-06-27,pass,24636,24636,1.0,0,0,1,0,
 300170.SZ,2022-06-27,pass,32509,32509,1.0,0,0,1,0,
-300745.SZ,2022-06-27,engine_fail,30246,0,0,0,0,0,0,run_backtest 返回 False
+300745.SZ,2022-06-27,engine_fail,30246,0,0.0,0,0,0,0,run_backtest 返回 False
 300763.SZ,2022-06-27,pass,24426,24426,1.0,0,0,1,0,
 300841.SZ,2022-06-27,pass,26178,26178,1.0,0,0,1,0,
 301215.SZ,2022-06-27,pass,29484,29484,1.0,0,0,1,0,
@@ -9230,7 +9230,7 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 300189.SZ,2022-06-29,fail,57760,57760,0.999879,7,5,0,0,
 300207.SZ,2022-06-29,pass,71882,71882,1.0,0,0,1,0,
 300393.SZ,2022-06-29,pass,70544,70544,1.0,0,0,1,0,
-300568.SZ,2022-06-29,engine_fail,64690,0,0,0,0,0,0,run_backtest 返回 False
+300568.SZ,2022-06-29,engine_fail,64690,0,0.0,0,0,0,0,run_backtest 返回 False
 300724.SZ,2022-06-29,pass,72302,72302,1.0,0,0,1,0,
 300772.SZ,2022-06-29,pass,71510,71510,1.0,0,0,1,0,
 000155.SZ,2022-06-29,pass,57424,57424,1.0,0,0,1,0,
@@ -9545,7 +9545,7 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 002821.SZ,2022-07-01,pass,27413,27413,1.0,0,0,1,0,
 300052.SZ,2022-07-01,pass,39446,39446,1.0,0,0,1,0,
 300088.SZ,2022-07-01,pass,40516,40516,1.0,0,0,1,0,
-300142.SZ,2022-07-01,engine_fail,39733,0,0,0,0,0,0,run_backtest 返回 False
+300142.SZ,2022-07-01,engine_fail,39733,0,0.0,0,0,0,0,run_backtest 返回 False
 300339.SZ,2022-07-01,pass,40844,40844,1.0,0,0,1,0,
 300413.SZ,2022-07-01,pass,38085,38085,1.0,0,0,1,0,
 300433.SZ,2022-07-01,pass,39049,39049,1.0,0,0,1,0,
@@ -9960,7 +9960,7 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 002459.SZ,2022-07-06,pass,63704,63704,1.0,0,0,1,0,
 002603.SZ,2022-07-06,pass,72069,72069,1.0,0,0,1,0,
 300015.SZ,2022-07-06,pass,68704,68704,1.0,0,0,1,0,
-300037.SZ,2022-07-06,engine_fail,56898,0,0,0,0,0,0,run_backtest 返回 False
+300037.SZ,2022-07-06,engine_fail,56898,0,0.0,0,0,0,0,run_backtest 返回 False
 300073.SZ,2022-07-06,pass,57863,57863,1.0,0,0,1,0,
 300122.SZ,2022-07-06,pass,66385,66385,1.0,0,0,1,0,
 300207.SZ,2022-07-06,pass,66039,66039,1.0,0,0,1,0,
@@ -10553,7 +10553,7 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 300207.SZ,2022-07-12,pass,67241,67241,1.0,0,0,1,0,
 300261.SZ,2022-07-12,fail,59908,59908,0.99995,3,2,0,0,
 300438.SZ,2022-07-12,pass,57573,57573,1.0,0,0,1,0,
-300450.SZ,2022-07-12,engine_fail,55635,0,0,0,0,0,0,run_backtest 返回 False
+300450.SZ,2022-07-12,engine_fail,55635,0,0.0,0,0,0,0,run_backtest 返回 False
 300498.SZ,2022-07-12,pass,81687,81687,1.0,0,0,1,0,
 000725.SZ,2022-07-12,pass,51563,51563,1.0,0,0,1,0,
 000768.SZ,2022-07-12,pass,57316,57316,1.0,0,0,1,0,
@@ -12763,7 +12763,7 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 300688.SZ,2022-06-01,pass,27239,27239,1.0,0,0,1,0,
 301120.SZ,2022-06-01,pass,28352,28352,1.0,0,0,1,0,
 518880.SH,2022-06-01,pass,4985,4985,1.0,0,0,1,0,
-688327.SH,2022-06-01,engine_crash,0,0,0,0,0,0,0,"子进程异常退出(疑似 OOM),单只重试仍失败"
+688327.SH,2022-06-01,engine_crash,0,0,0.0,0,0,0,0,"子进程异常退出(疑似 OOM),单只重试仍失败"
 300075.SZ,2022-06-01,pass,25983,25983,1.0,0,0,1,0,
 300094.SZ,2022-06-01,pass,24495,24495,1.0,0,0,1,0,
 300166.SZ,2022-06-01,pass,26473,26473,1.0,0,0,1,0,
@@ -12793,7 +12793,7 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 300712.SZ,2022-06-01,pass,16529,16529,1.0,0,0,1,0,
 300850.SZ,2022-06-01,pass,15467,15467,1.0,0,0,1,0,
 301153.SZ,2022-06-01,pass,18346,18346,1.0,0,0,1,0,
-301191.SZ,2022-06-01,engine_crash,0,0,0,0,0,0,0,"子进程异常退出(疑似 OOM),单只重试仍失败"
+301191.SZ,2022-06-01,engine_crash,0,0,0.0,0,0,0,0,"子进程异常退出(疑似 OOM),单只重试仍失败"
 513060.SH,2022-06-01,pass,16178,16178,1.0,0,0,1,0,
 513130.SH,2022-06-01,pass,14713,14713,1.0,0,0,1,0,
 688036.SH,2022-06-01,pass,21202,21202,1.0,0,0,1,0,
@@ -19033,3 +19033,4 @@ sym,date,status,n_real_pairs,n_eng_pairs,subset_rate,false_neg,false_pos,exact,s
 300409.SZ,2022-06-29,pass,47703,47703,1.0,0,0,1,0,
 300068.SZ,2022-07-18,pass,138545,138545,1.0,0,0,1,0,
 300529.SZ,2022-07-25,pass,7455,7455,1.0,0,0,1,0,
+688327.SH,2022-06-02,pass,39107,39107,1.0,0,0,1,0,
