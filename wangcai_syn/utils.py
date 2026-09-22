@@ -153,12 +153,41 @@ def revert_sh_order(order_df: pd.DataFrame, trade_df: pd.DataFrame, symbol: str)
     
     # bidorderid < askorderid：卖方编号较新，需还原主动卖单 askorderid。
     asks_df = df_cstrad_filtered[
-        (df_cstrad_filtered['bidorderid'] != 0) & 
+        (df_cstrad_filtered['bidorderid'] != 0) &
         (df_cstrad_filtered['bidorderid'] < df_cstrad_filtered['askorderid'])
     ][['date', 'time', 'sym', 'price', 'size', 'askorderid', 'bizindex', 'channelno']].copy()
     asks_df.rename(columns={'askorderid': 'orderid'}, inplace=True)
     asks_df['side'] = -1
     asks_df['ordertype'] = 0
+
+    # 复牌竞价误标修复:已在 csord 中的委托,只保留与其委托时刻同毫秒
+    # 的还原行(=上市即成交的"到达即成"部分,沪市逐笔委托只报剩余量,
+    # 真实单量 = csord量 + 到达即成量,见 size_sum 重建语义);
+    # 时刻晚于委托时刻的还原行一律是集合竞价打印的主动方误判
+    # (连续竞价中被动方编号必小于主动方,只有竞价打印双边皆被动会误判)。
+    # 盘中临停会大规模触发该误判:临停期申报进入 csord,复牌竞价打印时
+    # 编号较大被误标主动方 → 事件时间被挪到复牌打印时刻(错过复牌集合
+    # 竞价)、量被重复累加(688425.SH 2021-06-22 实证:复牌1竞价引擎
+    # 235 万 vs 真实 421 万,临停期高价买单全部缺席竞价)。
+    csord_ch = pd.to_numeric(order_df['channelno'], errors='coerce').fillna(0).astype('int64')
+    csord_oid = pd.to_numeric(order_df['orderid'], errors='coerce').fillna(0).astype('int64')
+    csord_keys = pd.MultiIndex.from_arrays([csord_ch, csord_oid])
+    csord_key_times = pd.MultiIndex.from_arrays(
+        [csord_ch, csord_oid, order_df['time'].astype(str)])
+
+    def _keep_restored(df):
+        if not len(df):
+            return df
+        keys = pd.MultiIndex.from_arrays([
+            pd.to_numeric(df['channelno'], errors='coerce').fillna(0).astype('int64'),
+            df['orderid'].astype('int64')])
+        key_times = pd.MultiIndex.from_arrays([
+            pd.to_numeric(df['channelno'], errors='coerce').fillna(0).astype('int64'),
+            df['orderid'].astype('int64'), df['time'].astype(str)])
+        return df[key_times.isin(csord_key_times) | ~keys.isin(csord_keys)]
+
+    bids_df = _keep_restored(bids_df)
+    asks_df = _keep_restored(asks_df)
     
     # 合并：从成交还原的订单 + 原始委托
     cols = [

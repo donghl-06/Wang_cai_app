@@ -316,6 +316,7 @@ private:
     std::unique_ptr<CallAuctionEngine> call_engine_;
     std::unique_ptr<ConAuctionEngine> con_engine_;
     std::unique_ptr<CloseAuctionEngine> close_engine_; // 收盘集合竞价引擎
+    std::unique_ptr<CloseAuctionEngine> resume_engine_; // 临停复牌集合竞价引擎(专用实例)
     std::unique_ptr<DataManager> data_manager_;
 
     // 策略管理
@@ -369,6 +370,26 @@ private:
     // 事件数据
     bool continuous_mode_;
     bool closing_mode_ = false;                       // 是否进入收盘集合竞价阶段
+
+    // 盘中临时停牌(新股前 5 日无涨跌幅:盘中成交价较当日开盘价首次越过
+    // ±30%/±60% 各停牌 10 分钟,临停期接受申报/撤单但撮合暂停,复牌集合竞价;
+    // 停牌跨越 14:57 的于 14:57 复牌。300869.SZ 2020-08-24/688425.SH
+    // 2021-06-22 实证:引擎缺此语义,在真实临停空窗内照常撮合出大量幽灵成交)
+    bool halt_applicable_ = false;  // csbar1d 涨跌停为 0(前 5 日)且开盘价有效
+    bool halted_ = false;           // 当前是否临停中
+    int64_t halt_until_dt_ms_ = 0;  // 复牌时刻(事件时间轴)
+    // 深市专用:复牌打印时刻 = (触发+10min) 向上取整到下一秒——临停期申报/
+    // 撤单被 adata 全部重戳到该整秒(14 只次普查 ε=0.010~0.970s 无一例外),
+    // 复牌集合竞价必须等该毫秒的事件全部进簿后才结算
+    int64_t halt_restamp_ms_ = 0;
+    Price halt_trigger_px_ = 0;  // 临停触发成交价(复牌竞价±10%范围基准)
+    Price last_hist_px_ = 0;     // 最近历史成交价(±10% 暂存池激活判据)
+    bool halt_p30_done_ = false;    // 四档各触发一次:+30%/+60%/-30%/-60%
+    bool halt_p60_done_ = false;
+    bool halt_m30_done_ = false;
+    bool halt_m60_done_ = false;
+    void maybeEnterHalt(Price trade_px);            // 历史成交回调内驱动
+    void resumeFromHalt(const std::string& datetime); // 复牌集合竞价
     bool price_cage_checked_ = false;                 // 是否已检查过价格笼子
     std::string current_datetime_;  // 当前事件时间
     std::string last_brk_datetime_; // 最后一条BRK事件时间（连续竞价成交回调用）

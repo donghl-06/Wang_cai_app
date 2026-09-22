@@ -48,6 +48,9 @@ public:
     // 扫描委托/成交 CSV 第 4 列(price,元)取 [min,max];无有效价格返回 {0,0}
     static std::pair<double, double> scanPriceRange(
         const std::string& csv_a, const std::string& csv_b);
+
+    // csbar1d 涨跌停是否均为 0(新股前 5 日无涨跌幅)——盘中临停适用性判据
+    static bool hasNoPriceLimit(const std::string& csbar1d_csv_content);
     
 private:
     void load_traders(const std::string& csv_content, wangcai::OrderBook& order_book);

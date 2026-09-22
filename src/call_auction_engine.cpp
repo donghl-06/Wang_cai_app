@@ -49,6 +49,15 @@ void CallAuctionEngine::accept(std::shared_ptr<Order> od)
         ob_.markOutOfBookAbsorbed(od->order_id);
         return;
     }
+    // 深市无涨跌幅日 900% 有效竞价范围:超上限买申报暂存、不参加开盘
+    // 集合竞价(规则论证见头文件 setSzNoLimitIpo 注释);连续竞价开始后
+    // 由 BacktestEngine 经 takeDeferredIpoBuys 结转 con_engine。
+    if (sz_nolimit_ipo_ && od->is_historical && od->order_type == OrderType::Limit &&
+        od->direction == Direction::Buy && od->price > _prev_close * 9) {
+        deferred_ipo_buys_.push_back(od);
+        ob_._omap[od->order_id] = od;  // 登记可查询(与簿外价吸收同口径)
+        return;
+    }
     bool buy = od->direction==Direction::Buy;      // 判断买卖方向
     int  idx = ob_.pxToIdx(od->price);             // 价格转桶索引
     
@@ -104,6 +113,16 @@ void CallAuctionEngine::cancel_by_input_id(uint64_t input_id, int channel_no)
     auto system_id = ob_.findSystemOrderId(input_id, channel_no);
     if (system_id.has_value()) {
         uint64_t sys_id = *system_id;
+        // 900% 暂存单撤单:在结转前撤掉(暂存于交易主机的申报可撤)
+        for (auto dit = deferred_ipo_buys_.begin(); dit != deferred_ipo_buys_.end(); ++dit) {
+            if ((*dit)->order_id == sys_id) {
+                auto od = *dit;
+                deferred_ipo_buys_.erase(dit);
+                if (on_cancel_) on_cancel_(input_id, true, "撤单成功", od);
+                ob_.eraseActiveMarketOrder(sys_id);
+                return;
+            }
+        }
         // 提前检查订单是否存在
         if (ob_._loc.find(sys_id) == ob_._loc.end()) {
             std::cerr << "❌ [开盘集合竞价撤单失败] cstra_id=" << input_id 

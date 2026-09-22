@@ -692,6 +692,27 @@ std::pair<double, double> InfoLoader::scanPriceRange(
     return {lo, hi};
 }
 
+// csbar1d 涨跌停是否均为 0(与 loadPriceLimits 同列序同容错)
+bool InfoLoader::hasNoPriceLimit(const std::string& csbar1d_csv_content) {
+    std::istringstream file(csbar1d_csv_content);
+    std::string line;
+    std::getline(file, line);  // 标题行
+    if (!std::getline(file, line)) return false;
+    std::istringstream ss(line);
+    std::string field;
+    int col = 0;
+    double upper = 1.0, lower = 1.0;
+    while (std::getline(ss, field, ',')) {
+        try {
+            if (col == 10) upper = std::stod(field);
+            else if (col == 11) lower = std::stod(field);
+        } catch (const std::exception&) { /* 解析失败按非 0 处理(不启用临停) */ }
+        col++;
+    }
+    return upper == 0.0 || lower == 0.0;
+}
+
+
 // 从csbar1d加载涨跌停限制
 // is_etf: true=ETF（tick=10厘=0.001元）, false=股票（tick=100厘=0.01元）
 std::pair<wangcai::Price, wangcai::Price> InfoLoader::loadPriceLimits(

@@ -638,6 +638,41 @@ std::shared_ptr<Order> ConAuctionEngine::releaseCagedForReplay(
     return od;
 }
 
+// 复牌集合竞价有效竞价范围:簿内范围外订单移出主簿转 ±10% 暂存池
+void ConAuctionEngine::deferOutOfRangeBookOrders(Price lo, Price hi)
+{
+    // 两阶段:先收集(不变异),再按 cancel() 同款路径移簿,杜绝迭代期变异
+    std::vector<std::shared_ptr<Order>> out_range;
+    for (int s = 0; s < 2; ++s) {
+        const bool is_buy = (s == 0);
+        auto& book = is_buy ? ob_._buy : ob_._sell;
+        for (int idx = 0; idx < static_cast<int>(book.size()); ++idx) {
+            for (auto& od : book[idx].orders) {
+                if (od && (od->price < lo || od->price > hi))
+                    out_range.push_back(od);
+            }
+        }
+    }
+    for (auto& od : out_range) {
+        auto lit = ob_._loc.find(od->order_id);
+        if (lit == ob_._loc.end()) continue;  // 不在簿(防御)
+        const bool is_buy = lit->second.is_buy;
+        const int idx = lit->second.idx;
+        auto& side = is_buy ? ob_._buy : ob_._sell;
+        if (od->is_historical) {
+            on_historical_order_removing(od, idx, is_buy, false);
+            ob_.bucketSub(idx, is_buy, od->remaining_volume());
+        }
+        side[idx].orders.erase(lit->second.it);
+        ob_._loc.erase(lit);
+        od->status = OrderStatus::Pending;
+        ob_._omap[od->order_id] = od;  // 已在,幂等;身份/查询用
+        ipo_deferred_idx_[od->order_id] = od;
+        (is_buy ? ipo_deferred_buy_ : ipo_deferred_sell_)[od->price]
+            .push_back(od);
+    }
+}
+
 // 同批出笼放行序：价格优先（买降序/卖升序），同价保持入笼序（=市场委托
 // 序，即时间优先）；买卖跨侧按原委托 id 归并——时间早者先恢复成为被动方。
 // 实证 300207.SZ 2022-06-28：买 33.95(10:21:36)/33.98(10:23:04)双双入笼，
@@ -697,6 +732,29 @@ std::vector<std::shared_ptr<Order>> ConAuctionEngine::takeAllSuspendedHistorical
     for (auto& [sid, od] : suspended_hist_) out.push_back(od);
     suspended_hist_.clear();
     return out;
+}
+
+// ±10% 暂存池激活扫描:限价落回 [最近成交价×0.9, ×1.1] 即恢复参与连续竞价
+void ConAuctionEngine::activateIpoDeferred(Price last_px)
+{
+    if (ipo_deferred_idx_.empty() || last_px <= 0) return;
+    const Price lo = last_px * 9 / 10;
+    const Price hi = last_px * 11 / 10;
+    std::vector<std::shared_ptr<Order>> to_activate;
+    for (auto it = ipo_deferred_buy_.lower_bound(lo);
+         it != ipo_deferred_buy_.end() && it->first <= hi;) {
+        for (auto& od : it->second) to_activate.push_back(od);
+        it = ipo_deferred_buy_.erase(it);
+    }
+    for (auto it = ipo_deferred_sell_.lower_bound(lo);
+         it != ipo_deferred_sell_.end() && it->first <= hi;) {
+        for (auto& od : it->second) to_activate.push_back(od);
+        it = ipo_deferred_sell_.erase(it);
+    }
+    for (auto& od : orderByReleasePriority(std::move(to_activate))) {
+        ipo_deferred_idx_.erase(od->order_id);
+        accept(od);  // 恢复即正常参与撮合(穿价则立即吃对手)
+    }
 }
 
 // --- 策略单数值判定 ---
@@ -810,7 +868,18 @@ void ConAuctionEngine::accept_sh(std::shared_ptr<Order> od)
     bool buy = od->direction == Direction::Buy;
     int idx = ob_.pxToIdx(od->price);
     ob_._omap[od->order_id] = od;
-    
+
+    if (halted_) {
+        // 盘中临停期申报:入簿不撮合(交易所临停期接受申报/撤单,撮合暂停),
+        // 复牌时由复牌集合竞价统一清算
+        auto& side = buy ? ob_._buy : ob_._sell;
+        side[idx].orders.push_back(od);
+        od->level_iter = std::prev(side[idx].orders.end());
+        ob_.bucketAdd(idx, buy, od->remaining_volume());
+        ob_._loc[od->order_id] = { buy, idx, od->level_iter };
+        return;
+    }
+
     // 限价单先撮合（只与历史订单撮合）
     match(od);
     
@@ -902,7 +971,20 @@ void ConAuctionEngine::accept_sz(std::shared_ptr<Order> od)
         od->price      = px;
         od->order_type = OrderType::Limit;
     }
-    
+
+    if (halted_) {
+        // 盘中临停期申报:入簿不撮合(深市市价/本方最优先完成上方保护价
+        // 转换——临停期交易所仍按规则定保护价),复牌集合竞价统一清算
+        const int hidx = ob_.pxToIdx(od->price);
+        ob_._omap[od->order_id] = od;
+        auto& side = buy ? ob_._buy : ob_._sell;
+        side[hidx].orders.push_back(od);
+        od->level_iter = std::prev(side[hidx].orders.end());
+        ob_.bucketAdd(hidx, buy, od->remaining_volume());
+        ob_._loc[od->order_id] = { buy, hidx, od->level_iter };
+        return;
+    }
+
     // 撮合（只与历史订单撮合）
     match(od);
     
@@ -1126,8 +1208,17 @@ void ConAuctionEngine::match_sh(std::shared_ptr<Order>& inc)
             } else {
                 oppo->status = OrderStatus::PartFilled;
             }
+
+            // 盘中临停:本笔成交触发了临停(成交回调内置状态)——触发笔如实
+            // 成交完成后立即停止后续撮合,主动方剩余量由 accept 段挂簿等待复牌;
+            // 状态收尾与正常出循环一致
+            if (halted_) {
+                if (inc->remaining_volume() == 0) inc->status = OrderStatus::Filled;
+                else if (inc->traded_volume > 0) inc->status = OrderStatus::PartFilled;
+                return;
+            }
         }
-        
+
         // bucketSub会自动更新best，重新获取当前最优价
         best = buy ? ob_._best_ask : ob_._best_bid;
     }
@@ -1211,8 +1302,17 @@ void ConAuctionEngine::match_sz(std::shared_ptr<Order>& inc)
             } else {
                 oppo->status = OrderStatus::PartFilled;
             }
+
+            // 盘中临停:本笔成交触发了临停(成交回调内置状态)——触发笔如实
+            // 成交完成后立即停止后续撮合,主动方剩余量由 accept 段挂簿等待复牌;
+            // 状态收尾与正常出循环一致
+            if (halted_) {
+                if (inc->remaining_volume() == 0) inc->status = OrderStatus::Filled;
+                else if (inc->traded_volume > 0) inc->status = OrderStatus::PartFilled;
+                return;
+            }
         }
-        
+
         // bucketSub会自动更新best，重新获取当前最优价
         best = buy ? ob_._best_ask : ob_._best_bid;
     }
@@ -1227,6 +1327,23 @@ void ConAuctionEngine::match_sz(std::shared_ptr<Order>& inc)
 // 撤单（通过系统订单ID）
 bool ConAuctionEngine::cancel(uint64_t oid)
 {
+    // ±10% 暂存池(深市无涨跌幅日)单可直接撤
+    if (auto dit = ipo_deferred_idx_.find(oid); dit != ipo_deferred_idx_.end()) {
+        auto od = dit->second;
+        auto& m = (od->direction == Direction::Buy) ? ipo_deferred_buy_
+                                                    : ipo_deferred_sell_;
+        if (auto mit = m.find(od->price); mit != m.end()) {
+            for (auto lit = mit->second.begin(); lit != mit->second.end(); ++lit)
+                if ((*lit)->order_id == oid) { mit->second.erase(lit); break; }
+            if (mit->second.empty()) m.erase(mit);
+        }
+        ipo_deferred_idx_.erase(dit);
+        od->status = OrderStatus::Cancelled;
+        ob_._omap.erase(oid);
+        ob_.eraseActiveMarketOrder(oid);
+        if (on_cancel_) on_cancel_(oid, true, "撤单成功", od);
+        return true;
+    }
     // 价格笼子：笼中历史单可直接撤（暂存期间投资者可撤单）
     if (auto sit = suspended_hist_.find(oid); sit != suspended_hist_.end()) {
         auto od = sit->second;

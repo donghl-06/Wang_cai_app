@@ -81,6 +81,14 @@ void BacktestEngine::initialize() {
     upper_limit_ = upper_limit;
     lower_limit_ = lower_limit;
 
+    // 盘中临停适用性:新股前 5 日无涨跌幅(csbar1d 涨跌停为 0)且开盘价有效;
+    // 四档触发基准为当日开盘价(较开盘价 ±30%/±60%,各停 10 分钟)。
+    // 仅股票板块(主板/创业板/科创板):基金/债券/B股/北交所不适用本状态机
+    const Board halt_board = boardOf(symbol_);
+    halt_applicable_ = (actual_open_ > 0) && InfoLoader::hasNoPriceLimit(csbar1d_csv_)
+        && (halt_board == Board::Main || halt_board == Board::GEM
+            || halt_board == Board::STAR);
+
     // 3. 初始化订单簿，注册成交回调（传入 is_etf_ 设置 tick）
     orderbook_ = std::make_unique<OrderBook>(upper_limit_, lower_limit_, is_etf_,
         [this](const Execution& ex) {
@@ -185,6 +193,12 @@ void BacktestEngine::initialize() {
                 if (recording_enabled_) {
                     recordTrade(pending_trade_batch_.back(), trade_datetime);
                 }
+
+                // 盘中临停触发判定:历史成交价较开盘价越档即置状态
+                // (撮合循环查 halted_ 逐笔中断;复牌由 processEvent 时间驱动)
+                maybeEnterHalt(ex.price);
+                // ±10% 暂存池激活判据用的最近成交价(扫描在事件尾,防重入)
+                last_hist_px_ = ex.price;
             }
         });
     
@@ -261,7 +275,27 @@ void BacktestEngine::initialize() {
                                                         });
 
 
+    // 临停复牌集合竞价引擎(专用实例;与收盘竞价共用 CloseAuctionEngine 的
+    // bootstrap_from_orderbook + settle 复用路径,互不污染内部状态)
+    resume_engine_ = std::make_unique<CloseAuctionEngine>(*orderbook_, prev_close_,
+                                                          orderbook_->getExchange(),
+                                                          nullptr,
+                                                          [this](uint64_t order_id, bool success, const std::string& reason,
+                                                                 std::shared_ptr<Order> order_info) {
+                                                              if (success && recording_enabled_ && order_info) {
+                                                                  uint64_t original_id = orderbook_->requireMarketIdentity(order_id).market_order_id;
+                                                                  recordCancelWithOrderInfo(original_id, current_datetime_, order_info);
+                                                              }
+                                                          });
+
     data_manager_ = std::make_unique<DataManager>(orderbook_.get(), call_engine_.get(), con_engine_.get(), close_engine_.get());
+
+    // 深市无涨跌幅日开盘集合竞价 900% 有效竞价范围(规则见
+    // CallAuctionEngine::setSzNoLimitIpo 注释;与临停同判据但仅深市)
+    if (call_engine_) {
+        call_engine_->setSzNoLimitIpo(orderbook_->getExchange() == "SZ"
+                                      && InfoLoader::hasNoPriceLimit(csbar1d_csv_));
+    }
 
     // 7. 从CSV字符串加载历史订单和成交数据，合并为事件流
     orderbook_->clearEvents(); // 清空事件
@@ -1276,6 +1310,73 @@ void BacktestEngine::notifyStrategyOrderCallback(const std::string& strategy_id,
 
 
 
+// 盘中临时停牌触发判定(新股前 5 日无涨跌幅):历史成交价较当日开盘价首次
+// 越过 ±30%/±60% 即停牌 10 分钟;四档各触发一次,一档已触发则不再重复判
+// (同一笔跳越多档只消费最先越过的一档,更高档留待复牌后判定——康泰医学
+// 2020-08-24 实证 30% 复牌 3 分钟后再触 60% 停牌)。
+// 停牌跨越 14:57 的于 14:57 复牌(复牌集合竞价后进收盘集合竞价)。
+void BacktestEngine::maybeEnterHalt(Price trade_px) {
+    if (!halt_applicable_ || halted_ || !continuous_mode_ || closing_mode_) return;
+    if (trade_px <= 0) return;  // 空竞价/异常价不触发(0 ≤ open×0.4 会误触 -60%)
+    const double open = static_cast<double>(actual_open_);
+    const double px = static_cast<double>(trade_px);
+    static constexpr int64_t Halt_Dur_Ms = 10 * 60 * 1000LL;          // 停牌 10 分钟
+    static constexpr int64_t Call_Close_Ms = (14 * 3600 + 57 * 60) * 1000LL;
+
+    bool hit = false;
+    const char* level = "";
+    if (!halt_p30_done_ && px >= open * 1.30)      { halt_p30_done_ = true; hit = true; level = "+30%"; }
+    else if (!halt_p60_done_ && px >= open * 1.60) { halt_p60_done_ = true; hit = true; level = "+60%"; }
+    else if (!halt_m30_done_ && px <= open * 0.70) { halt_m30_done_ = true; hit = true; level = "-30%"; }
+    else if (!halt_m60_done_ && px <= open * 0.40) { halt_m60_done_ = true; hit = true; level = "-60%"; }
+    if (!hit) return;
+
+    halted_ = true;
+    halt_trigger_px_ = trade_px;
+    halt_until_dt_ms_ = current_ms_ + Halt_Dur_Ms;
+    // 跨越 14:57 → 14:57 复牌(datetime_ms 为当日毫秒轴:日期部分 + 14:57:00)
+    const int64_t day_base = current_ms_ - current_ms_ % 86400000LL;
+    const int64_t close_dt_ms = day_base + Call_Close_Ms;
+    if (halt_until_dt_ms_ > close_dt_ms) halt_until_dt_ms_ = close_dt_ms;
+    // 深市:复牌打印与临停期申报/撤单重戳时刻 = 到期向上取整到下一秒
+    //(300869/300872/300879/300880/300883/301015 共 14 只次普查:复牌打印
+    // 恒为整秒,ε=0.010~0.970s);沪市无重戳行为,用到期时刻本身
+    halt_restamp_ms_ = (halt_until_dt_ms_ % 1000 == 0)
+        ? halt_until_dt_ms_ : (halt_until_dt_ms_ / 1000 + 1) * 1000;
+    if (con_engine_) con_engine_->setHalted(true);
+    std::cout << "[临停] " << symbol_ << " " << current_datetime_
+              << " 成交价 " << trade_px / 10000.0 << " 较开盘价 "
+              << actual_open_ / 10000.0 << " 触发 " << level
+              << " 盘中临停,停牌至 " << halt_until_dt_ms_ % 86400000LL / 3600000 << ":"
+              << std::setfill('0') << std::setw(2) << halt_until_dt_ms_ % 3600000 / 60000
+              << std::setfill(' ') << std::endl;
+}
+
+// 临停复牌:对临停期累积的申报做复牌集合竞价(复用收盘竞价的
+// bootstrap_from_orderbook + settle 路径,专用实例与收盘竞价互不污染),
+// 随后恢复连续竞价;复牌价若越下一档,立即再次临停。
+void BacktestEngine::resumeFromHalt(const std::string& datetime) {
+    current_datetime_ = datetime;
+    // 深市无涨跌幅日:复牌集合竞价有效竞价范围=触发价±10%,范围外订单
+    // 移出主簿转暂存池(300869.SZ 2020-08-24 双侧实证,见
+    // deferOutOfRangeBookOrders 注释);沪市临停无此重戳/范围行为,不动
+    if (con_engine_ && orderbook_->getExchange() == "SZ" && halt_trigger_px_ > 0) {
+        const Price lo = halt_trigger_px_ * 9 / 10;
+        const Price hi = halt_trigger_px_ * 11 / 10;
+        con_engine_->deferOutOfRangeBookOrders(lo, hi);
+    }
+    resume_engine_->bootstrap_from_orderbook();
+    const Price px = resume_engine_->getPredictPrice();
+    const Quantity vol = resume_engine_->getPredictVolume();
+    resume_engine_->settle();
+    halted_ = false;
+    if (con_engine_) con_engine_->setHalted(false);
+    std::cout << "[临停复牌] " << symbol_ << " " << datetime
+              << " 复牌集合竞价 价=" << px / 10000.0 << " 量=" << vol << std::endl;
+    maybeEnterHalt(px);  // 复牌价本身越下一档 → 立即再停(此时 halted_ 已清)
+}
+
+
 /*
  * processEvent
  * 允许外部按时间顺序逐个推送事件给引擎，实现多合约的统一驱动。
@@ -1650,6 +1751,15 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
             current_datetime_ = auction_time;
             call_engine_->settle();
             continuous_mode_ = true;
+            // 深市无涨跌幅日 900% 暂存买申报结转连续竞价(原申报序)——直接
+            // accept 会在 09:25 立即与簿内卖单撮合出幽灵成交;真实语义是
+            // 继续暂存于交易主机,价格进入有效范围才激活。转入历史笼单池,
+            // 激活/撤单/收盘结转全部由既有笼子机制处理(300869.SZ 2020-08-24
+            // 实证:4 张 >900% 买单 09:30:00~09:35:33 全部撤单,期间最高
+            // 成交价 60 远低于激活阈值,真实零成交)。
+            for (auto& od : call_engine_->takeDeferredIpoBuys()) {
+                con_engine_->suspendHistoricalOrder(od);
+            }
             // 集合竞价 settle 之后，对暂存的用户影子单做成交/结转判定
             // 必须在 continuous_mode_ = true 之后、连续竞价正式开始之前调用
             // 未成交订单会通过 con_engine_->accept 结转到连续竞价
@@ -1663,8 +1773,21 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
         }
     } else {
         // 连续竞价阶段
+        // 临停复牌:事件时刻到达复牌点,先对临停期累积申报做复牌集合竞价,
+        // 再正常分发本事件(先于 14:57 收盘竞价切换——收盘 bootstrap 看到的
+        // 是复牌后的簿;跨越 14:57 的临停已在触发时钳到 14:57 复牌)
+        if (halted_ && ev.datetime_ms >= halt_until_dt_ms_) {
+            // 深市:复牌打印与临停期申报/撤单被重戳到同一整秒(见
+            // halt_restamp_ms_),须让该毫秒的事件全部入簿/生效后再结算
+            // 复牌集合竞价——否则复牌竞价簿被抽空(300869.SZ 2020-08-24
+            // 真实复牌 @71.5 成交 37 万+,旧逻辑仅撮出 2000@72)。
+            const bool sz_wait_restamp = (orderbook_->getExchange() == "SZ")
+                && ev.datetime_ms <= halt_restamp_ms_;
+            if (!sz_wait_restamp) resumeFromHalt(ev.datetime);
+        }
         if (!closing_mode_ && ev_ms_of_day >= Call_Close_Ms) {
             closing_mode_ = true;
+            if (halted_) resumeFromHalt(ev.datetime);  // 钳到 14:57 的临停先复牌
             close_engine_->bootstrap_from_orderbook();
             // 价格笼子：14:57 收盘集合竞价开始，笼中订单恢复参与竞价撮合
             //（历史笼单作为收盘竞价委托；策略笼单转影子单走收盘竞价判定）
@@ -1693,8 +1816,13 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
                 // 穿价的限价历史单先挂起，等紧挨的下一条消息确认
                 //（是它的成交→放行；不是→入笼不可见，见函数开头的确认逻辑）。
                 // 市价单不适用笼子，直接进撮合（转换价来自盘口，天然合规）。
+                // 盘中临停期不适用反推:停牌期全部申报入簿参与复牌集合竞价
+                //（真实复牌竞价巨量清算,如 300869.SZ 2020-08-24 复牌
+                // 14:38:29 @71.5 成交 37 万+;若走反推,停牌期穿价单永远
+                // 等不到"紧挨的成交确认"被误入笼,复牌竞价簿被抽空）。
                 bool crossing_hist = false;
-                if (cage_inference_active_ && ord->order_type == OrderType::Limit) {
+                if (cage_inference_active_ && !halted_
+                    && ord->order_type == OrderType::Limit) {
                     const bool buy = ord->direction == Direction::Buy;
                     const Price opp = buy ? orderbook_->bestAsk() : orderbook_->bestBid();
                     crossing_hist = (opp > 0 && (buy ? ord->price >= opp : ord->price <= opp));
@@ -1814,6 +1942,10 @@ void BacktestEngine::processEvent(const Event& ev, const std::unordered_set<int6
     if (continuous_mode_ && !closing_mode_ && con_engine_) {
         if (cage_inference_active_) {
             con_engine_->activateEligibleSuspendedHistorical(cage_rule_);
+        }
+        // 深市无涨跌幅日 ±10% 暂存池:最近成交价驱动激活(空池 O(1))
+        if (last_hist_px_ > 0) {
+            con_engine_->activateIpoDeferred(last_hist_px_);
         }
         if (user_cage_enabled_ && cage_rule_.enabled
             && cage_rule_.action == CageAction::Dormant) {

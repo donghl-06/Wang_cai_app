@@ -71,6 +71,12 @@ public:
     bool cancel(uint64_t oid);
     bool cancel_by_input_id(uint64_t input_id, int channel_no = -1);  // 通过市场复合键撤单
 
+    // === 盘中临时停牌（新股前 5 日无涨跌幅,±30%/±60% 各停 10 分钟）===
+    // 临停期:accept 入簿不撮合、match 逐笔中断;复牌集合竞价由 BacktestEngine
+    // 驱动(专用 CloseAuctionEngine 实例),复牌后 setHalted(false) 恢复。
+    void setHalted(bool h) { halted_ = h; }
+    bool isHalted() const { return halted_; }
+
     // === 深市裸市价单事件驱动执行（≥2023-04-10，子类被 adata 压平，见 accept_sz 注释）===
     // 按真实成交记录吃掉簿内对手订单（校验身份/价格/量，簿同步由引擎维护）
     // allow_mid_price: 出笼回放口径（创业板暂存窗口）——笼单出笼互撮的成交价
@@ -159,6 +165,19 @@ public:
     std::vector<std::shared_ptr<Order>> takeAllSuspendedHistorical(); // 14:57 收盘竞价开始时全部恢复
     size_t getSuspendedHistoricalCount() const { return suspended_hist_.size(); }
 
+    // 深市无涨跌幅日复牌集合竞价有效竞价范围(最近成交价±10%):
+    // 复牌前将簿内范围外订单移出主簿、转入 ±10% 暂存池(不参加复牌竞价)。
+    // 300869.SZ 2020-08-24 实证:触发价 71.5 的复牌真实参与者买方∈
+    // [71.5,78.0]/卖方∈[64.5,71.5],恰为 [71.5×0.9, 71.5×1.1];簿内
+    // 58.37 卖单缺席复牌且复牌后不立即成交(持续暂存至 14:53 撤单);
+    // 80.00 买单暂存至最近成交价≥72.73(=80/1.1)才激活成交(14:39:41)。
+    void deferOutOfRangeBookOrders(Price lo, Price hi);
+    // ±10% 暂存池激活扫描:最近成交价变化时调用,限价落回 [L×0.9, L×1.1]
+    // 的暂存单按"价格优先、同价入池序、买卖跨侧按原委托 id 归并"恢复
+    // (与出笼放行序同构,见 orderByReleasePriority)。
+    void activateIpoDeferred(Price last_px);
+    size_t getIpoDeferredCount() const { return ipo_deferred_idx_.size(); }
+
     // === 价格笼子：策略单数值判定 ===
     struct CageBounds { Price lo; Price hi; };                     // 有效申报范围（含边界）
     // 计算策略单的有效申报价格范围：基准价链（对手一档→本方一档→最新成交→昨收）
@@ -213,6 +232,7 @@ private:
     
     // === 价格笼子数据 ===
     bool price_cage_enabled_;  // 是否启用价格笼子（2023年3月前为true）
+    bool halted_ = false;      // 盘中临停中(新股前 5 日,见 setHalted 注释)
     std::list<std::shared_ptr<Order>> dormant_buy_orders_;   // 休眠买单队列（时间顺序）
     std::list<std::shared_ptr<Order>> dormant_sell_orders_;  // 休眠卖单队列（时间顺序）
     
@@ -258,6 +278,14 @@ private:
     // map 有序迭代即"按原始 orderid 升序恢复"（aqsnapshots 语义）
     std::map<uint64_t, std::shared_ptr<Order>> suspended_hist_;
     std::map<uint64_t, std::shared_ptr<Order>> user_cage_;
+
+    // === 深市无涨跌幅日 ±10% 暂存池(复牌集合竞价有效范围外订单) ===
+    // 与 ±2% 笼分池:激活判据是"订单限价落回 [最近成交价×0.9, ×1.1]",
+    // 按价格索引,激活扫描只在历史成交价变化时做 O(log n + 激活数)。
+    // 激活后不可再回池(与 ±2% 笼"出笼可回笼"语义不同)。
+    std::map<Price, std::list<std::shared_ptr<Order>>> ipo_deferred_buy_;   // 买:价格升序
+    std::map<Price, std::list<std::shared_ptr<Order>>> ipo_deferred_sell_;  // 卖:价格升序
+    std::unordered_map<uint64_t, std::shared_ptr<Order>> ipo_deferred_idx_; // system_id -> order(撤单 O(1))
 
 public:
     // === 诊断计数器（仅用于日志，不影响业务逻辑）===

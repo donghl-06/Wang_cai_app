@@ -28,6 +28,18 @@ public:
     void cancel_by_input_id(uint64_t input_id, int channel_no = -1);  // 通过市场复合键撤单
     void settle();                       // 09:25
 
+    // 深市无涨跌幅日(新股前 5 日)开盘集合竞价 900% 有效竞价范围:
+    // 买申报价 > 前收盘(首日=发行价)×900% 的暂存于交易主机、不参加开盘
+    // 集合竞价,结转连续竞价(300869.SZ 2020-08-24 实证:发行价 10.16,
+    // 91.44=10.16×9 以上的 100/100.01/101 买单全部缺席真实竞价但存活
+    // 至开盘后撤单;卖方无上限——真实竞价 1.0 卖单正常成交)。
+    void setSzNoLimitIpo(bool v) { sz_nolimit_ipo_ = v; }
+    // 取出被 900% 规则暂存的买单(原申报序),由 BacktestEngine 在连续
+    // 竞价开始时结转 con_engine(走既有笼子/暂存机制决定激活时机)
+    std::vector<std::shared_ptr<Order>> takeDeferredIpoBuys() {
+        return std::move(deferred_ipo_buys_);
+    }
+
     // 获取预测结果的公共接口（惰性重算：accept/cancel 只置脏标记，
     // 读取时才计算；on_px_ 回调从未接线，原逐事件 publish 是纯浪费）
     Price getPredictPrice() const { ensurePredict(); return _predict_px; }
@@ -66,6 +78,10 @@ private:
     mutable std::vector<uint64_t> _sh_buy_cumu, _sh_sell_cumu;
     mutable std::vector<Price>    _sh_tradable_prices;
     Price    _real_px{0};
+
+    // 深市无涨跌幅日 900% 暂存(见 setSzNoLimitIpo)
+    bool sz_nolimit_ipo_ = false;
+    std::vector<std::shared_ptr<Order>> deferred_ipo_buys_;
 };
 
 } // namespace wangcai
