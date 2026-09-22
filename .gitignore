@@ -62,3 +62,9 @@ docs/
 # 实验引擎构建与影子包(下单延迟功能过渡期内)
 build_exp/
 exp_pkg/
+
+# adata 校验过程产物(只保留结果 CSV: adata_validation_results*.csv)
+adata_fix_g20/
+adata_fix_sh/
+adata_fix_sz/
+adata_universe_*.txt
